@@ -478,6 +478,33 @@ test('no scale at all: runs do not chain and the cord length is reported as unkn
   assert.match(unk[0].message, /^The cord length to the .* is unknown because Back wall is not calibrated\. Calibrate it to size the cord\.$/);
 });
 
+test('outlets without a position are skipped; a forced outlet on another photo leaves the cord unknown', () => {
+  const eave = (outletId) => feature('ft_e', 'roofline', [F(10, 20), F(60, 20)], { label: 'Front eave', params: { outletId } });
+  const outs = [outlet('out_nowhere', null, { label: 'Lost outlet' }), outlet('out_a', F(5, 1.5)),
+    outlet('out_back', [100, 900], { label: 'Back outlet', imageId: 'img_2', planeId: null })];
+  const auto = plan(project({ features: [eave(null)], outlets: outs })).power;
+  assert.equal(auto.feeds[0].outletId, 'out_a');
+  const forced = plan(project({ features: [eave('out_back')], outlets: outs })).power;
+  assert.equal(forced.feeds[0].outletId, 'out_back');
+  assert.equal(forced.feeds[0].cord, null);
+  assert.equal(forced.feeds[0].cordUnknown, true);
+  assert.equal(byCode(forced, 'cord-unknown')[0].message,
+    'The cord length to the left end of Front eave is unknown because Back outlet is on a different photo. Calibrate it to size the cord.');
+});
+
+test('large projects plan quickly', () => {
+  const features = [];
+  for (let i = 0; i < 150; i++) features.push(feature('ft_' + i, i % 3 ? 'roofline' : 'window',
+    i % 3 ? [F(i * 4, 20 + (i % 5)), F(i * 4 + 3.5, 20 + (i % 5))] : [F(i * 4, 10), F(i * 4 + 2, 10), F(i * 4 + 2, 6), F(i * 4, 6)]));
+  const outs = [0, 1, 2, 3, 4].map((k) => outlet('out_' + k, F(k * 120, 1.5), { circuitId: k % 2 ? 'cir_2' : 'cir_1' }));
+  const t0 = process.hrtime.bigint();
+  const pw = plan(project({ features, outlets: outs, circuits: [circuit('cir_1'), circuit('cir_2', 20)] })).power;
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.ok(pw.feeds.length > 0);
+  assert.ok(pw.feeds.every((f) => f.outletId));
+  assert.ok(ms < 2000, `took ${ms} ms`);
+});
+
 // ------------------------------------------------------------------ robustness
 test('unpowered runs, bad data and missing pieces never throw; inputs are not mutated', () => {
   const eave = feature('ft_e', 'roofline', [F(10, 20), F(60, 20)]);
@@ -514,4 +541,56 @@ test('warnings are ordered danger, warn, info and every one has a level, code an
   for (const w of pw.warnings) assert.ok(w.level && w.code && typeof w.message === 'string' && w.message.length > 10);
   // the 4th feed starts 203 ft along the eave, far from the only outlet → long cord too
   assert.deepEqual([...new Set(codes(pw))].sort(), ['circuit-overload', 'disclaimer', 'incandescent', 'long-cord', 'max-end-to-end', 'no-gfci']);
+});
+
+// ------------------------------------------------------------------ integration with measure.js
+test('integration: a real measure.measureProject result flows through design and power', { skip: !LP.has('measure') }, () => {
+  const measureMod = LP.require('measure');
+  // A 40 × 12 ft wall seen in perspective: image points come from an exact plane → image homography.
+  const quad = [[180, 220], [1380, 120], [1400, 900], [160, 860]];            // TL, TR, BR, BL
+  const Hp2i = g.homographyFromPoints([[0, 12], [40, 12], [40, 0], [0, 0]], quad);
+  const P = (u, v) => g.applyH(Hp2i, [u, v]);
+  const p = project({
+    features: [
+      feature('eave_l', 'roofline', [P(0, 12), P(20, 12)], { label: 'Left eave' }),
+      feature('eave_r', 'roofline', [P(20.5, 12), P(40, 12)], { label: 'Right eave' }),
+      feature('win', 'window', [P(5, 4), P(10, 4), P(10, 8), P(5, 8)], { label: 'Window' }),
+    ],
+    outlets: [outlet('out_porch', P(38, 1.5), { label: 'Porch outlet' })],
+  });
+  p.images = [{ id: 'img_1', name: 'front.jpg', width: 1600, height: 1200, exif: null,
+    camera: { mode: 'auto', presetId: 'phone1x', focalPx: null }, storageKey: 'img_1' }];
+  p.activeImageId = 'img_1';
+  p.planes = [{ id: 'pl_front', imageId: 'img_1', name: 'Front wall', kind: 'wall', color: '#4f9dff',
+    rect: { corners: quad, widthFt: 40, heightFt: 12, presetId: null }, refs: [], derived: null }];
+
+  const measured = measureMod.measureProject(p, lib.config);
+  assert.equal(measured.planes.pl_front.mode, 'rect-known');
+  const runs = design.planRuns(p, measured, lib);
+  const run = (id) => runs.find((r) => r.featureId === id);
+  close(run('eave_l').lengthFt, 20, 1e-6);
+  assert.equal(run('eave_l').quantity, 1);                     // 22 ft → 1 C9 string
+  assert.equal(run('eave_r').quantity, 1);                     // 19.5 ft → 21.45 ft → 1 string
+  assert.equal(run('win').quantity, 1);                        // 18 ft perimeter → 19.8 ft → 1 mini string
+  assert.equal(run('win').clips.type, 'adhesive');
+
+  const pw = power.planPower(p, measured, runs, lib);
+  // the two eaves chain (0.5 ft apart) and start at the right end, nearest the porch outlet
+  const chain = pw.chains.find((c) => c.runIds.includes('run_eave_l'));
+  assert.deepEqual(chain.runIds, ['run_eave_r', 'run_eave_l']);
+  const feed = pw.feeds.find((f) => f.id === chain.feedIds[0]);
+  assert.equal(feed.start.label, 'right end of Right eave');
+  // same-plane route: |40 − 38| + |12 − 1.5| = 12.5 ft → × 1.15 + 4 = 18.4 ft → one 25 ft 16 AWG cord
+  close(feed.cord.lengthFt, 12.5 * 1.15 + 4, 0.06);
+  assert.deepEqual(feed.cord.pieces, [25]);
+  assert.equal(feed.cord.awg, 16);
+  // the window plugs in at its first point (bottom-left on the wall): |5 − 38| + |4 − 1.5| = 35.5 ft
+  const wf = feedOf(pw, 'run_win');
+  assert.equal(wf.start.label, 'bottom-left corner of Window');
+  close(wf.cord.lengthFt, 35.5 * 1.15 + 4, 0.06);
+  assert.equal(pw.outlets[0].feedIds.length, 2);
+  assert.equal(pw.outlets[0].splitters, 1);
+  assert.equal(pw.counts.timers, 1);
+  close(pw.circuits[0].loadW, 9.6 * 2 + 4.8, 1e-9);
+  assert.deepEqual(codes(pw), ['disclaimer']);
 });

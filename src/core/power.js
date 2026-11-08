@@ -170,6 +170,8 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     function cordRoute(outlet, start) {
       const o = outlet.point, p = start.point;
       if (!isPt(o) || !isPt(p)) return { routedFt: null, path: [], samePlane: false };
+      // Pixels on two different photos are not comparable: no distance and nothing to draw.
+      if (outlet.imageId && start.imageId && outlet.imageId !== start.imageId) return { routedFt: null, path: [], samePlane: false };
       const straightPath = [o.slice(0, 2), p.slice(0, 2)];
       if (outlet.planeId && outlet.planeId === start.planeId) {
         const s = sol(start.planeId);
@@ -447,10 +449,10 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       }
       return routeCache.get(key);
     }
-    /** Outlets on the feed's photo, nearest cord first (unknown lengths last), ties by outlet id. */
+    /** Located outlets on the feed's photo, nearest cord first (unknown lengths last), ties by outlet id. */
     function candidates(feed) {
       return outlets
-        .filter((o) => !o.imageId || !feed.start.imageId || o.imageId === feed.start.imageId)
+        .filter((o) => isPt(o.point) && (!o.imageId || !feed.start.imageId || o.imageId === feed.start.imageId))
         .map((o) => ({ outlet: o, lengthFt: route(o, feed.start).lengthFt }))
         .sort((x, y) => {
           const ax = x.lengthFt === null ? Infinity : x.lengthFt, ay = y.lengthFt === null ? Infinity : y.lengthFt;
@@ -573,9 +575,9 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       feed.cordPath = r.path.map((p) => p.slice());
       if (r.lengthFt === null) {
         feed.cordUnknown = true;
-        const reason = feed.start.imageId && o.imageId && o.imageId !== feed.start.imageId
-          ? `${o.label || 'the outlet'} is on a different photo`
-          : `${space.planeName(feed.start.planeId)} is not calibrated`;
+        let reason = `${space.planeName(feed.start.planeId)} is not calibrated`;
+        if (!isPt(o.point)) reason = `${o.label || 'the outlet'} has no position on the photo`;
+        else if (feed.start.imageId && o.imageId && o.imageId !== feed.start.imageId) reason = `${o.label || 'the outlet'} is on a different photo`;
         warn('warn', 'cord-unknown', `The cord length to the ${feed.start.label} is unknown because ${reason}. Calibrate it to size the cord.`,
           { featureId: runFeature(feed), outletId: o.id });
       } else {
