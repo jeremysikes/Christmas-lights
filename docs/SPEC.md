@@ -180,8 +180,12 @@ All ids are strings with a prefix (`prj_`, `img_`, `pl_`, `ref_`, `ft_`, `out_`,
       "spiralSpacingIn": null,                     // tree / column
       "wrapMode": null,                            // tree: trunk | canopy
       "outletId": null,                            // force this run's power to an outlet
-      "reverse": false                             // force run direction (start at the last point)
+      "reverse": false,                            // force run direction (start at the last point)
+      "overrideWidthFt": null,                     // bush: tape-measured width (ft)
+      "overrideHeightFt": null                     // bush: tape-measured height (ft)
     }
+    // overrideFt meaning by geometry: polyline/polygon → length (perimeter); vertical (tree, column) → HEIGHT
+    // (wrap length is recomputed from it); area (bush) → ignored (use overrideWidthFt/overrideHeightFt).
   }],
   "outlets": [{
     "id": "out_1", "imageId": "img_1", "planeId": "pl_front", "point": [x,y],
@@ -442,7 +446,11 @@ FeatureMeasurement = {
   confidence: { level: 'high'|'medium'|'low', score: 0..100, reasons: [string] }
 }
 // Spiral: turns = H_in / s ; wrapFt = turns · hypot(π·D_in, s) / 12   (D, s from params or config)
-// Bush: lights = lightsPerUnit · (heightFt/heightUnitFt) · (widthFt/widthUnitFt)
+// Tree wrapMode 'canopy': lights = canopyLightsPerFtHeight · heightFt, wrapFt = null, lengthFt = heightFt.
+// Bush: lights = lightsPerUnit · (heightFt/heightUnitFt) · (widthFt/widthUnitFt); width/height from the plane-space
+//   bbox of the polygon (or params.overrideWidthFt/overrideHeightFt → overridden:true); measuredFt = perimeter;
+//   lengthFt = null for bushes (they are planned by lights, not feet).
+// totals: byType[t].lengthFt sums lengthFt (bush contributes 0 and its lights); totalFt/totalWithWasteFt exclude bushes.
 scoreConfidence(factors) → {level, score, reasons}   // start 100, subtract; override → 100 'Tape-measured'
     // plane mode: rect-known 0, rect-refs −5, refs-only −20, roof-3d −10, roof-ortho −20, ground-3d −10, uncalibrated → 0
     // no cross-check reference −5; disagreement 3–6% −10, 6–10% −20, >10% −35
@@ -560,8 +568,11 @@ createOutlet(opts) / createCircuit(opts)        // fill every field with default
 normalizeProject(p) → p'    // fills missing fields, never throws on partial input
 migrateProject(p) → p'      // upgrades older versions; unknown future version → throw Error with plain message
 validateProject(p) → {ok, errors: [string]}
-exportProject(project, derived?, imagesByKey? /* {storageKey: dataUrl} */) → plain object ready for JSON
-importProject(obj) → {project, images: {storageKey: dataUrl}}   // migrate + normalize + validate (throws plain Error)
+exportProject(project, derived?, imagesByKey? /* {storageKey: dataUrl} */, exportedAt? /*ISO string*/) →
+    { schema:'lightplan/export', version:1, exportedAt, project, images, derived }   // pure: caller passes the time
+importProject(obj) → {project, images: {storageKey: dataUrl}}   // accepts an export wrapper or a bare project;
+    // migrate + normalize + validate; throws Error with a plain message ("This file is not a LightPlan project.")
+createProject(opts) defaults: no images/planes/features/outlets; circuits = [{name:'Circuit 1', breakerAmps:15}].
 ```
 
 ### 5.10 plan
@@ -583,10 +594,11 @@ createSample({traced = true} = {}) → { width, height, primitives, project, gro
   // project: one image (source.kind 'sample', storageKey 'sample'), planes: 'Front wall' (rect = facade corners,
   // size unknown + door-height ref + one horizontal ref), 'Garage wall' (set back, rect = double garage door
   // 16×7 known + one cross-check ref), 'Main roof' (roof, from front eave, pitch null → estimated from the
-  // in-plane front gable), 'Front yard' (ground, from front wall base). traced:false → planes/refs only.
+  // in-plane front gable), 'Front yard' (ground, from front wall base).
   // features (traced:true): eaves, front-gable rakes (in wall plane), side rake + ridge on roof plane, gutter,
   // 2 windows, door outline, 3 bushes, 1 tree, 2 walkway edges on ground plane; outlets: porch GFCI (15 A
   // circuit), garage exterior GFCI (20 A circuit).
+  // traced:false → the same image with one blank 'Front wall' plane (no rect, refs, features or outlets) for practice.
   // groundTruth: { [featureId]: trueLengthFt } computed from the 3D model (eaves/rakes/windows/etc.).
 drawPrimitives(ctx, primitives)    // works with any CanvasRenderingContext2D (no DOM access)
 toSVG(primitives, width, height) → string
