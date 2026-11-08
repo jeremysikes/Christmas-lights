@@ -17,6 +17,8 @@
  *    the plane rectangles; the lowest relStd still wins, and small rectangles rarely pass the stability test.
  *  - viewAngleDeg(pose, point, normal?) takes an optional plane normal (default: the wall normal (0,0,1)).
  *  - estimateFocalFromQuad() also returns `samples` (the perturbed estimates) for debugging.
+ *  - poseFromHomography() also returns `consistency: {normRatio, cosAngle}` (how well H agrees with K).
+ *  - Extra exports: getPreset, DEFAULT_PRESET_ID, FULL_FRAME_DIAGONAL_MM, Kmatrix, KinvMatrix.
  */
 LP.define('camera', ['geometry'], function (g) {
   'use strict';
@@ -235,7 +237,11 @@ LP.define('camera', ['geometry'], function (g) {
     if (!R || !t.every(isNum)) return fail;
     const C = g.v3scale(g.m3mulv(g.m3transpose(R), t), -1);
     if (!C.every(isNum) || !(C[2] > 0)) return fail;
-    return { ok: true, R, t, C };
+    // How well H and K agree: for a perfect match |m1| = |m2| and m1 ⟂ m2. A mismatch means the focal length,
+    // the rectangle's stated size or its corners are off, and 3D results (roof, ground) inherit that error.
+    const l1 = g.v3len(m1), l2 = g.v3len(m2);
+    const consistency = { normRatio: l1 / l2, cosAngle: g.v3dot(m1, m2) / (l1 * l2) };
+    return { ok: true, R, t, C, consistency };
   }
 
   /** Angle (degrees) between a plane normal (default: wall normal) and the ray from a plane point to the camera. */
