@@ -1,0 +1,768 @@
+# LightPlan Phase 1 — Build Contract (internal)
+
+This document is the contract between modules. Every module author codes against the
+signatures here. If you must deviate, keep the documented signature working and note the
+deviation at the top of your file in a comment. **Do not edit files you do not own.**
+
+LightPlan measures a house from one photo, designs a Christmas-light layout, and produces a
+bill of materials (BOM), a power/circuit plan, a quote and an install checklist.
+Phase 1 ships as **one self-contained HTML file** (`dist/lightplan.html`) built from small
+modules. All calculations are **pure functions** in `src/core/` so they can move to a
+backend unchanged in Phase 2.
+
+---------------------------------------------------------------------------------------------
+
+## 1. Hard platform constraints (the HTML runs inside the claude.ai Artifact viewer)
+
+- No external network except Google Fonts stylesheet. No CDN libraries. Everything inline.
+- `alert()`, `confirm()`, `prompt()` do nothing in the viewer. Build confirmations in-page.
+- `window.print()` does nothing. PDF must be generated in JS (own minimal PDF writer).
+- `<a download>` / blob-URL downloads are blocked inside the viewer. Save files via
+  `window.claude.use('downloads')` → `downloads.save({filename, data: Blob})` when available;
+  fall back to a blob-URL `<a download>` when `window.claude` is absent (standalone file).
+  `claude.use()` may take up to 10 s to resolve `null`; call it once at startup and cache the promise.
+  Allowed extensions include pdf, csv, json, png, jpg.
+- Live camera APIs are blocked. Camera capture = `<input type="file" accept="image/*" capture="environment">`.
+- localStorage / IndexedDB may throw or be empty. Wrap **every** access in try/catch.
+- Must work at 360–400 px wide, one-handed, large tap targets (≥ 44 px). No horizontal page scroll.
+- The artifact fragment must not contain `<!doctype>`, `<html>`, `<head>`, `<body>` tags
+  (the build produces a separate full-document standalone file).
+- No source file may contain the literal `</script` (the build fails on it).
+- Respect `prefers-reduced-motion` (twinkle off by default when reduced motion is set).
+
+## 2. Files, ownership, module system
+
+```
+build.js                 inlines everything into dist/ (owner: lead)
+package.json             scripts: build, test, e2e (owner: lead)
+src/template.html        markup skeleton with @@STYLES / @@SCRIPTS markers (owner: ui-shell)
+src/styles.css           all CSS (owner: ui-shell)
+src/core/lp.js           module registry (owner: lead)
+src/core/geometry.js     2D/3D math, homography               (owner: lead — WRITTEN; measure may APPEND functions)
+src/core/camera.js       intrinsics, focal estimation, pose     (owner: measure)
+src/core/exif.js         JPEG EXIF focal-length parser          (owner: measure)
+src/core/measure.js      calibration, planes, measurement, confidence (owner: measure)
+src/core/catalog.js      feature types, product library, config (owner: lead — WRITTEN; read it, don't rewrite it)
+src/core/design.js       auto-plan of light runs                (owner: design-power)
+src/core/power.js        chains, feeds, outlets, circuits, cords, warnings (owner: design-power)
+src/core/bom.js          BOM, quote, checklist                  (owner: bom-schema)
+src/core/schema.js       data model factories, validation, migration, JSON Schema (owner: bom-schema)
+src/core/plan.js         computePlan orchestrator               (owner: bom-schema)
+src/core/sample.js       3D sample house generator + ground truth (owner: sample)
+src/ui/persist.js        autosave/load (localStorage + IndexedDB) (owner: ui-shell)
+src/ui/store.js          state, undo/redo, gestures, plan memo   (owner: ui-shell)
+src/ui/imagesource.js    ImageSource interface + implementations (owner: ui-shell)
+src/ui/actions.js        all user-intent mutations               (owner: ui-shell)
+src/ui/panels.js         step panels (DOM)                       (owner: ui-shell)
+src/ui/app.js            bootstrap                               (owner: ui-shell)
+src/ui/viewport.js       canvas, pan/zoom/pinch, tools, overlay  (owner: ui-canvas)
+src/ui/preview.js        glowing bulbs renderer, snapshots       (owner: ui-canvas)
+src/ui/export.js         PDF writer, CSV, JSON, downloads        (owner: export)
+tests/loader.js          loads core modules in Node (owner: lead)
+tests/*.test.js          node:test unit tests (each owner writes tests for its modules)
+tests/e2e/*.mjs          Playwright smoke tests (owner: integration)
+docs/*.md                docs
+schema/project.schema.json  JSON Schema (owner: bom-schema)
+```
+
+### Module registry (`src/core/lp.js`, already written)
+
+Every source file (core and ui) is wrapped exactly like this:
+
+```js
+LP.define('measure', ['geometry', 'camera', 'catalog'], function (geometry, camera, catalog) {
+  'use strict';
+  // ...
+  return { solvePlane, measureProject /* ... */ };
+});
+```
+
+`LP.require(name)` instantiates lazily and caches. Module names: `geometry, camera, exif,
+catalog, measure, design, power, bom, schema, plan, sample, ui.persist, ui.store,
+ui.imagesource, ui.actions, ui.preview, ui.viewport, ui.export, ui.panels, ui.app`.
+
+- Core modules must not touch `window`, `document`, `localStorage`, `Date.now()` inside
+  calculations, or any DOM API. They run in Node 22 for tests (`tests/loader.js`).
+- Core functions never mutate their inputs.
+- Language: modern JS (ES2020). No TypeScript, no imports, no external packages.
+- Build script order: lp, geometry, camera, exif, catalog, measure, design, power, bom,
+  schema, plan, sample, ui.persist, ui.store, ui.imagesource, ui.actions, ui.preview,
+  ui.viewport, ui.export, ui.panels, ui.app, then `LP.require('ui.app').start()`.
+
+### Tests
+
+`npm test` runs `node --test` (no arguments — `node --test tests/` does NOT work). Run one file with
+`node --test tests/measure.test.js`. Each test file starts with
+`const LP = require('./loader');` then `LP.require('measure')` etc. Use `node:test` and
+`node:assert/strict`. Tests must be deterministic.
+
+---------------------------------------------------------------------------------------------
+
+## 3. Coordinate systems and units
+
+- **Image points**: `[x, y]` arrays, pixels of the *stored* image (already downscaled),
+  origin top-left, y down.
+- **Wall-plane coordinates**: `[u, v]` in **feet**. u to the right along the wall, v **up**.
+  For a plane with a rectangle, the rectangle's bottom-left corner is the origin.
+- **3D wall frame** (for camera pose): `(u, v, w)` feet, w = wall normal pointing **out of
+  the wall toward the camera/street**. The wall plane is w = 0.
+- **Roof/ground plane coordinates**: `[a, b]` feet; a along the defining line (eave or wall
+  base), b perpendicular along the plane surface (up-slope for roof, toward street for ground).
+- Lengths are feet (floats). Angles stored in degrees unless named `...Rad`.
+- 3×3 matrices are flat row-major arrays of 9 numbers. A homography `H` maps `[x,y]` →
+  `[(h0x+h1y+h2)/(h6x+h7y+h8), (h3x+h4y+h5)/(h6x+h7y+h8)]`.
+- Quad corner order everywhere: `[TL, TR, BR, BL]` in image space (clockwise on screen).
+  Rectangle mapping: TL→(0,H), TR→(W,H), BR→(W,0), BL→(0,0).
+
+---------------------------------------------------------------------------------------------
+
+## 4. Data model (persisted project — portable to Phase 2)
+
+All ids are strings with a prefix (`prj_`, `img_`, `pl_`, `ref_`, `ft_`, `out_`, `cir_`).
+`null` means "not set / use default". Numbers are plain JSON numbers.
+
+```jsonc
+{
+  "schema": "lightplan/project",
+  "version": 1,
+  "id": "prj_ab12cd",
+  "name": "123 Maple St",
+  "createdAt": "2026-11-08T17:00:00.000Z",
+  "updatedAt": "2026-11-08T17:20:00.000Z",
+  "customer": { "name": "", "address": "", "phone": "", "email": "" },
+  "settings": {
+    "wastePct": 10,
+    "roofPitch": { "rise": 6, "run": 12 },        // project default; null = unknown → estimate
+    "colorMode": "warmWhite",                      // warmWhite | coolWhite | multicolor | custom
+    "customColors": ["#ff3b30", "#34c759"],
+    "lengthFormat": "ft-in"                        // ft-in | ft-decimal
+  },
+  "images": [{
+    "id": "img_1", "name": "front.jpg", "width": 2048, "height": 1536,
+    "source": { "kind": "upload", "capturedAt": null, "attribution": null },   // kind: upload|camera|sample|streetview|aerial
+    "exif": { "focal35": 26, "focalMm": 5.96, "make": "Apple", "model": "iPhone 15" },   // or null
+    "camera": { "mode": "auto", "presetId": "phone1x", "focalPx": null },     // mode: auto|exif|preset|manual
+    "storageKey": "img_1"                          // pixels live in IndexedDB/localStorage under this key
+  }],
+  "activeImageId": "img_1",
+  "planes": [{
+    "id": "pl_front", "imageId": "img_1", "name": "Front wall",
+    "kind": "wall",                                // wall | roof | ground
+    "color": "#4f9dff",
+    "rect": {                                      // perspective rectangle on this wall, or null
+      "corners": [[x,y],[x,y],[x,y],[x,y]],        // stored as tapped; order with geometry.orderQuad
+      "widthFt": 16, "heightFt": 7,                // both null = size unknown
+      "presetId": "garage-double"
+    },
+    "refs": [                                      // calibration references on this plane
+      { "id": "ref_1", "kind": "line", "points": [[x,y],[x,y]], "lengthFt": 6.6667,
+        "presetId": "door-height", "courses": null, "quality": "high" },
+      { "id": "ref_2", "kind": "rect", "points": [[x,y],[x,y],[x,y],[x,y]],
+        "widthFt": 3, "heightFt": 6.6667, "presetId": "door-rect", "quality": "high" }
+    ],
+    "derived": null                                // for roof/ground planes:
+    // { "parentPlaneId": "pl_front", "line": [[x,y],[x,y]], "pitch": {"rise":6,"run":12} | null }
+    // roof: line = eave (on parent wall), slopes up and away from camera at pitch (null → project/estimated)
+    // ground: line = wall base (on parent wall), plane is horizontal, extends toward the camera; pitch ignored
+  }],
+  "features": [{
+    "id": "ft_1", "imageId": "img_1", "planeId": "pl_front",
+    "type": "roofline",                            // see FEATURE_TYPES
+    "label": "Front eave",
+    "points": [[x,y], [x,y]],
+    "closed": false,
+    "overrideFt": null,                            // tape-measured length (ft) replaces measured length
+    "productId": null,                             // null = auto-plan default for the type
+    "color": null,                                 // null = project colorMode; else {"mode":"multicolor"} or {"mode":"custom","colors":["#hex"]}
+    "params": {
+      "mount": null,                               // gutter|shingle|allInOne|ridge|adhesive|zipTie|stake|none ; null = type default
+      "diameterIn": null,                          // tree / column
+      "spiralSpacingIn": null,                     // tree / column
+      "wrapMode": null,                            // tree: trunk | canopy
+      "outletId": null,                            // force this run's power to an outlet
+      "reverse": false                             // force run direction (start at the last point)
+    }
+  }],
+  "outlets": [{
+    "id": "out_1", "imageId": "img_1", "planeId": "pl_front", "point": [x,y],
+    "label": "Porch outlet", "type": "exteriorGfci",   // exteriorGfci | garage | interior | other
+    "gfci": true, "circuitId": "cir_1", "receptacles": 2
+  }],
+  "circuits": [{ "id": "cir_1", "name": "Porch circuit", "breakerAmps": 15, "voltage": 120, "existingLoadW": 0 }],
+  "library": { "products": null, "config": null },   // null = defaults; products = full replacement list; config = deep-merged overrides
+  "pricing": { "overrides": { } },                    // sku -> unit price
+  "quote": {
+    "enabled": false, "company": "", "laborMethod": "perFt",   // perFt | perHour
+    "ratePerFt": 3.5, "ratePerHour": 65, "markupPct": 30,
+    "takedownFee": 150, "storageFee": 75, "taxPct": 0, "validDays": 30, "notes": ""
+  }
+}
+```
+
+Derived results (never trusted from input; always recomputed by `plan.computePlan`) are
+included in JSON exports under a top-level `"derived"` key for Phase 2 consumers.
+
+---------------------------------------------------------------------------------------------
+
+## 5. Core module APIs
+
+### 5.1 geometry (pure math) — ALREADY IMPLEMENTED in src/core/geometry.js (read it)
+
+Also exports: `normalizeH, scaleMatrix(sx,sy), m3col(m,i), clamp, median, rng(seed)` (mulberry32 PRNG → fn), `hashString`.
+
+```
+solveLinear(A /*n×n array of rows*/, b /*n*/) → x | null      // partial pivoting; null if singular
+homographyFromPoints(src /*[[x,y]×4..n]*/, dst) → H | null      // DLT, h8=1 for 4 pts; least squares for n>4
+applyH(H, p) → [x,y] | null                                     // null if w≈0
+invertH(H) → H | null ; multiplyH(A,B) → H ; scaleH(Sx,Sy) style helpers allowed
+dist(a,b), polylineLength(pts, closed=false), polygonArea(pts) /*abs*/, bbox(pts) → {minX,minY,maxX,maxY,w,h}
+centroid(pts), lerp(a,b,t), pointSegmentDistance(p,a,b) → {d, t, point}
+segmentsIntersect(a,b,c,d) → bool (proper or touching)
+pointInPolygon(p, poly) → bool
+orderQuad(pts4) → [TL,TR,BR,BL]                                 // robust to tap order; sorts by angle around centroid
+isConvexQuad(pts4) → bool
+localScale(H, p) → {scale /*sqrt|det J|*/, sMin, sMax}           // plane units per pixel at image point p
+pointAtDistance(pts, d) → {point, segIndex}                      // walk polyline
+resampleByDistance(pts, step, closed) → pts                     // equal arc-length samples incl. endpoints
+angleDeg(a,b) → degrees of vector b-a from +x (image or plane space as given)
+// 3D helpers (arrays of 3): v3add, v3sub, v3scale, v3dot, v3cross, v3len, v3norm
+// mat3: m3mul, m3mulv, m3transpose, m3inv, m3det, m3fromCols(c0,c1,c2)
+```
+
+### 5.2 camera (single-view metrology)
+
+Camera intrinsics: `K = {f, cx, cy}` (pixels; square pixels, no skew; cx,cy = image center).
+
+```
+CAMERA_PRESETS = [
+  {id:'phone1x',   label:'Phone main camera (1×)', f35:26},
+  {id:'phone2x',   label:'Phone 2× zoom',          f35:52},
+  {id:'phone3x',   label:'Phone 3× telephoto',     f35:77},
+  {id:'phone05x',  label:'Phone 0.5× ultra-wide',  f35:13},
+  {id:'streetview',label:'Street View screenshot', hfovDeg:90},
+  {id:'camera50',  label:'Camera 50 mm',           f35:50}
+]
+focalFromF35(f35, width, height) → f   // f35 * hypot(w,h) / 43.2666
+focalFromHfov(hfovDeg, width) → f      // (w/2)/tan(hfov/2)
+focalFromPreset(presetId, width, height) → f
+estimateFocalFromQuad(quad /*[TL,TR,BR,BL]*/, cx, cy) → {ok, f, relStd, reason}
+    // H_s maps unit square (BL=(0,0),BR=(1,0),TR=(1,1),TL=(0,1)) to centered image coords.
+    // Orthogonality of the rectangle's sides: f² = -(h0*h1 + h3*h4)/(h6*h7) using H_s columns.
+    // ok only if f² > 0, f within [0.25, 6]·max(w,h) (pass w,h via cx*2, cy*2), and a ±2px corner
+    // perturbation study gives relStd ≤ 0.15. Otherwise ok:false with a plain reason
+    // ("photo is nearly straight-on, so focal length can't be measured from the rectangle").
+resolveCamera(image, planes) → {f, cx, cy, source, label, relStd}
+    // image.camera.mode: 'manual' (focalPx) | 'preset' (presetId) | 'exif' | 'auto'.
+    // auto: EXIF focal35 → else best ok estimateFocalFromQuad over the image's wall rects (lowest relStd)
+    //       → else preset 'phone1x'. source ∈ 'manual'|'preset'|'exif'|'rectangle'|'default'.
+rectAspectFromQuad(quad, K) → W/H ratio    // ||K⁻¹h1|| / ||K⁻¹h2|| with H from unit square
+poseFromHomography(Hplane2img, K) → {ok, R /*3x3 flat, cols r1 r2 r3*/, t /*[3]*/, C /*camera center in wall frame*/}
+    // M = K⁻¹H; λ = 2/(|m1|+|m2|); r1=λm1, r2=λm2, t=λm3; if t[2]<0 negate; r3=r1×r2;
+    // re-orthonormalize R (nearest rotation via SVD-free polar iteration or Gram–Schmidt);
+    // C = -Rᵀt. With u right / v up / image y down, r3 points toward the camera → C[2] (w) > 0.
+viewAngleDeg(pose, planePoint3) → angle between wall normal and the ray to that point (0 = straight on)
+rayThroughPixel(px, K, pose) → {origin:[3], dir:[3] unit}     // in wall frame
+projectPoint(X3, K, pose) → [x,y]                              // wall frame → image
+roofFrame(A3, B3, rise, run) → {origin, e1, e2, n}              // eave A→B on wall (w≈0); e1 horizontal along eave
+    // (v-component removed); e2 = cosθ·h + sinθ·(0,1,0), h = horizontal ⟂ e1 pointing INTO the house (w<0);
+    // θ = atan(rise/run)
+groundFrame(A3, B3) → {origin, e1, e2, n}                       // base line A→B; e2 horizontal ⟂ e1 pointing toward camera (w>0)
+homographyForFrame(frame, K, pose) → Hframe2img                // H = K [R·e1, R·e2, R·origin + t]
+orthoPitchLength(du, dv, rise, run) → sqrt(du² + (dv/sinθ)²)    // fallback when no pose (camera at infinity)
+```
+
+### 5.3 exif
+
+```
+parseExif(arrayBuffer) → null | {focal35, focalMm, make, model, orientation, width, height, dateTime}
+    // JPEG APP1 "Exif\0\0", TIFF II/MM, IFD0 → ExifIFD (0x8769): FocalLengthIn35mmFilm 0xA405,
+    // FocalLength 0x920A (rational), Orientation 0x0112, Make 0x010F, Model 0x0110, DateTimeOriginal 0x9003.
+    // Never throws (returns null on anything malformed). Also handles non-JPEG (returns null).
+```
+
+### 5.4 catalog (data only + tiny lookups) — ALREADY IMPLEMENTED in src/core/catalog.js (read it)
+
+Also exports: `LINEAR_TYPES` (types where waste applies), `CORD_PRICES`, `cordSku(awg, lengthFt)` → 'cord-16-25',
+`getAccessory(accessories, sku)`, `resolveColors(featureColor, settings)` → {mode, colors}, `deepMerge`, `deepClone`, `isPlainObject`.
+Accessory shape: `{sku, name, category: 'clips'|'cords'|'power'|'hardware', unit: 'pack'|'each', packSize, price, awg?, lengthFt?}`.
+Clip pack size comes from each accessory's `packSize` (adhesive clips = 50), not only `config.clipPackSize`.
+
+```
+FEATURE_TYPES: { [id]: {id, label, short, geometry, color, offPlane, defaultProduct, defaultMount, closedDefault, minPoints, maxPoints} }
+  geometry: 'polyline' | 'polygon' | 'vertical'(exactly 2 points, base→top) | 'area'(polygon)
+  ids and defaults:
+    roofline  'Roofline / eave'         polyline  c9-led       allInOne
+    rake      'Gable rake'              polyline  c9-led       shingle
+    gutter    'Gutter'                  polyline  c9-led       gutter
+    ridge     'Ridge'                   polyline  c9-led       ridge     offPlane:true (unless on a roof plane)
+    window    'Window outline'          polygon   mini-led-100 adhesive  closedDefault:true
+    door      'Door outline'            polyline  mini-led-100 adhesive  (open 3-sided by default)
+    column    'Column / post'           vertical  treewrap-led none
+    railing   'Railing'                 polyline  mini-led-100 zipTie
+    walkway   'Walkway / driveway edge' polyline  path-stakes  stake     (best on a ground plane)
+    bush      'Bush (area)'             area      mini-led-100 none      offPlane:true
+    tree      'Tree (wrap)'             vertical  treewrap-led none      offPlane:true
+    stakes    'Ground stakes'           polyline  c9-led       stake     (best on a ground plane)
+TYPE_ORDER: array of ids in the order above
+DEFAULT_PRODUCTS: array of Product (editable JSON) — see below
+DEFAULT_CONFIG: rules of thumb (editable) — see below
+ACCESSORIES: array of priced non-light SKUs (clips, cords, timers, splitters, cord covers, light stakes, GFCI adapter)
+COLOR_MODES: { warmWhite:{label, colors:['#ffc46b']}, coolWhite:{...['#dfeaff']}, multicolor:{...['#ff3b30','#34c759','#2f7bff','#ffb000','#b44dff']}, custom:{label:'Custom'} }
+CLIP_TYPES: { allInOne, gutter, shingle, ridge, adhesive, zipTie } → {label, sku}
+CORD_GAUGES: [{awg:16, ampacity:13, ohmsPer1000ft:4.016}, {awg:14, ampacity:15, ohmsPer1000ft:2.525}, {awg:12, ampacity:20, ohmsPer1000ft:1.588}]
+CORD_LENGTHS: [6, 15, 25, 50, 100]
+getLibrary(project) → {products, config, accessories}   // applies project.library overrides (config deep-merged)
+getProduct(products, id) → product | null
+```
+
+**Product** fields:
+```
+{ id, name, category: 'c9'|'c7'|'mini'|'icicle'|'net'|'rope'|'track'|'path'|'treewrap',
+  tech: 'LED'|'incandescent', unit: 'string'|'net'|'set'|'foot',
+  bulbSpacingIn, stringLengthFt /*lit length per unit*/, leadFt, bulbsPerUnit,
+  wattsPerUnit /*per string/net/set; per foot when unit='foot'*/, maxEndToEnd /*units*/,
+  coverageSqFt /*net only*/, stakesPerSet /*path only*/, stakeSpacingIn /*path only*/,
+  dropLengthsIn /*icicle preview, e.g. [4,6,8]*/,
+  price, sku, colors: ['warmWhite','coolWhite','multicolor','custom'], clipEligible: bool,
+  enabled: bool, suitableFor: [feature type ids], notes }
+```
+Required default products (typical values, editable):
+`c9-led` (25 bulbs, 12in, 25 ft, 9.6 W, max 30, $32.99, clipEligible), `c9-incan` (25×7 W = 175 W, max 3, $18.99),
+`c7-led` (25 bulbs, 12in, 25 ft, 7.2 W, max 40, $27.99, clipEligible), `c7-incan` (125 W, max 5, $14.99),
+`mini-led-100` (100 bulbs, 4in, 33 ft lit, 4.8 W, max 43, $12.99), `mini-incan-100` (40.8 W, max 3, $6.99),
+`icicle-led-300` (300 bulbs, 16.5 ft, 14.4 W, max 20, $24.99, clipEligible), `net-led-4x6` (150 bulbs, 24 sq ft, 7.2 W, max 30, $22.99),
+`rope-led-18` (18 ft, 1in spacing, 10.8 W, max 8, $29.99), `track-permanent` (unit foot, 6in pixels, 1.2 W/ft, $28/ft, enabled:false),
+`path-stakes` (set of 10 stakes, 18in spacing, 3 W/set, max 25, $29.99), `treewrap-led` (150 bulbs, 3in, 37.5 ft, 7.2 W, max 30, $16.99).
+
+**DEFAULT_CONFIG**:
+```
+{
+  typeDefaults: { roofline:'c9-led', rake:'c9-led', gutter:'c9-led', ridge:'c9-led', window:'mini-led-100',
+                  door:'mini-led-100', column:'treewrap-led', railing:'mini-led-100', walkway:'path-stakes',
+                  bush:'mini-led-100', tree:'treewrap-led', stakes:'c9-led' },
+  clipSpacingIn: 12, clipPackSize: 100,
+  bush: { lightsPerUnit: 100, heightUnitFt: 1.5, widthUnitFt: 1, netCoverFactor: 1.5 },
+  tree: { defaultDiameterIn: 10, spiralSpacingIn: 4, canopyLightsPerFtHeight: 100 },
+  column: { defaultDiameterIn: 8, spiralSpacingIn: 6 },
+  stakes: { spacingIn: 12, packSize: 25 },
+  power: { voltage: 120, continuousFactor: 0.8, maxVoltageDropPct: 3, cordSlackFt: 4, routingFactor: 1.15,
+           chainGapFt: 3, outletHeightFt: 1.5, timerPerOutlet: true, splitterOutlets: 3 },
+  labor: { ftPerHour: 40, setupHours: 1, hoursPerTree: 0.75, hoursPerBush: 0.25 },
+  refDisagreementWarnPct: 5,
+  confidence: { highMin: 75, mediumMin: 50 },
+  maxImageSide: 2048
+}
+```
+
+### 5.5 measure
+
+```
+REF_PRESETS: [
+  {id:'door-height',    label:'Entry door height (80 in)', kind:'line', lengthIn:80, quality:'high'},
+  {id:'door-width',     label:'Entry door width (36 in)',  kind:'line', lengthIn:36, quality:'high'},
+  {id:'door-rect',      label:'Entry door (36 × 80 in)',   kind:'rect', widthIn:36, heightIn:80, quality:'high'},
+  {id:'garage-single',  label:'Single garage door (9 × 7 ft)', kind:'rect', widthIn:108, heightIn:84, quality:'high'},
+  {id:'garage-double',  label:'Double garage door (16 × 7 ft)',kind:'rect', widthIn:192, heightIn:84, quality:'high'},
+  {id:'garage-height',  label:'Garage door height (7 ft)', kind:'line', lengthIn:84, quality:'high'},
+  {id:'siding-4',       label:'Vinyl siding, 4 in courses', kind:'courses', courseIn:4, quality:'medium'},
+  {id:'siding-5',       label:'Vinyl siding, 5 in courses', kind:'courses', courseIn:5, quality:'medium'},
+  {id:'brick',          label:'Brick courses (3 ≈ 8 in)', kind:'courses', courseIn:8/3, quality:'medium'},
+  {id:'custom-line',    label:'Custom length',  kind:'line', quality:'high'},
+  {id:'custom-rect',    label:'Custom rectangle', kind:'rect', quality:'high'}
+]
+// 'courses' refs are stored as kind:'line' with courses:N and lengthFt = N*courseIn/12.
+refFromPreset(presetId, points, {lengthFt, widthFt, heightFt, courses}) → ref object (schema §4)
+WALL_RECT_PRESETS: door-rect, garage-single, garage-double, custom-rect, plus {id:'unknown', label:'Size unknown (e.g. house corners)'}
+
+solvePlanes(project, config) → {
+  cameras: { [imageId]: K & {source,label,relStd} },
+  planes:  { [planeId]: PlaneSolution },
+  pitch:   { rise, run, source: 'user'|'estimated'|'default', angleDeg|null, samples }
+}
+PlaneSolution = {
+  ok, planeId, kind,
+  mode: 'rect-known'|'rect-refs'|'refs-only'|'roof-3d'|'roof-ortho'|'ground-3d'|'uncalibrated',
+  Himg2plane, Hplane2img,        // image px ↔ plane feet (null when !ok)
+  scale: {sx, sy, anisotropic: bool},
+  refResults: [{refId, label, expectedFt, measuredFt, errorPct}],   // measured with the FINAL solution
+  disagreementPct,               // max |errorPct| over independent checks, null if no cross-check possible
+  checks: number,                // count of independent size constraints beyond the first
+  viewAngleDeg, pose, K,         // pose/K null when unavailable
+  pitch: {rise, run, source} | null,   // roof planes
+  extent: {minU,minV,maxU,maxV} | null, // plane-space bbox of the rect (for extrapolation checks)
+  warnings: [string], notes: [string]
+}
+```
+Wall plane algorithm:
+1. With `rect` (4 corners, `orderQuad`):
+   - Known size → `H = homographyFromPoints(quad, [[0,H],[W,H],[W,0],[0,0]])`, mode `rect-known`.
+   - Unknown size → aspect `a = rectAspectFromQuad(quad, K)`; map to `[[0,1],[a,1],[a,0],[0,0]]`;
+     scale from refs (below). mode `rect-refs`; `!ok` (uncalibrated) if no refs.
+2. Without rect → similarity from refs (ft per px, v up), mode `refs-only`; uncalibrated if no refs.
+   A single `rect` ref on a plane without `rect` may be used as the plane rectangle (known size).
+3. Scale fit from refs (rect refs contribute width and height as two line constraints):
+   - rect-known: no fit; every ref is a check → `errorPct`.
+   - otherwise isotropic weighted mean `s = Σ wᵢ(Lᵢ/|dᵢ|) / Σ wᵢ`, `wᵢ = |dᵢ|·q(quality)`
+     (q: high 1, medium 0.6, low 0.3); if ≥ 2 refs with orientation diversity (one with
+     |du| > 2|dv| and one with |dv| > 2|du|) and mode is rect-refs, solve least squares for
+     (sx², sy²) from `Lᵢ² = sx²duᵢ² + sy²dvᵢ²`; use it if both positive (`anisotropic:true`).
+   - `errorPct = 100·(measured − expected)/expected`; `disagreementPct = max |errorPct|`
+     when `checks ≥ 1`, else null.
+4. Pose: `poseFromHomography(Hplane2img, K)` when mode is rect-*; `viewAngleDeg` at the rect center.
+5. Warnings: disagreement > config.refDisagreementWarnPct → "References on 'Front wall' disagree by 7.2%.
+   Check that each one sits on this wall and that its size is right."; non-convex quad; refs-only
+   ("No perspective rectangle: assumes the photo was taken straight on.").
+
+Roof plane (`kind:'roof'`): needs parent wall solution with pose. Eave endpoints → wall coords
+(u,v,0) via parent `Himg2plane` → `roofFrame` with resolved pitch → `homographyForFrame` →
+invert. mode `roof-3d`. Without parent pose → mode `roof-ortho`: use parent H, then lengths
+are corrected per segment with `orthoPitchLength`. Pitch resolution: `derived.pitch` →
+`settings.roofPitch` → estimated pitch → default 6/12 (`source:'default'`).
+
+Ground plane (`kind:'ground'`): same with `groundFrame` → mode `ground-3d`; without pose → `!ok`
+("Ground plane needs a perspective rectangle on its wall").
+
+```
+estimatePitch(project, planeSolutions) → {rise, run:12, angleDeg, samples} | null
+    // in-plane gable rakes: features type 'rake' on WALL planes; per segment ≥ 1 ft, angle in plane
+    // coords; rise = 12·tan(angle); median; round to nearest integer; clamp 2..18.
+measurePoints(points, closed, planeSol, opts) → {lengthFt, segmentsFt, areaSqFt, widthFt, heightFt, pixelLength}
+    // live readout; handles roof-ortho correction
+measureFeature(feature, planeSol, ctx) → FeatureMeasurement
+FeatureMeasurement = {
+  ok, featureId, type, method: 'plane'|'roof-3d'|'roof-ortho'|'ground-3d'|'override'|'uncalibrated',
+  measuredFt,          // geometric length (polyline/perimeter; vertical: height) — null if !ok
+  wrapFt,              // tree/column spiral length, else null
+  lengthFt,            // display length used for planning = overrideFt ?? (wrapFt ?? measuredFt)
+  withWasteFt,         // lengthFt * (1 + wastePct/100) for linear types; = lengthFt for bush/tree/column
+  areaSqFt, widthFt, heightFt,      // area types and verticals
+  lights,              // bush rule-of-thumb light count, else null
+  pitchEstimate,       // for in-plane rakes: {rise, run:12, angleDeg}
+  overridden: bool,
+  confidence: { level: 'high'|'medium'|'low', score: 0..100, reasons: [string] }
+}
+// Spiral: turns = H_in / s ; wrapFt = turns · hypot(π·D_in, s) / 12   (D, s from params or config)
+// Bush: lights = lightsPerUnit · (heightFt/heightUnitFt) · (widthFt/widthUnitFt)
+scoreConfidence(factors) → {level, score, reasons}   // start 100, subtract; override → 100 'Tape-measured'
+    // plane mode: rect-known 0, rect-refs −5, refs-only −20, roof-3d −10, roof-ortho −20, ground-3d −10, uncalibrated → 0
+    // no cross-check reference −5; disagreement 3–6% −10, 6–10% −20, >10% −35
+    // only medium/low quality refs −10; courses ref spanning < 8 courses −10
+    // view angle 20–35° −5, 35–50° −15, > 50° −25; focal from 'default' on rect-refs/roof/ground −10
+    // pitch estimated −10, pitch default −25 (roof planes)
+    // off-plane type on a wall plane −15 (tree, bush, ridge)
+    // extrapolation: feature bbox reaches > 1.5× rect size outside the rect extent −10
+    // tap precision: 2 px / pixelLength > 3% −10
+    // level: ≥ highMin high, ≥ mediumMin medium, else low. Every deduction adds a plain-language reason.
+measureProject(project, config) → {
+  cameras, planes, pitch,
+  features: { [featureId]: FeatureMeasurement },
+  totals: { byType: { [type]: {count, lengthFt, withWasteFt, lights} }, totalFt, totalWithWasteFt },
+  warnings: [{level:'warn'|'info', code, message, planeId?, featureId?}]
+}
+imageToPlane(planeSol, p) → [u,v] | null ; planeToImage(planeSol, uv) → [x,y] | null
+planeGridLines(planeSol, stepFt, extent) → [[p1,p2], ...]   // image-space segments for an overlay grid
+formatLength(ft, format='ft-in') → "32′ 4″" or "32.3 ft"   // ft-in rounds to nearest inch
+```
+
+### 5.6 design
+
+```
+planRuns(project, measured, library) → LightRun[]
+LightRun = {
+  id: 'run_' + featureId, featureId, featureType, label, planeId, imageId,
+  productId, productName, category, tech, unit,
+  colorMode, colors: ['#hex', ...],          // resolved (feature.color ?? project settings)
+  lengthFt, withWasteFt,
+  quantity,                                  // strings / nets / sets / feet
+  bulbs, watts, amps,                        // amps = watts / voltage
+  clips: { type, count } | null,             // C9/C7/icicle (clipEligible) every clipSpacingIn: ceil(lengthFt*12/spacing)+1;
+                                             // mini lights on window/door → adhesive; railing → zipTie (same spacing)
+  lightStakes: number,                       // 'stakes' type: ceil(lengthFt*12/stakes.spacingIn)+1
+  method: 'linear'|'bush-rule'|'bush-net'|'spiral'|'path-sets'|'per-foot',
+  detail: string,                            // human explanation, e.g. "35.2 ft + 10% = 38.7 ft ÷ 25 ft per string → 2 strings"
+  warnings: [string],
+  // filled later by plan.js from power.runInfo:
+  start: null, end: null, reversed: false, chainId: null, feedIds: [], outletId: null, circuitId: null
+}
+// Quantity rules:
+//  string products: ceil(withWasteFt / stringLengthFt); bush with string product: ceil(lights / bulbsPerUnit)
+//  net products on bush: ceil(widthFt*heightFt*netCoverFactor / coverageSqFt); on linear: ceil(withWasteFt*... ) treat as 4ft-wide coverage
+//  set products (path): stakes = floor(lengthFt*12/stakeSpacingIn)+1 ; sets = ceil(stakes / stakesPerSet)
+//  foot products: ceil(withWasteFt)
+//  disabled or missing product → fall back to typeDefaults, then first enabled product suitable for the type
+suitableProducts(type, library) → product[]   // enabled products whose suitableFor includes type
+```
+
+### 5.7 power
+
+```
+planPower(project, measured, runs, library) → PowerPlan
+PowerPlan = {
+  chains: [{id, productId, runIds /*ordered*/, reversed /*{runId: bool}*/, strings, watts, feedIds}],
+  feeds:  [{id, chainId, runIds, strings, watts, amps, start: {point:[x,y], imageId, planeId, label},
+            outletId|null, circuitId|null,
+            cord: {lengthFt, awg, pieces: [lengths], voltageDropPct} | null,
+            cordPath: [[x,y],[x,y]],          // image-space polyline outlet → feed start (for overlay)
+            crossesWalkway: bool}],
+  outlets: [{id, label, circuitId, feedIds, watts, needsSplitter, splitters, timer: bool}],
+  circuits: [{id, name, breakerAmps, voltage, limitW, loadW, existingLoadW, utilizationPct, outletIds, overloaded}],
+  runInfo: { [runId]: {chainId, feedIds, outletId, circuitId, start:[x,y], end:[x,y], reversed} },
+  cords: [{awg, lengthFt, count}],            // purchasable pieces aggregated
+  counts: { timers, splitters, cordCovers, gfciAdapters },
+  totals: { watts, amps },
+  warnings: [{level:'danger'|'warn'|'info', code, message, featureId?, outletId?, circuitId?}]
+}
+```
+Rules:
+- Chains: runs with the same productId whose endpoints are within `config.power.chainGapFt` (approx feet,
+  computed with local plane scale, cross-plane allowed) connect end to end. Closed runs have start = end.
+- Feeds: split a chain whenever cumulative units would exceed product.maxEndToEnd (split between runs;
+  if one run alone exceeds it, split it into several feeds along its length).
+- Orientation & outlet choice minimize cord length; respect `feature.params.outletId` and `reverse`.
+  Greedy: feeds by watts desc → nearest outlet whose circuit stays ≤ limitW; else nearest + overload warning.
+- Cord length (ft) = routed distance outlet→feed start (same plane: |Δu|+|Δv|; otherwise image distance ×
+  mean local scale) × routingFactor + cordSlackFt. Gauge: smallest of 16/14/12 AWG whose ampacity ≥ I and
+  drop% = 2·L·(Ω/1000)·I / V · 100 ≤ maxVoltageDropPct. Pieces: smallest standard length ≥ L; L > 100 → 100s + remainder.
+- limitW = breakerAmps · voltage · continuousFactor (15 A → 1440 W; 20 A → 1920 W).
+- Timers: one per outlet with feeds. Splitters: outlet with > 1 feed → ceil(feeds / splitterOutlets).
+- Cord covers: one per feed whose cordPath crosses a walkway feature. GFCI adapters: one per used outlet with gfci=false.
+- Warnings (codes): incandescent, circuit-overload, circuit-high (>90% of limit), max-end-to-end (info: "needs N feeds"),
+  cord-walkway, no-gfci, interior-outlet, voltage-drop, long-cord (>100 ft), no-outlets, unassigned, and always
+  `disclaimer` (info): "This is a planning estimate, not an electrical inspection. ..."
+
+### 5.8 bom
+
+```
+buildBom(project, runs, power, library) → { lines: [BomLine], subtotal, byCategory: {lights, clips, cords, power, hardware} }
+BomLine = { sku, category, name, qty, unit, unitPrice, defaultPrice, overridden, lineTotal, notes }
+  // lights grouped by productId + color mode label; clips → packs of clipPackSize (ceil(count·(1+waste)/pack));
+  // light stakes → packs; cords by awg+length; timers; splitters; cord covers; gfci adapters.
+  // unitPrice = project.pricing.overrides[sku] ?? defaultPrice. Money rounded to cents.
+buildQuote(project, bom, measured, runs, library) → Quote
+Quote = { enabled, materialsCost, markupPct, materialsPrice, laborMethod, linearFt, laborHours, laborCost,
+          takedownFee, storageFee, taxPct, tax, total, lines: [{description, amount}], validDays, notes }
+  // laborHours = linearFt/ftPerHour + setupHours + trees·hoursPerTree + bushes·hoursPerBush (rounded 0.25)
+  // laborCost = perFt ? linearFt·ratePerFt + (trees+bushes hours)·ratePerHour : laborHours·ratePerHour
+  // tax applies to materialsPrice
+buildChecklist(project, runs, power, measured) → [{outletId|null, title, steps: [string]}]
+  // grouped by outlet then feed order: plug timer → run cord (length, gauge) → clips → hang strings from the
+  // start end → continue to next run in the chain → test. Final group: general safety/test steps.
+bomToCsv(bom) → string   // header: SKU,Item,Category,Qty,Unit,Unit Price,Line Total,Notes ; RFC 4180 escaping
+```
+
+### 5.9 schema
+
+```
+SCHEMA_ID = 'lightplan/project', SCHEMA_VERSION = 1, JSON_SCHEMA (object, same as schema/project.schema.json)
+uid(prefix, rng?) → string
+createProject(opts?) / createImage(opts) / createPlane(opts) / createRef(opts) / createFeature(type, opts)
+createOutlet(opts) / createCircuit(opts)        // fill every field with defaults (§4)
+normalizeProject(p) → p'    // fills missing fields, never throws on partial input
+migrateProject(p) → p'      // upgrades older versions; unknown future version → throw Error with plain message
+validateProject(p) → {ok, errors: [string]}
+exportProject(project, derived?, imagesByKey? /* {storageKey: dataUrl} */) → plain object ready for JSON
+importProject(obj) → {project, images: {storageKey: dataUrl}}   // migrate + normalize + validate (throws plain Error)
+```
+
+### 5.10 plan
+
+```
+computePlan(project) → Plan     // pure; uses catalog.getLibrary(project)
+Plan = { library, measured, runs /*with power annotations merged*/, power, bom, quote, checklist,
+         warnings /*measured + power + run warnings, deduped, danger first*/,
+         summary: { totalFt, totalWithWasteFt, byType, strings, clips, cords, timers, watts, amps,
+                    circuits, outletsUsed, cost, quoteTotal } }
+```
+
+### 5.11 sample
+
+```
+createSample({traced = true} = {}) → { width, height, primitives, project, groundTruth, camera }
+  // A 3D house rendered through a pinhole camera (yaw 15–25° off the facade normal, tilt ≥ 8° up,
+  // f from 26 mm-equivalent) so the perspective is visible and focal length is estimable.
+  // project: one image (source.kind 'sample', storageKey 'sample'), planes: 'Front wall' (rect = facade corners,
+  // size unknown + door-height ref + one horizontal ref), 'Garage wall' (set back, rect = double garage door
+  // 16×7 known + one cross-check ref), 'Main roof' (roof, from front eave, pitch null → estimated from the
+  // in-plane front gable), 'Front yard' (ground, from front wall base). traced:false → planes/refs only.
+  // features (traced:true): eaves, front-gable rakes (in wall plane), side rake + ridge on roof plane, gutter,
+  // 2 windows, door outline, 3 bushes, 1 tree, 2 walkway edges on ground plane; outlets: porch GFCI (15 A
+  // circuit), garage exterior GFCI (20 A circuit).
+  // groundTruth: { [featureId]: trueLengthFt } computed from the 3D model (eaves/rakes/windows/etc.).
+drawPrimitives(ctx, primitives)    // works with any CanvasRenderingContext2D (no DOM access)
+toSVG(primitives, width, height) → string
+// primitive: {t:'poly', pts, fill?, stroke?, lw?, closed?} | {t:'line', pts, stroke, lw, dash?} |
+//            {t:'circle', c:[x,y], r, fill?, stroke?, lw?} | {t:'rect', x,y,w,h, fill} |
+//            fill may be '#hex' / 'rgba()' or {linear:[x0,y0,x1,y1], stops:[[0,'#..'],[1,'#..']]}
+```
+
+---------------------------------------------------------------------------------------------
+
+## 6. UI contract
+
+### 6.1 Store (`ui.store`)
+
+```
+createStore({project, ui}) → store
+store.project()                // current project object (treat as immutable)
+store.ui()                     // ui state object
+store.plan()                   // memoized plan.computePlan(project); recomputed lazily after project changes
+store.commit(label, mutator, {gesture=false}={})   // mutator(draft) edits a deep clone; pushes undo (unless inside
+                                                   // a gesture); bumps updatedAt; schedules autosave; notifies
+store.beginGesture()           // snapshot for undo; commits with {gesture:true} won't push until endGesture
+store.endGesture(label)        // push one undo entry if the project changed during the gesture
+store.setUI(patch)             // shallow-merge into ui (nested objects replaced); notifies; not undoable
+store.undo() / store.redo() / store.canUndo() / store.canRedo()
+store.replaceProject(project, {resetHistory=true})
+store.subscribe(fn) → unsubscribe        // fn({projectChanged, uiChanged})
+store.getImage(imageId) → CanvasImageSource | null   // decoded pixels (HTMLImageElement / canvas)
+store.setImage(imageId, element, dataUrl)            // runtime cache + persist
+```
+UI state:
+```
+ui = {
+  step: 1..6,
+  mode: { name: 'select'|'pan'|'rect'|'line'|'trace'|'outlet', opts: {} },
+  draft: { points: [[x,y],...] },            // in-progress taps for rect/line/trace modes
+  selection: null | { kind: 'feature'|'plane'|'ref'|'outlet', id, planeId? },
+  activePlaneId: 'pl_front',
+  traceType: 'roofline',
+  view: { preview: true, night: true, twinkle: false, overlay: true, grid: true, labels: true, snap: true },
+  sheet: 'half',                              // mobile panel height: 'min'|'half'|'full'
+  toast: null | { message, kind: 'info'|'ok'|'warn'|'error', id },
+  dialog: null | { title, body, confirmLabel, danger, onConfirm }   // in-page confirm
+}
+```
+
+### 6.2 Actions (`ui.actions`) — the only place that mutates the project
+
+```
+createActions(store) → actions
+actions.goStep(n)
+actions.select(sel | null)
+actions.setMode(name, opts)                  // also clears draft
+actions.cancelDraft()
+actions.addDraftPoint([x,y])                  // viewport calls on tap in rect/line/trace modes; auto-completes when
+                                              // rect has 4, line has 2, vertical trace has 2, polygon closed by tapping
+                                              // the first point (viewport passes the first point exactly when closing)
+actions.removeLastDraftPoint()
+actions.completeDraft()                       // finalize per mode.opts.purpose:
+    // rect  purpose 'planeRect' {planeId, presetId, widthFt, heightFt} → plane.rect
+    //       purpose 'refRect'   {planeId, presetId, widthFt, heightFt} → plane.refs.push(rect ref)
+    // line  purpose 'refLine'   {planeId, presetId, lengthFt, courses} → plane.refs.push(line ref)
+    //       purpose 'roofEave'  {planeId (parent), pitch} → new roof plane; 'groundBase' {planeId} → new ground plane
+    // trace {type, planeId} → new feature (stays in trace mode, same type, empty draft)
+    // rect/line completion returns to 'select' mode and selects the created item
+actions.addOutlet([x,y])                      // creates outlet on activePlaneId; default circuit (creates one if none)
+actions.moveVertex(target, index, [x,y], {gesture})
+    // target: {kind:'feature', id} | {kind:'planeRect', planeId} | {kind:'planeLine', planeId} |
+    //         {kind:'ref', planeId, refId} | {kind:'outlet', id}   (index ignored for outlet)
+actions.insertVertex(featureId, afterIndex, [x,y]); actions.deleteVertex(featureId, index)
+actions.deleteSelection()
+actions.updateFeature(id, patch) / updatePlane(id, patch) / updateRef(planeId, refId, patch) /
+        updateOutlet(id, patch) / updateCircuit(id, patch) / addCircuit() / deleteCircuit(id) /
+        updateSettings(patch) / updateQuote(patch) / updateCustomer(patch) / setPriceOverride(sku, price|null) /
+        setLibraryProducts(products|null) / setLibraryConfig(config|null) / updateImageCamera(imageId, patch)
+actions.addPlane(kind='wall') ; actions.deletePlane(id)
+actions.loadImageFile(file, {sourceKind:'upload'|'camera'})   // via ui.imagesource; starts a fresh project keeping settings
+actions.loadSample({traced})
+actions.newProject() ; actions.startOver()    // startOver shows in-page dialog, then clears storage + loads blank
+actions.importProjectFile(file) ; actions.toast(message, kind)
+actions.confirm({title, body, confirmLabel, danger}) → Promise<bool>   // in-page dialog
+```
+
+### 6.3 Viewport (`ui.viewport`)
+
+```
+createViewport({host /*HTMLElement*/, store, actions}) → viewport
+viewport.fit() ; viewport.zoomBy(factor, screenPt?) ; viewport.redraw()
+viewport.screenToImage([sx,sy]) → [x,y] ; viewport.imageToScreen([x,y]) → [sx,sy]
+viewport.destroy()
+```
+- Creates its own `<canvas>` inside `host` (host has `position:relative`), sizes to host with
+  devicePixelRatio, `touch-action:none`, ResizeObserver. Subscribes to the store and redraws via rAF
+  (continuous rAF only while twinkle is on, preview visible, and the tab is visible).
+- Pointer events: one pointer drag on empty space pans (in every mode); two pointers pinch-zoom + pan;
+  wheel zooms at cursor; double-click/double-tap zooms in (except in trace mode where it finishes a polyline);
+  a tap is a press+release with < 8 px movement and < 500 ms.
+- Modes per §6.2: taps call `actions.addDraftPoint`. In `select` mode taps hit-test (handles first, then
+  outlets, features (distance to polyline/inside polygon), refs, plane rects) and call `actions.select`.
+  Dragging a handle of the selected item: `store.beginGesture()`, `actions.moveVertex(..., {gesture:true})`
+  per move, `store.endGesture('Move point')` on release. Handle hit radius ≥ 22 CSS px on touch.
+- Snapping when `ui.view.snap`: to any existing vertex/corner/ref endpoint/outlet within 14 CSS px; else
+  axis snap (segment within 4° of horizontal/vertical **in the active plane's rectified coordinates**,
+  using measure.imageToPlane/planeToImage; falls back to image axes when the plane is uncalibrated).
+  Draw a small snap indicator.
+- Loupe: while a finger places or drags a point (touch only), draw a 2.5× magnifier circle (~110 px)
+  offset above the finger with a crosshair at the true point.
+- Overlay (when `ui.view.overlay`), by step: (2) plane rect outlines + rectified grid (`measure.planeGridLines`,
+  1 ft minor/5 ft major when zoomed enough), roof/ground planes as translucent grids, refs as dashed lines with
+  "expected / measured" labels; (3) features colored by `FEATURE_TYPES[type].color`, length labels
+  (`measure.formatLength`) with confidence dot; (5) outlets (icon + label, circuit color), cord paths dashed from
+  `plan.power.feeds[].cordPath`, run start arrows; (4/6) features faint + labels. Selected item: bright
+  outline + vertex handles. Draft: points, rubber band to hover point, live length via `measure.measurePoints`.
+- Preview layer: when `ui.view.preview`, draw base image via `preview.drawBase` and bulbs via
+  `preview.drawBulbs` (bulbs from `preview.computeBulbs(project, plan, imageId)`).
+- Keyboard (desktop, when focus is not in an input): Esc cancel draft/deselect, Enter finish trace,
+  Backspace remove last draft point or delete selection, Ctrl/Cmd+Z undo, Ctrl/Cmd+Shift+Z or Ctrl+Y redo.
+  (The viewport may register these; app.js must not double-register.)
+
+### 6.4 Preview (`ui.preview`)
+
+```
+computeBulbs(project, plan, imageId) → Bulb[]   // memoized on (plan object, imageId)
+  Bulb = {x, y, r /*image px*/, color, phase, kind: 'bulb'|'mini'|'drop'|'stake'}
+  // linear runs: sample along the feature at equal TRUE spacing (product.bulbSpacingIn) in plane coords and map
+  //   back with Hplane2img (perspective-correct); cap to keep ≥ 2.5 image px between bulbs (draw a soft line
+  //   for denser mini lights); icicle: bulbs on the line + drops below (dropLengthsIn); bush: deterministic
+  //   seeded scatter inside the polygon (≤ 600 bulbs) or grid for nets; tree/column: zig-zag spiral across the
+  //   trunk width (diameterIn via local scale); path/stakes: bulb on a short stake line.
+  // colors from run.colors (multicolor cycles along the run).
+drawBase(ctx, image, {night}) → void            // ctx already transformed to image space
+drawBulbs(ctx, bulbs, {pxPerImagePx, night, timeMs|null, twinkle}) → void
+  // glow sprites cached per color/size, 'lighter' compositing, bloom halo at night; twinkle modulates phase.
+renderSnapshot({project, plan, image, maxWidth=1600, night=true, labels=true}) → HTMLCanvasElement
+  // photo + lights; labels = numbered tag at each run start ("1", "2"... in plan.runs order) for reports.
+```
+
+### 6.5 Export (`ui.export`)
+
+```
+initDownloads()                               // call once at startup: caches claude.use('downloads') promise
+saveFile(filename, data /*string|Blob*/, mime) → Promise<'saved'|'declined'|'failed'>
+exportPdfReport(store) → Promise              // preview snapshot + summary + measurements + BOM + power + checklist + disclaimer
+exportQuotePdf(store) → Promise               // customer-facing quote (installer mode)
+exportCsv(store) → Promise                    // bom.bomToCsv
+exportJson(store, {includeImages=true}) → Promise   // schema.exportProject(project, plan, images)
+importJsonFile(file) → Promise<{project, images}>   // schema.importProject; images as dataUrls
+PdfDoc class: new PdfDoc({size:'letter'}); addPage(); text(str, x, y, {size, bold, color, align, maxWidth});
+  line(x1,y1,x2,y2,{width,color}); rect(x,y,w,h,{fill,stroke}); image(jpegBytes|dataUrl, x, y, w, h);
+  textWidth(str, size, bold); toBytes() → Uint8Array   // Helvetica/Helvetica-Bold WinAnsi, JPEG via DCTDecode,
+  // correct xref byte offsets. Coordinates in points from the TOP-left (writer flips internally).
+```
+
+### 6.6 Panels (`ui.panels`) and app (`ui.app`)
+
+`ui.panels.mount({root, store, actions, viewport})` renders the step panel for `ui.step` and re-renders
+on store changes **without destroying focused inputs** (patch values or re-render only when structure
+changes; commit text inputs on `change`, not on every keystroke). `ui.app.start()` boots: persist.load →
+store → actions → viewport → panels → top bar/step bar/canvas controls wiring → `export.initDownloads()`.
+First run (nothing saved) opens the traced sample house at step 1 with the night preview on, and a banner
+explaining it is a sample.
+
+### 6.7 Visual design direction
+
+Subject: a lighting installer's planning tool, used outdoors on a phone and at night.
+- Fonts (Google Fonts with fallbacks): display `Big Shoulders Display` (brand + step titles only, used sparingly),
+  body `Atkinson Hyperlegible` (legibility in glare), numbers `JetBrains Mono` with `tabular-nums`.
+- Tokens: light theme = cool paper `--bg:#f4f6f3`, ink spruce `--ink:#15302b`, accent bulb amber `--accent:#d98a1c`,
+  muted `--muted:#5d6e69`, line `--line:#d5ddd8`, surface `--surface:#ffffff`; dark theme = night sky
+  `--bg:#0d1420`, `--ink:#e8eef4`, accent `--accent:#ffbf5a`, surface `#141d2b`. Semantic: ok `#2f8f5b`,
+  warn `#c98200`, danger `#c8354a` (adjust per theme for contrast). Confidence pills: High/Medium/Low.
+- Layout: one-screen app (`html,body{height:100%}`), top bar (brand, undo/redo, menu), numbered step bar
+  (the order is real), canvas fills the remaining area; desktop ≥ 900 px: panel on the right (380 px);
+  phone: bottom sheet with min/half/full sizes. Floating canvas controls: zoom in/out, fit, day/night, twinkle,
+  overlay. Tool hint bar at the top of the canvas while a tool is active ("Tap the 4 corners of the garage door").
+- Tap targets ≥ 44 px, visible focus states, no emoji icons (use inline SVG icons), side gutter
+  `max(16px, env(safe-area-inset-*))` on panels.
+- Theme tokens: bare `:root` light; `@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){...}}`
+  and `:root[data-theme="dark"]{...}` dark; `body{background:var(--bg)}`.

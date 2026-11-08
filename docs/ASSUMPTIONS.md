@@ -1,0 +1,14 @@
+# LightPlan Phase 1 — Assumptions
+
+These were fixed before building. Each one is a place where a real house or a real product can differ from the model, so each is editable or flagged in the UI.
+
+1. **Units and electrical context.** US feet and inches, 120 V North American residential circuits, USD. Product specs (watts, max strings end to end, prices) are typical retail values, not one brand. All of it lives in an editable JSON product library.
+2. **Camera model.** Pinhole camera, square pixels, principal point at the image center, no lens-distortion correction. Phone main cameras correct distortion in software; 0.5x ultra-wide photos will measure less accurately.
+3. **Focal length.** Taken from the photo's EXIF data when present. Otherwise estimated from the perspective rectangle when the photo is angled enough. Otherwise assumed to be a phone main camera (26 mm equivalent). Street View screenshots carry no EXIF, so pick the "Street View" camera preset for them.
+4. **Geometry.** Walls are vertical planes and eaves are horizontal. A gable rake seen face-on lies in the wall plane, so it measures at true length and is used to estimate roof pitch. Roof slopes and the ground (walkways, driveways) are derived planes, computed from the wall's recovered camera pose, so receding rakes, ridges and walkway edges get real 3D lengths. Trees and bushes stand in front of the wall, so their sizes are approximate and flagged.
+5. **Waste.** 10% is added to every linear run for waste, corners and drops to the outlet (editable). Bush and tree counts use rules of thumb instead of a waste factor.
+6. **Power.** Continuous load on a circuit is kept at or below 80% of the breaker rating (15 A = 1,440 W, 20 A = 1,920 W). Cords are sized by ampacity and a 3% voltage-drop limit. One timer or smart plug per outlet used.
+7. **Storage and files.** Autosave stays in this browser only (localStorage for the project, IndexedDB for the photo, every access wrapped in try/catch). Photos are downscaled to 2048 px on the long side; the measurement math does not depend on resolution. Inside the claude.ai artifact viewer, exports go through the viewer's download prompt; as a standalone file, they are normal browser downloads. The PDF is generated in the browser because the artifact frame blocks the print dialog.
+8. **Camera capture.** Uses the phone's own camera app through the file picker (`capture` attribute), because the artifact frame blocks live camera APIs.
+9. **Out of scope for Phase 1.** Accounts, live pricing, Street View or aerial imagery, automatic edge detection. See `PHASE2_ROADMAP.md`.
+10. **Not an inspection.** The power plan is a planning estimate, not an electrical inspection.
