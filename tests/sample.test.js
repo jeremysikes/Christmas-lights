@@ -484,6 +484,27 @@ test('measuring the sample matches the 3D ground truth', { skip: hasMeasure ? fa
   assert.deepEqual(r.warnings.filter((w) => w.level === 'warn').map((w) => w.message), []);
 });
 
+// ---------------------------------------------------------------- integration with schema and plan (when present)
+test('the sample is a valid, already-normalized project', { skip: LP.has('schema') ? false : 'src/core/schema.js is not written yet' }, () => {
+  const schema = LP.require('schema');
+  for (const traced of [true, false]) {
+    const p = sample.createSample({ traced }).project;
+    const v = schema.validateProject(p);
+    assert.deepEqual(v.errors, [], 'traced:' + traced);
+    assert.equal(v.ok, true);
+    assert.equal(JSON.stringify(schema.normalizeProject(p)), JSON.stringify(p), 'normalizeProject changes nothing (traced:' + traced + ')');
+  }
+});
+
+test('computePlan turns the sample into a full plan without danger warnings', { skip: LP.has('plan') ? false : 'src/core/plan.js is not written yet' }, (t) => {
+  const plan = LP.require('plan').computePlan(s.project);
+  assert.equal(plan.runs.length, s.project.features.length, 'one light run per traced feature');
+  assert.ok(plan.summary.totalFt > 200 && plan.summary.totalFt < 320, 'total ' + plan.summary.totalFt);
+  assert.deepEqual(plan.warnings.filter((w) => w.level === 'danger').map((w) => w.message), []);
+  t.diagnostic('plan: ' + plan.summary.totalFt.toFixed(1) + ' ft, ' + plan.summary.strings + ' strings, $' + plan.summary.cost +
+    ', warnings: ' + plan.warnings.map((w) => w.code).join(', '));
+});
+
 // ---------------------------------------------------------------- real canvas + SVG parser (optional)
 let playwright = null;
 try { playwright = require('playwright'); } catch (e) { playwright = null; }

@@ -85,7 +85,6 @@ LP.define('sample', ['geometry'], function (g) {
   };
   const MAIN_RIDGE_V = MODEL.main.wallH + (MODEL.main.depth / 2) * PITCH; // 17
   const MAIN_SLOPE_FT = MODEL.main.depth / 2 / SLOPE_COS; // eave → ridge along the roof, 15.65
-  const GARAGE_RIDGE_V = MODEL.garage.wallH + (MODEL.garage.depth / 2) * PITCH; // 15
   const GARAGE_SLOPE_FT = MODEL.garage.depth / 2 / SLOPE_COS; // 13.42
 
   // Surface maps: 2D coordinates on a surface → 3D wall-frame point.
@@ -115,7 +114,7 @@ LP.define('sample', ['geometry'], function (g) {
   const C = {
     skyTop: '#76abd8', skyMid: '#a9cbe6', skyLow: '#e1ecf0',
     cloud: '#ffffff', cloudShade: '#dfe8f1',
-    farTree: ['#7b9b89', '#86a594', '#93b0a2'], farTreeLit: '#9fbbaa', hedge: '#6f8f74',
+    farTree: ['#7b9b89', '#86a594', '#93b0a2'], hedge: '#6f8f74',
     lawnFar: '#a9c088', lawnMid: '#8fb267', lawnNear: '#6f9a49',
     asphaltFar: '#80848a', asphaltNear: '#5e6267',
     concrete: '#d9d5cc', concreteFar: '#cdc8be', concreteLight: '#e3e0d8', joint: 'rgba(120,112,100,0.45)',
@@ -123,7 +122,7 @@ LP.define('sample', ['geometry'], function (g) {
     siding: '#93a6b1', sidingSide: '#7f929e', sidingLine: 'rgba(48,66,80,0.33)', sidingLit: 'rgba(255,255,255,0.13)',
     trim: '#f7f6f1', trimShade: '#e2e2dc', trimEdge: 'rgba(90,95,100,0.45)',
     foundation: '#bdb8ae', foundationLine: 'rgba(80,76,70,0.35)',
-    roof: '#50555c', roofRidge: '#43474d', roofLine: 'rgba(22,24,28,0.42)', roofTab: 'rgba(22,24,28,0.30)',
+    roofRidge: '#43474d', roofLine: 'rgba(22,24,28,0.42)', roofTab: 'rgba(22,24,28,0.30)',
     shutter: '#3c4955', shutterLine: 'rgba(0,0,0,0.28)',
     door: '#8b3a2c', doorPanel: '#7b3125', doorLit: 'rgba(255,220,200,0.22)', doorShadow: 'rgba(40,10,5,0.35)',
     brass: '#c9a24a',
@@ -447,12 +446,14 @@ LP.define('sample', ['geometry'], function (g) {
       const u = -75 + lawnRand() * 190, w = -40 + lawnRand() * 56;
       d.groundEllipse(grp, u, w, 4 + lawnRand() * 7, 1.5 + lawnRand() * 3, { fill: lawnRand() < 0.5 ? 'rgba(55,95,35,0.10)' : 'rgba(215,235,160,0.10)' }, 18);
     }
-    // Street, gutter pan and curb.
-    // The street recedes sideways, so its shading is a plain top-to-bottom image gradient.
+    // Street, gutter pan and curb. The street recedes sideways, so its shading is a plain top-to-bottom
+    // image gradient rather than a gradient along the ground.
     const curbY = projectWorld(d.cam, onGround(40, M.streetW))[1];
     d.poly(grp, [onGround(-420, M.streetW), onGround(520, M.streetW), onGround(520, 140), onGround(-420, 140)], {
       fill: { linear: [0, r1(curbY - 40), 0, HEIGHT], stops: [[0, C.asphaltFar], [1, C.asphaltNear]] },
     });
+    // Worn wheel tracks: two faint darker bands along the lane.
+    for (const w of [33.5, 39.5]) d.quad(grp, onGround, -420, w, 520, w + 2.6, { fill: 'rgba(40,42,46,0.07)' });
     const rand = g.rng(97);
     for (let i = 0; i < 9; i++) {
       // Sealed cracks: thin dark wiggles across the asphalt.
@@ -882,14 +883,14 @@ LP.define('sample', ['geometry'], function (g) {
         corners: [P(cam, onFront(M.u0, M.wallH)), P(cam, onFront(M.u1, M.wallH)), P(cam, onFront(M.u1, 0)), P(cam, onFront(M.u0, 0))],
         widthFt: null, heightFt: null, presetId: 'unknown',
       }, [
-        { id: 'ref_door_height', kind: 'line', points: [P(cam, onFront(D.u0, 0)), P(cam, onFront(D.u0, D.h))], lengthFt: 80 / 12, presetId: 'door-height', courses: null, quality: 'high' },
-        { id: 'ref_window_width', kind: 'line', points: [P(cam, onFront(W0.u0, MODEL.windowHead)), P(cam, onFront(W0.u1, MODEL.windowHead))], lengthFt: 4, presetId: 'custom-line', courses: null, quality: 'high', label: 'Window width (tape)' },
+        { id: 'ref_door_height', kind: 'line', points: [P(cam, onFront(D.u0, 0)), P(cam, onFront(D.u0, D.h))], lengthFt: 80 / 12, courses: null, presetId: 'door-height', quality: 'high' },
+        { id: 'ref_window_width', kind: 'line', points: [P(cam, onFront(W0.u0, MODEL.windowHead)), P(cam, onFront(W0.u1, MODEL.windowHead))], lengthFt: 4, courses: null, presetId: 'custom-line', quality: 'high', label: 'Window width (tape)' },
       ]),
       wallPlane('pl_garage', 'Garage wall', '#b388ff', {
         corners: [P(cam, onGarage(GD.u0, GD.h)), P(cam, onGarage(GD.u1, GD.h)), P(cam, onGarage(GD.u1, 0)), P(cam, onGarage(GD.u0, 0))],
         widthFt: 16, heightFt: 7, presetId: 'garage-double',
       }, [
-        { id: 'ref_siding', kind: 'line', points: [P(cam, onGarage(SR.u, SR.v0)), P(cam, onGarage(SR.u, SR.v0 + SR.courses * COURSE_FT))], lengthFt: (SR.courses * 5) / 12, presetId: 'siding-5', courses: SR.courses, quality: 'medium' },
+        { id: 'ref_siding', kind: 'line', points: [P(cam, onGarage(SR.u, SR.v0)), P(cam, onGarage(SR.u, SR.v0 + SR.courses * COURSE_FT))], lengthFt: (SR.courses * 5) / 12, courses: SR.courses, presetId: 'siding-5', quality: 'medium' },
       ]),
       {
         id: 'pl_roof', imageId: 'img_sample', name: 'Main roof', kind: 'roof', color: '#ff8a3d', rect: null, refs: [],
