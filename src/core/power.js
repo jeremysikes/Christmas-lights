@@ -7,11 +7,13 @@
  *
  * Distances. Image points become feet through the plane solutions from measure.js:
  *  - two points on the same calibrated plane: distance in plane coordinates (feet);
- *  - otherwise: image distance × mean local scale (geometry.localScale) of the planes available at the
- *    two points; with no calibrated plane at either point the distance is unknown (no chaining, and the
- *    cord length is reported as unknown with a warning).
+ *  - two points on different planes that both have a recovered camera pose (walls with a perspective
+ *    rectangle, and the roof and ground planes built on them): the 3D distance in the camera frame;
+ *  - otherwise: the image vector scaled by each available plane's local Jacobian in that direction
+ *    (|J·d|, averaged), never by a direction-blind scale; with no calibrated plane at either point the
+ *    distance is unknown (no chaining, and the cord length is reported as unknown with a warning).
  * Cord routing: same plane → |Δu| + |Δv| (across at outlet height, then up or down the wall);
- * different planes → scaled straight distance × 1.3; then × routingFactor + cordSlackFt.
+ * different planes → straight distance (as above) × 1.3; then × routingFactor + cordSlackFt.
  *
  * Deviations from SPEC §5.7 (documented signature and shapes unchanged):
  *  - Extra warning codes: cord-unknown (no scale to size a cord), outlet-no-circuit (used outlet has no
@@ -56,6 +58,8 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
   const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const isPt = (p) => Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]);
   const isH = (H) => Array.isArray(H) && H.length === 9 && H.every(Number.isFinite);
+  const isM3 = isH;
+  const isV3 = (v) => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
   const pos = (v) => (Number.isFinite(v) && v > 0 ? v : null);
   const round = (v, d) => { const k = Math.pow(10, d); return Math.round(v * k) / k; };
   const cmpStr = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
@@ -185,6 +189,51 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       const ls = geometry.localScale(s.Himg2plane, p);
       return ls && Number.isFinite(ls.scale) && ls.scale > 0 ? ls.scale : null;
     }
+    /**
+     * Feet covered by the image vector d at image point p on plane s: |J·d| with J the local Jacobian of
+     * the image → plane map. Direction matters: on a ground plane seen at a grazing angle one pixel across
+     * is a fraction of a foot, one pixel up can be many feet. null without a scale.
+     */
+    function feetAlong(s, p, d) {
+      if (!s || !isPt(p)) return null;
+      const H = s.Himg2plane;
+      const w = H[6] * p[0] + H[7] * p[1] + H[8];
+      if (!Number.isFinite(w) || Math.abs(w) < 1e-12) return null;
+      const X = (H[0] * p[0] + H[1] * p[1] + H[2]) / w;
+      const Y = (H[3] * p[0] + H[4] * p[1] + H[5]) / w;
+      const a = (H[0] - X * H[6]) / w, b = (H[1] - X * H[7]) / w;
+      const c = (H[3] - Y * H[6]) / w, e = (H[4] - Y * H[7]) / w;
+      const L = Math.hypot(a * d[0] + b * d[1], c * d[0] + e * d[1]);
+      return Number.isFinite(L) ? L : null;
+    }
+    /**
+     * Camera-frame 3D point (feet) of image point p on plane s, or null when the plane has no recovered
+     * camera pose. Walls: plane coordinates (u, v) are the wall frame (u, v, 0). Roof and ground planes carry
+     * their 3D frame in the parent wall's coordinates. Every plane on one photo shares the camera frame, so
+     * points on different planes (a wall outlet and a tree on the lawn) can be compared directly.
+     */
+    function toCamera(s, p) {
+      if (!s || !s.pose || !isM3(s.pose.R) || !isV3(s.pose.t)) return null;
+      const ab = toPlane(s, p);
+      if (!ab) return null;
+      const f = s.frame;
+      let X;
+      if (f && isV3(f.origin) && isV3(f.e1) && isV3(f.e2)) {
+        X = geometry.v3add(f.origin, geometry.v3add(geometry.v3scale(f.e1, ab[0]), geometry.v3scale(f.e2, ab[1])));
+      } else if (s.kind === 'wall') {
+        X = [ab[0], ab[1], 0];
+      } else return null;
+      const Xc = geometry.v3add(geometry.m3mulv(s.pose.R, X), s.pose.t);
+      return Xc.every(Number.isFinite) && Xc[2] > 0 ? Xc : null; // behind the camera: above the horizon
+    }
+    /** Approximate feet between image points on two different planes: 3D when both have a pose, else |J·d|. */
+    function crossPlaneFeet(a, b) {
+      const A = toCamera(sol(a.planeId), a.point), B = toCamera(sol(b.planeId), b.point);
+      if (A && B) return geometry.v3len(geometry.v3sub(A, B));
+      const d = [b.point[0] - a.point[0], b.point[1] - a.point[1]];
+      const ls = [feetAlong(sol(a.planeId), a.point, d), feetAlong(sol(b.planeId), b.point, d)].filter((x) => x !== null);
+      return ls.length ? mean(ls) : null;
+    }
     function planeName(planeId) {
       const pl = planes.find((p) => p && p.id === planeId);
       return pl && pl.name ? pl.name : 'its plane';
@@ -197,8 +246,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         const ua = toPlane(s, a.point), ub = toPlane(s, b.point);
         if (ua && ub) return geometry.dist(ua, ub);
       }
-      const scales = [scaleAt(sol(a.planeId), a.point), scaleAt(sol(b.planeId), b.point)].filter((x) => x !== null);
-      return scales.length ? geometry.dist(a.point, b.point) * mean(scales) : null;
+      return crossPlaneFeet(a, b);
     }
     /**
      * Cord route from an outlet to a feed start: {routedFt|null, path:[[x,y]...], samePlane}.
@@ -220,14 +268,13 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
           return { routedFt: Math.abs(us[0] - uo[0]) + Math.abs(us[1] - uo[1]), path, samePlane: true };
         }
       }
-      // Different planes, or an outlet without a calibrated plane: scale the straight line.
-      const outletScale = scaleAt(sol(outlet.planeId), o);
-      const startScale = scaleAt(sol(start.planeId), p);
-      const scales = [outletScale, startScale].filter((x) => x !== null);
-      if (!scales.length) return { routedFt: null, path: straightPath, samePlane: false };
-      return { routedFt: geometry.dist(o, p) * mean(scales) * CROSS_PLANE_FACTOR, path: straightPath, samePlane: false };
+      // Different planes, or an outlet without a calibrated plane: the straight 3D distance (or the image
+      // vector scaled by each plane's Jacobian in that direction), plus 30% for routing around things.
+      const straight = crossPlaneFeet({ point: o, planeId: outlet.planeId }, { point: p, planeId: start.planeId });
+      if (straight === null) return { routedFt: null, path: straightPath, samePlane: false };
+      return { routedFt: straight * CROSS_PLANE_FACTOR, path: straightPath, samePlane: false };
     }
-    return { sol, toPlane, toImage, scaleAt, planeName, feetBetween, cordRoute };
+    return { sol, toPlane, toImage, scaleAt, feetAlong, toCamera, planeName, feetBetween, cordRoute };
   }
 
   // ---------------------------------------------------------------- run geometry

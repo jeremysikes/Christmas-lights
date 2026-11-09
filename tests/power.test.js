@@ -690,3 +690,29 @@ test('power stakes are daisy-chained from one timer socket: n stakes give 2n + 1
     assert.equal(byCode(pw, 'many-cords').length, n > 6 ? 1 : 0, `${n} cords`);
   }
 });
+
+test('sample house: cords and chain gaps between planes are measured in 3D, not with a direction-blind scale', { skip: !LP.has('sample') || !LP.has('measure') }, () => {
+  const sample = LP.require('sample');
+  const planMod = LP.require('plan');
+  const s = sample.createSample();
+  const out = planMod.computePlan(s.project);
+  const pw = out.power;
+  // Front-wall frame (u, v, w) of the 3D model: porch outlet (13, 1.5, 0).
+  const cord = (d3) => d3 * 1.3 * 1.15 + 4;
+  const feedFor = (runId) => pw.feeds.find((f) => f.runIds.includes(runId));
+  // Walkway right edge runs from (19, 0, 1) to (19, 0, 16): the near end is 6.3 ft from the outlet, the far end 17.2 ft.
+  const walk = feedFor('run_ft_walk_right');
+  assert.equal(walk.outletId, 'out_porch');
+  close(walk.cord.lengthFt, cord(Math.hypot(6, 1.5, 1)), 1.5);
+  assert.match(walk.start.label, /end of Walkway right edge/);
+  const walkRun = out.runs.find((r) => r.id === 'run_ft_walk_right');
+  const near = walkRun.start, far = walkRun.end;
+  const H = out.measured.planes.pl_yard.Himg2plane;
+  assert.ok(g.applyH(H, near)[1] < g.applyH(H, far)[1], 'the feed starts at the end nearest the house');
+  // Maple tree base (-10, 0, 12): 26.0 ft in a straight line.
+  const tree = feedFor('run_ft_tree');
+  close(tree.cord.lengthFt, cord(Math.hypot(23, 1.5, 12)), 4);
+  assert.deepEqual(tree.cord.pieces, [50]);
+  // Eave right end (34, 10, 0) and garage gutter start (34, 9, -4) are 4.1 ft apart: more than chainGapFt (3), not chained.
+  assert.notEqual(out.runs.find((r) => r.id === 'run_ft_garage_gutter').chainId, out.runs.find((r) => r.id === 'run_ft_eave').chainId);
+});
