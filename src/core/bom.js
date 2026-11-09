@@ -18,7 +18,8 @@
  *  - Checklist: runs that are planned but sit on no feed (power plan missing) get hang steps in the
  *    "No outlet chosen yet" group; runs with nothing to buy are listed in a "Not in the plan yet" group.
  *  - bomToCsv uses CRLF line ends (RFC 4180) and prefixes text cells that start with = + - @ with an
- *    apostrophe so spreadsheet apps do not run them as formulas.
+ *    apostrophe so spreadsheet apps do not run them as formulas. The subtotal goes in a summary row after
+ *    a blank row, with the amount in the Item column, so summing the Line Total column is not doubled.
  *  - Extra exports: round2, emptyBom.
  */
 LP.define('bom', ['catalog'], function (catalog) {
@@ -619,7 +620,11 @@ LP.define('bom', ['catalog'], function (catalog) {
   }
   const money = (v) => round2(v).toFixed(2);
 
-  /** CSV of the BOM with a header row and a final Subtotal row. CRLF line ends. */
+  /**
+   * CSV of the BOM: a header row and one row per line, then a blank row and a summary row
+   * ("Subtotal" in the SKU column, the amount in the Item column). The subtotal is kept out of the
+   * Line Total column so summing that column in a spreadsheet gives the real total. CRLF line ends.
+   */
   function bomToCsv(bom) {
     const b = isObj(bom) ? bom : {};
     const rows = [CSV_HEADER];
@@ -629,7 +634,9 @@ LP.define('bom', ['catalog'], function (catalog) {
         csvText(l.unit), money(l.unitPrice), money(l.lineTotal), csvText(l.notes)]);
     }
     const subtotal = Number.isFinite(b.subtotal) ? b.subtotal : arr(b.lines).reduce((s, l) => s + (isObj(l) ? fin(l.lineTotal, 0) : 0), 0);
-    rows.push(['', 'Subtotal', '', '', '', '', money(subtotal), '']);
+    const blank = CSV_HEADER.map(() => '');
+    rows.push(blank);
+    rows.push(['Subtotal', money(subtotal)].concat(blank.slice(2)));
     return rows.map((r) => r.map(csvField).join(',')).join('\r\n') + '\r\n';
   }
 

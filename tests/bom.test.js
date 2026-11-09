@@ -206,7 +206,7 @@ function parseCsv(text) {
   return rows;
 }
 
-test('bomToCsv writes RFC 4180 CSV with a header and a Subtotal row', () => {
+test('bomToCsv writes RFC 4180 CSV with a header, the lines, a blank row and a Subtotal row', () => {
   const b = {
     lines: [
       { sku: 'c9-led', category: 'lights', name: 'C9 LED string, 25 bulbs - Warm white', qty: 3, unit: 'string', unitPrice: 32.99, lineTotal: 98.97, notes: 'For "Front" eave\nand garage' },
@@ -223,17 +223,30 @@ test('bomToCsv writes RFC 4180 CSV with a header and a Subtotal row', () => {
     ['SKU', 'Item', 'Category', 'Qty', 'Unit', 'Unit Price', 'Line Total', 'Notes'],
     ['c9-led', 'C9 LED string, 25 bulbs - Warm white', 'lights', '3', 'string', '32.99', '98.97', 'For "Front" eave\nand garage'],
     ['x', "'=HYPERLINK(\"http://evil\")", 'power', '1', 'each', '5.00', '5.00', "'-2 spare"],
-    ['', 'Subtotal', '', '', '', '', '103.97', ''],
+    ['', '', '', '', '', '', '', ''],
+    ['Subtotal', '103.97', '', '', '', '', '', ''],
   ]);
-  assert.equal(bom.bomToCsv(null), 'SKU,Item,Category,Qty,Unit,Unit Price,Line Total,Notes\r\n,Subtotal,,,,,0.00,\r\n');
+  assert.equal(bom.bomToCsv(null), 'SKU,Item,Category,Qty,Unit,Unit Price,Line Total,Notes\r\n,,,,,,,\r\nSubtotal,0.00,,,,,,\r\n');
+});
+
+test('bomToCsv: summing the Line Total column gives the subtotal (the subtotal is not in that column)', () => {
+  const b = bom.buildBom(project(), [run('eave', { clips: { type: 'allInOne', count: 41 } }), run('garage', { quantity: 3 })], power(), lib);
+  const rows = parseCsv(bom.bomToCsv(b));
+  const col = rows[0].indexOf('Line Total');
+  const sum = rows.slice(1).reduce((s, r) => s + (Number.isFinite(Number(r[col])) && r[col] !== '' ? Number(r[col]) : 0), 0);
+  assert.equal(Math.round(sum * 100) / 100, b.subtotal);
+  const sub = rows.find((r) => r.includes('Subtotal'));
+  assert.ok(sub, 'a Subtotal row is still written');
+  assert.ok(sub.includes(b.subtotal.toFixed(2)));
 });
 
 test('bomToCsv matches buildBom output', () => {
   const b = bom.buildBom(project(), [run('eave', { clips: { type: 'allInOne', count: 41 } })], power(), lib);
   const rows = parseCsv(bom.bomToCsv(b));
-  assert.equal(rows.length, b.lines.length + 2);
+  assert.equal(rows.length, b.lines.length + 3);
   assert.deepEqual(rows[1].slice(0, 7), ['c9-led', 'C9 LED string, 25 bulbs - Warm white', 'lights', '2', 'string', '32.99', '65.98']);
-  assert.deepEqual(rows[rows.length - 1], ['', 'Subtotal', '', '', '', '', b.subtotal.toFixed(2), '']);
+  assert.deepEqual(rows[rows.length - 2], ['', '', '', '', '', '', '', '']);
+  assert.deepEqual(rows[rows.length - 1], ['Subtotal', b.subtotal.toFixed(2), '', '', '', '', '', '']);
 });
 
 // ================================================================ buildQuote
