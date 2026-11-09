@@ -284,7 +284,8 @@ LP.define('ui.preview', ['geometry', 'catalog', 'measure', 'camera'], function (
       const n = Math.max(0, Math.min(want, MAX_BUSH_BULBS, cap));
       if (!n) return;
       // Jittered grid: one random point per cell keeps the coverage even (no clumps or bald patches).
-      const cell = Math.sqrt(areaPx / n);
+      // (A thin sliver with a huge bounding box would mean millions of cells: coarsen the grid instead.)
+      const cell = Math.max(Math.sqrt(areaPx / n), Math.sqrt((b.w * b.h) / 200000));
       spacing = cell; dim = 2;
       const cand = [];
       for (let y = b.minY; y < b.maxY; y += cell) {
