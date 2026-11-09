@@ -36,8 +36,11 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
 
     // ---------------------------------------------------------------- length parsing
     /**
-     * Parse a length typed by a person into feet. Accepts 6' 8", 6'8, 6′ 8″, 6 ft 8 in, 6ft, 80in, 80",
-     * 6.67 (plain numbers are feet), 6-8 (feet-inches), 2.4 m, 240 cm. Returns null for anything else or ≤ 0.
+     * Parse a length typed by a person into feet. Accepts 6' 8", 6'8, 6'-8", 6' 8 1/2", 6′ 8″, 6 ft 8 in, 6ft,
+     * 80in, 80", 36 1/2", 36-1/2", 1/2", 8 1/2', 6.67 (plain numbers are feet), 6-8 (feet-inches), 2.4 m, 240 cm.
+     * A comma followed by exactly three digits is a thousands separator (1,200 = 1200); any other comma is a
+     * decimal point (6,5 = 6.5). Inches of 12 or more after a feet value are refused. Returns null for anything
+     * else or ≤ 0.
      */
     function parseLength(input) {
       if (typeof input === 'number') return Number.isFinite(input) && input > 0 ? input : null;
@@ -46,21 +49,34 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
         .replace(/[′’‘´`]/g, "'")
         .replace(/[″“”]/g, '"')
         .replace(/''/g, '"')
+        .replace(/(\d),(\d{3})(?![\d.,])/g, '$1$2')
         .replace(/(\d),(\d)/g, '$1.$2')
         .replace(/\s+/g, ' ');
       if (!s) return null;
-      const N = '(\\d+(?:\\.\\d+)?|\\.\\d+)';
+      // A number: decimal, a fraction (1/2) or a whole number with a fraction (8 1/2, 36-1/2).
+      const N = '(\\d+(?:\\.\\d+)?(?:[ -]\\d+/\\d+)?|\\d+/\\d+|\\.\\d+)';
+      const num = (t) => {
+        let m = t.match(/^(\d+)[ -](\d+)\/(\d+)$/);
+        if (m) return Number(m[3]) > 0 ? Number(m[1]) + Number(m[2]) / Number(m[3]) : NaN;
+        m = t.match(/^(\d+)\/(\d+)$/);
+        if (m) return Number(m[2]) > 0 ? Number(m[1]) / Number(m[2]) : NaN;
+        return parseFloat(t);
+      };
       const ok = (v) => (Number.isFinite(v) && v > 0 ? v : null);
-      let m = s.match(new RegExp('^' + N + " ?(?:'|ft\\.?|feet|foot) ?(?:" + N + ' ?(?:"|in\\.?|inch|inches)?)?$'));
-      if (m) return ok(parseFloat(m[1]) + (m[2] ? parseFloat(m[2]) / 12 : 0));
+      let m = s.match(new RegExp('^' + N + " ?(?:'|ft\\.?|feet|foot) ?(?:-? ?" + N + ' ?(?:"|in\\.?|inch|inches)?)?$'));
+      if (m) {
+        const inches = m[2] ? num(m[2]) : 0;
+        if (!(inches >= 0) || inches >= 12) return null;
+        return ok(num(m[1]) + inches / 12);
+      }
       m = s.match(new RegExp('^' + N + ' ?(?:"|in\\.?|inch|inches)$'));
-      if (m) return ok(parseFloat(m[1]) / 12);
+      if (m) return ok(num(m[1]) / 12);
       m = s.match(new RegExp('^' + N + ' ?(?:m|meters?|metres?)$'));
-      if (m) return ok(parseFloat(m[1]) / 0.3048);
+      if (m) return ok(num(m[1]) / 0.3048);
       m = s.match(new RegExp('^' + N + ' ?cm$'));
-      if (m) return ok(parseFloat(m[1]) / 30.48);
+      if (m) return ok(num(m[1]) / 30.48);
       m = s.match(new RegExp('^' + N + '$'));
-      if (m) return ok(parseFloat(m[1]));
+      if (m) return ok(num(m[1]));
       m = s.match(/^(\d+) ?[- ] ?(\d+(?:\.\d+)?)$/);
       if (m && parseFloat(m[2]) < 12) return ok(parseInt(m[1], 10) + parseFloat(m[2]) / 12);
       return null;
@@ -97,6 +113,68 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       let n = startAt;
       while (used.has(base + ' ' + n)) n += 1;
       return base + ' ' + n;
+    }
+
+    /** Surface kinds each feature type can lie on; the first is preferred when the active surface does not fit. */
+    const KINDS_FOR_TYPE = {
+      roofline: ['wall'], gutter: ['wall'], window: ['wall'], door: ['wall'], railing: ['wall'], column: ['wall'], bush: ['wall'],
+      rake: ['wall', 'roof'], tree: ['wall', 'ground'], ridge: ['roof', 'wall'], walkway: ['ground'], stakes: ['ground'],
+    };
+
+    /**
+     * The wall a point on the photo belongs to: the wall whose rectangle, references or traced items (their
+     * outline) contain it, else the nearest such wall, else the preferred/first wall. Roof and ground planes are
+     * never picked (outlets sit on walls). Returns a plane id or null.
+     */
+    function wallForPoint(project, imageId, point, preferId) {
+      const walls = arr(project && project.planes).filter((pl) => pl && pl.kind === 'wall' && (!imageId || pl.imageId === imageId));
+      if (!walls.length || !isPt(point)) return walls[0] ? walls[0].id : null;
+      let best = null;
+      for (const pl of walls) {
+        const pts = [];
+        if (pl.rect) arr(pl.rect.corners).forEach((q) => { if (isPt(q)) pts.push(q); });
+        for (const r of arr(pl.refs)) arr(r && r.points).forEach((q) => { if (isPt(q)) pts.push(q); });
+        for (const f of arr(project.features)) {
+          if (f && f.planeId === pl.id && (!imageId || f.imageId === imageId)) arr(f.points).forEach((q) => { if (isPt(q)) pts.push(q); });
+        }
+        if (pts.length < 3) continue;
+        const hull = convexHull(pts);
+        const d = hull.length >= 3 && pointInPoly(point, hull) ? 0 : distToPoly(point, hull);
+        const score = d - (pl.id === preferId ? 1e-6 : 0);
+        if (!best || score < best.score) best = { id: pl.id, score };
+      }
+      if (best) return best.id;
+      const pref = walls.find((pl) => pl.id === preferId);
+      return (pref || walls[0]).id;
+    }
+    function convexHull(points) {
+      const ps = points.map(pt).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      if (ps.length < 3) return ps;
+      const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+      const lower = [];
+      for (const q of ps) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop(); lower.push(q); }
+      const upper = [];
+      for (let i = ps.length - 1; i >= 0; i--) { const q = ps[i]; while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop(); upper.push(q); }
+      return lower.slice(0, -1).concat(upper.slice(0, -1));
+    }
+    function pointInPoly(q, poly) {
+      let inside = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const a = poly[i], b = poly[j];
+        if ((a[1] > q[1]) !== (b[1] > q[1]) && q[0] < ((b[0] - a[0]) * (q[1] - a[1])) / (b[1] - a[1]) + a[0]) inside = !inside;
+      }
+      return inside;
+    }
+    function distToPoly(q, poly) {
+      let d = Infinity;
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length];
+        const dx = b[0] - a[0], dy = b[1] - a[1];
+        const L = dx * dx + dy * dy;
+        const t = L > 0 ? Math.max(0, Math.min(1, ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / L)) : 0;
+        d = Math.min(d, Math.hypot(q[0] - (a[0] + t * dx), q[1] - (a[1] + t * dy)));
+      }
+      return d;
     }
 
     function createActions(store) {
@@ -211,6 +289,19 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           }
         }
       };
+      /** Undo for the top bar and Ctrl+Z: the last tapped draft point first, then the last committed change. */
+      actions.undo = () => {
+        const pts = arr(U().draft && U().draft.points);
+        if (pts.length && ['rect', 'line', 'trace'].includes(U().mode.name)) { actions.removeLastDraftPoint(); return 'Undo point'; }
+        return store.undo();
+      };
+      /** What actions.undo would undo, for the button's label. */
+      actions.undoLabel = () => {
+        const pts = arr(U().draft && U().draft.points);
+        if (pts.length && ['rect', 'line', 'trace'].includes(U().mode.name)) return 'Undo point';
+        return store.undoLabel();
+      };
+      actions.canUndo = () => !!actions.undoLabel() && (store.canUndo() || actions.undoLabel() === 'Undo point');
       actions.removeLastDraftPoint = () => {
         const pts = arr(U().draft && U().draft.points);
         if (pts.length) store.setUI({ draft: { points: pts.slice(0, -1) } });
@@ -264,6 +355,8 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
             });
             store.commit(kind === 'roof' ? 'Add roof slope' : 'Add ground plane', (d) => { d.planes.push(np); });
             store.setUI(Object.assign(SELECT(), { activePlaneId: np.id, selection: { kind: 'plane', id: np.id } }));
+            // Made on the way to tracing a walkway (startTrace): carry on with that trace on the new ground.
+            if (o.thenTrace && FEATURE_TYPES[o.thenTrace]) actions.startTrace(o.thenTrace);
             return true;
           }
           if (o.purpose === 'planeLine') {
@@ -360,32 +453,56 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           lengthFt: preset.id === 'custom-line' ? c.refLengthFt : preset.lengthIn / 12, courses: null,
         });
       };
-      /** Pick the best plane for a feature type: walkways and stakes on the ground, ridges on a roof. */
+      /**
+       * Pick the surface a feature type is traced on. The active surface is used when it suits the type; otherwise:
+       * walkways and stakes go on the ground, ridges on a roof, rakes on a wall or roof, trees on a wall or the
+       * ground, and everything else (eaves, gutters, windows, doors, railings, columns, bushes) on a wall: the
+       * parent wall of an active roof/ground plane, else the first wall. Returns {plane, needGround}.
+       */
       function planeForType(type) {
         const p = P();
         const img = activeImage();
         const planes = p.planes.filter((x) => !img || x.imageId === img.id);
         const active = byId(planes, U().activePlaneId);
-        const want = type === 'walkway' || type === 'stakes' ? 'ground' : type === 'ridge' ? 'roof' : null;
-        if (want && (!active || active.kind !== want)) {
-          const alt = planes.find((x) => x.kind === want);
-          if (alt) return alt;
+        const allowed = KINDS_FOR_TYPE[type] || ['wall'];
+        if (active && allowed.includes(active.kind)) return { plane: active };
+        if (allowed[0] === 'ground') {
+          const ground = planes.find((x) => x.kind === 'ground');
+          return ground ? { plane: ground } : { plane: null, needGround: true };
         }
-        return active || planes.find((x) => x.kind === 'wall') || planes[0] || null;
+        if (allowed[0] === 'roof') {
+          const roof = planes.find((x) => x.kind === 'roof');
+          if (roof) return { plane: roof };
+        }
+        const parent = active && active.derived ? byId(planes, active.derived.parentPlaneId) : null;
+        const wall = (parent && parent.kind === 'wall' ? parent : null) || planes.find((x) => x.kind === 'wall');
+        return { plane: wall || active || planes[0] || null };
       }
       actions.startTrace = (type) => {
         if (!FEATURE_TYPES[type]) return;
-        const plane = planeForType(type);
+        const pick = planeForType(type);
+        if (pick.needGround) {
+          // Measuring a walkway on a wall gives a wrong length, so make the ground first, then trace on it.
+          const p = P();
+          const img = activeImage();
+          const active = byId(p.planes, U().activePlaneId);
+          const wall = (active && active.kind === 'wall' ? active : null) || p.planes.find((x) => x.kind === 'wall' && (!img || x.imageId === img.id));
+          if (!wall) { actions.toast('Add a photo first.', 'warn'); return; }
+          store.setUI({ traceType: type });
+          actions.setMode('line', { purpose: 'groundBase', planeId: wall.id, pitch: null, thenTrace: type });
+          actions.toast(FEATURE_TYPES[type].short + 's lie on the ground, so LightPlan needs the ground first: tap two points along the bottom of \'' + wall.name + '\', where it meets the ground.', 'info');
+          return;
+        }
+        const plane = pick.plane;
         if (!plane) { actions.toast('Add a photo first.', 'warn'); return; }
-        const switched = plane.id !== U().activePlaneId;
         store.setUI({ traceType: type, activePlaneId: plane.id });
         actions.setMode('trace', { type, planeId: plane.id });
-        if (switched) actions.toast('Tracing on \'' + plane.name + '\'. Change the surface below if that is wrong.', 'info');
       };
       actions.startOutlet = () => {
         const plane = byId(P().planes, U().activePlaneId);
         if (!activeImage()) { actions.toast('Add a photo first.', 'warn'); return; }
-        actions.setMode('outlet', { planeId: plane ? plane.id : null });
+        // The outlet goes on the wall under the tap (see addOutlet); planeId here is only a fallback.
+        actions.setMode('outlet', { planeId: plane && plane.kind === 'wall' ? plane.id : null });
       };
       actions.redrawPlaneLine = (planeId) => {
         const plane = findPlane(P(), planeId);
@@ -400,7 +517,9 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
         if (!img) { actions.toast('Add a photo first.', 'warn'); return null; }
         const proj = P();
         const ui = U();
-        const planeId = (ui.mode.opts && findPlane(proj, ui.mode.opts.planeId) && ui.mode.opts.planeId) ||
+        // Outlets sit on walls: use the wall under the tap, never the active roof or ground plane.
+        const hint = (ui.mode.opts && ui.mode.opts.planeId) || ui.activePlaneId;
+        const planeId = wallForPoint(proj, img.id, p, hint) ||
           (findPlane(proj, ui.activePlaneId) ? ui.activePlaneId : null);
         let circuit = proj.circuits[0] || null;
         const newCircuit = circuit ? null : schema.createCircuit({ name: 'Circuit 1', breakerAmps: 15 });
@@ -419,6 +538,8 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
 
       actions.moveVertex = (target, index, p, mopts) => {
         if (!target || !isPt(p)) return;
+        // A drag move outside an open gesture would push one undo entry per pointer move: skip it.
+        if (mopts && mopts.gesture && typeof store.inGesture === 'function' && !store.inGesture()) return;
         const q = pt(p);
         store.commit('Move point', (d) => {
           switch (target.kind) {
@@ -569,7 +690,9 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           const o = byId(d.outlets, id);
           if (!o) return false;
           Object.assign(o, catalog.deepClone(patch));
-          if (patch.type === 'exteriorGfci' && patch.gfci === undefined) o.gfci = true;
+          // A new type resets GFCI to that type's default (schema: only exterior GFCI outlets are protected), so an
+          // indoor outlet feeding outdoor lights is never counted as GFCI unless the user ticks it.
+          if (patch.type !== undefined && patch.gfci === undefined) o.gfci = patch.type === 'exteriorGfci';
         });
       };
       actions.deleteOutlet = (id) => {
@@ -746,9 +869,19 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
         const p = P();
         if (!p) return false;
         const img = activeImage();
-        if (img && img.source && img.source.kind === 'sample') return false;
+        if (img && img.source && img.source.kind === 'sample') {
+          // A sample is work once it differs from a fresh copy (practice tracing, edits to the traced plan).
+          const key = (q) => JSON.stringify([q.planes, q.features, q.outlets, q.circuits]);
+          const mine = key(p);
+          try {
+            for (const traced of [true, false]) {
+              if (key(schema.normalizeProject(sample.createSample({ traced }).project)) === mine) return false;
+            }
+          } catch (e) { /* no fresh sample to compare with: fall through to the content check */ }
+        }
         return p.features.length > 0 || p.outlets.length > 0 || p.planes.some((pl) => pl.rect || pl.refs.length);
       }
+      actions.hasUserWork = hasUserWork;
       /** Ask before a new photo or project replaces the user's own work. Resolves true to go ahead. */
       actions.confirmReplace = () => {
         if (!hasUserWork()) return Promise.resolve(true);
@@ -807,26 +940,35 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
         });
       };
 
+      /**
+       * Load the sample house. Asks first when it would replace the user's own work (sopts.confirm:false skips the
+       * question), and the replace is undoable: undo history is kept and no stored photo is deleted.
+       */
       actions.loadSample = (sopts) => {
         const traced = !(sopts && sopts.traced === false);
-        return imagesource.SampleImageSource.acquire({ traced }).then((res) => {
-          const proj = schema.normalizeProject(res.sample.project);
-          const t = nowIso();
-          proj.createdAt = t;
-          proj.updatedAt = t;
-          store.replaceProject(proj, { resetHistory: true });
-          store.setImage(proj.images[0].id, res.canvas, null);
-          const wall = proj.planes.find((x) => x.kind === 'wall');
-          store.setUI(Object.assign(SELECT(), {
-            step: 1, selection: null, activePlaneId: wall ? wall.id : null, bannerDismissed: false,
-            view: Object.assign({}, U().view, { preview: true, night: true }),
-          }));
-          return true;
+        const ask = sopts && sopts.confirm === false ? Promise.resolve(true) : actions.confirmReplace();
+        return ask.then((go) => {
+          if (!go) return false;
+          return imagesource.SampleImageSource.acquire({ traced }).then((res) => loadSampleResult(res));
         }).catch((e) => {
           actions.toast(e && e.message ? e.message : 'The sample house could not be loaded.', 'error');
           return false;
         });
       };
+      function loadSampleResult(res) {
+        const proj = schema.normalizeProject(res.sample.project);
+        const t = nowIso();
+        proj.createdAt = t;
+        proj.updatedAt = t;
+        store.replaceProject(proj, { resetHistory: false, label: 'Load sample house' });
+        store.setImage(proj.images[0].id, res.canvas, null);
+        const wall = proj.planes.find((x) => x.kind === 'wall');
+        store.setUI(Object.assign(SELECT(), {
+          step: 1, selection: null, activePlaneId: wall ? wall.id : null, bannerDismissed: false,
+          view: Object.assign({}, U().view, { preview: true, night: true }),
+        }));
+        return true;
+      }
 
       actions.newProject = () => {
         store.replaceProject(freshProject(), { resetHistory: true });
@@ -891,5 +1033,5 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       return actions;
     }
 
-    return { createActions, parseLength, nextFeatureLabel, nextOutletLabel };
+    return { createActions, parseLength, nextFeatureLabel, nextOutletLabel, wallForPoint, KINDS_FOR_TYPE };
   });

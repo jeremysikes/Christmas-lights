@@ -212,7 +212,7 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
       // ---------------------------------------------------------------- top bar
       on(nameInput, 'change', () => actions.setProjectName(nameInput.value));
       on(nameInput, 'keydown', (e) => { if (e.key === 'Enter') nameInput.blur(); });
-      on(undoBtn, 'click', () => { store.undo(); });
+      on(undoBtn, 'click', () => { actions.undo(); });   // the last tapped point first while drawing
       on(redoBtn, 'click', () => { store.redo(); });
 
       function setMenu(open) {
@@ -473,9 +473,9 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
 
         // Top bar
         if (nameInput && document.activeElement !== nameInput && nameInput.value !== (project.name || '')) nameInput.value = project.name || '';
-        undoBtn.disabled = !store.canUndo();
+        undoBtn.disabled = !actions.canUndo();
         redoBtn.disabled = !store.canRedo();
-        const ul = store.undoLabel();
+        const ul = actions.undoLabel();
         const rl = store.redoLabel();
         undoBtn.title = ul ? 'Undo: ' + ul : 'Undo';
         undoBtn.setAttribute('aria-label', undoBtn.title);

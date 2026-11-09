@@ -861,6 +861,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         e.preventDefault();
         try {
           if (e.shiftKey) { if (!store.canRedo || store.canRedo()) store.redo(); }
+          else if (typeof actions.undo === 'function') actions.undo();   // a draft point first, then history
           else if (!store.canUndo || store.canUndo()) store.undo();
         } catch (err) { /* ignore */ }
         return;

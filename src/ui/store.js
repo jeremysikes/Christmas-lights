@@ -18,6 +18,7 @@
  *  - commit() returns true when the project changed. A mutator may return false to cancel the commit.
  *  - Listener payloads may also carry historyChanged / imageChanged flags.
  *  - setImage accepts a 4th argument {persist:false} to skip the storage write.
+ *  - undo()/redo() do nothing while a gesture is open (canUndo/canRedo report false then).
  *  - Extra methods: undoLabel(), redoLabel(), getImageData(imageId) → data URL | null, inGesture(),
  *    clearImages(). Extra exports: defaultUI(), sanitizeUI(project, ui).
  */
@@ -193,14 +194,17 @@ LP.define('ui.store', ['catalog', 'plan', 'ui.persist'], function (catalog, plan
         emit({ projectChanged: false, uiChanged: true });
       },
 
-      canUndo: () => undoStack.length > 0 || !!(gesture && project !== gesture.before),
-      canRedo: () => redoStack.length > 0,
+      canUndo: () => !gesture && undoStack.length > 0,
+      canRedo: () => !gesture && redoStack.length > 0,
       undoLabel: () => (undoStack.length ? undoStack[undoStack.length - 1].label : null),
       redoLabel: () => (redoStack.length ? redoStack[redoStack.length - 1].label : null),
 
-      /** Undo the last change. Returns its label, or null when there is nothing to undo. */
+      /**
+       * Undo the last change. Returns its label, or null when there is nothing to undo. Ignored while a gesture
+       * (a handle drag) is open: the drag would otherwise go on outside any gesture, one undo entry per move.
+       */
       undo() {
-        if (gesture) store.endGesture('Move point');
+        if (gesture) return null;
         const entry = undoStack.pop();
         if (!entry) return null;
         redoStack.push({ label: entry.label, project });
@@ -209,7 +213,7 @@ LP.define('ui.store', ['catalog', 'plan', 'ui.persist'], function (catalog, plan
         return entry.label;
       },
       redo() {
-        if (gesture) store.endGesture('Move point');
+        if (gesture) return null;
         const entry = redoStack.pop();
         if (!entry) return null;
         undoStack.push({ label: entry.label, project });
