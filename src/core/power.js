@@ -21,7 +21,10 @@
  *    outlet on their photo stay unassigned and get the 'unassigned' warning.
  *  - Feed objects carry an extra `cordUnknown: bool`; cord is null when there is no outlet or the length
  *    cannot be measured.
- *  - Extra exports: limitW, voltageDropPct, chooseCordGauge, cordPieces, sizeCord, DISCLAIMER.
+ *  - config.power.continuousFactor is bounded to (0, 1]: a value above 1 and up to 100 is read as a percent
+ *    (80 → 0.8), anything else falls back to 0.8; both cases, and any share above 0.8, add a
+ *    'continuous-factor' warning.
+ *  - Extra exports: limitW, continuousFactorOf, voltageDropPct, chooseCordGauge, cordPieces, sizeCord, DISCLAIMER.
  */
 LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
   'use strict';
@@ -29,6 +32,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
   const { FEATURE_TYPES } = catalog;
   const CROSS_PLANE_FACTOR = 1.3;     // straight-line cord distance between planes → routed distance
   const ASSUMED_BREAKER_AMPS = 15;    // outlets with no circuit are assumed to sit alone on a 15 A breaker
+  const DEFAULT_CONTINUOUS_FACTOR = 0.8; // the 80% rule for continuous loads (ASSUMPTIONS.md #6)
   const DISCLAIMER = 'This is a planning estimate, not an electrical inspection. Check your breaker sizes ' +
     'and what else shares each circuit, use outdoor-rated cords and GFCI protection, and ask a licensed ' +
     'electrician before adding outlets or circuits.';
@@ -67,11 +71,21 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
   }
 
   // ---------------------------------------------------------------- electrical rules (exported, pure)
+  /**
+   * The share of a breaker's rating that continuous load may use, always in (0, 1].
+   * A value above 1 and up to 100 is read as a percentage (80 → 0.8); anything else that is not in (0, 1]
+   * falls back to the 80% rule. Returns {factor, raw, reading: 'ok'|'percent'|'default'}.
+   */
+  function continuousFactorOf(raw) {
+    if (Number.isFinite(raw) && raw > 0 && raw <= 1) return { factor: raw, raw, reading: 'ok' };
+    if (Number.isFinite(raw) && raw > 1 && raw <= 100) return { factor: raw / 100, raw, reading: 'percent' };
+    return { factor: DEFAULT_CONTINUOUS_FACTOR, raw, reading: raw === undefined || raw === null ? 'ok' : 'default' };
+  }
   /** Safe continuous load for a breaker: amps × volts × continuous factor (15 A → 1,440 W; 20 A → 1,920 W). */
   function limitW(breakerAmps, voltage, continuousFactor) {
     const a = pos(breakerAmps) || ASSUMED_BREAKER_AMPS;
     const v = pos(voltage) || 120;
-    const f = pos(continuousFactor) || 0.8;
+    const f = continuousFactorOf(continuousFactor).factor;
     return round(a * v * f, 6);
   }
 
@@ -258,7 +272,8 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     const lib = library && Array.isArray(library.products) && isObj(library.config) ? library : catalog.getLibrary(project);
     const cfg = powerConfig(lib);
     const V = pos(cfg.voltage) || 120;
-    const factor = pos(cfg.continuousFactor) || 0.8;
+    const cf = continuousFactorOf(cfg.continuousFactor);
+    const factor = cf.factor;
     const gapFt = Number.isFinite(cfg.chainGapFt) && cfg.chainGapFt >= 0 ? cfg.chainGapFt : 3;
     const routingFactor = pos(cfg.routingFactor) || 1;
     const slackFt = Number.isFinite(cfg.cordSlackFt) && cfg.cordSlackFt >= 0 ? cfg.cordSlackFt : 0;
@@ -683,6 +698,15 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
           'Keep other appliances off that circuit while the lights are on.', ids);
       }
     }
+    // The safe-share setting: say how an odd value was read, and flag a share above the 80% rule.
+    if (cf.reading === 'percent') {
+      warn('warn', 'continuous-factor', `The safe share of the breaker is set to ${fmt1(cf.raw)}, so LightPlan reads it as ${fmt1(factor * 100)}%. Enter it as a fraction of 1 (for example 0.8).`);
+    } else if (cf.reading === 'default') {
+      warn('warn', 'continuous-factor', `The safe share of the breaker (${String(cf.raw)}) is not a fraction between 0 and 1, so LightPlan uses the 80% rule instead.`);
+    }
+    if (factor > DEFAULT_CONTINUOUS_FACTOR + 1e-9) {
+      warn('warn', 'continuous-factor', `The safe share of the breaker is ${fmt1(factor * 100)}%, above the usual 80% limit for loads that stay on for hours, like holiday lights. Circuit limits are higher than the usual rule allows.`);
+    }
     // Incandescent products, one warning per product.
     const byProduct = new Map();
     for (const it of items) {
@@ -755,5 +779,5 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     };
   }
 
-  return { planPower, limitW, voltageDropPct, chooseCordGauge, cordPieces, sizeCord, DISCLAIMER };
+  return { planPower, limitW, continuousFactorOf, voltageDropPct, chooseCordGauge, cordPieces, sizeCord, DISCLAIMER };
 });

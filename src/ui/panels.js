@@ -1078,7 +1078,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       // Circuits
       const circuitItems = project.circuits.map((c) => {
         const info = byId(pw.circuits, c.id);
-        const limit = info ? info.limitW : c.breakerAmps * (c.voltage || 120) * (ctx.config.power.continuousFactor || 0.8);
+        const sharePct = Math.round(power.continuousFactorOf(ctx.config.power.continuousFactor).factor * 100);
+        const limit = info ? info.limitW : power.limitW(c.breakerAmps, c.voltage || 120, ctx.config.power.continuousFactor);
         const load = info ? info.loadW : c.existingLoadW || 0;
         const pct = limit > 0 ? (load / limit) * 100 : 0;
         const cls = pct > 100 ? 'danger' : pct > 90 ? 'warn' : 'ok';
@@ -1093,7 +1094,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
             field('Already on it (W)', numInput({ act: 'circuit-existing', value: c.existingLoadW, min: 0, step: 10, decimals: 0, data: { id: c.id } }))),
           h('div', { class: 'meter ' + cls, role: 'meter', 'aria-valuemin': '0', 'aria-valuemax': String(Math.round(limit)), 'aria-valuenow': String(Math.round(load)), 'aria-label': c.name + ' load' },
             h('span', { class: 'meter-fill', style: 'width:' + Math.min(100, Math.max(0, pct)).toFixed(1) + '%' })),
-          h('p', { class: 'meter-text num' }, watts(load) + ' of ' + fmtNum(limit, 0) + ' W safe limit (' + Math.round((ctx.config.power.continuousFactor || 0.8) * 100) + '% of ' + c.breakerAmps + ' A) · ' + fmtNum(pct, 0) + '%'));
+          h('p', { class: 'meter-text num' }, watts(load) + ' of ' + fmtNum(limit, 0) + ' W safe limit (' + sharePct + '% of ' + c.breakerAmps + ' A) · ' + fmtNum(pct, 0) + '%'));
       });
       kids.push(section('Circuits', [
         h('ul', { class: 'circuit-list' }, circuitItems),
@@ -1589,9 +1590,14 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           editProducts((list) => { const p = byId(list, el.dataset.id); if (p) p[k] = k === 'maxEndToEnd' || k === 'bulbsPerUnit' ? Math.round(v) : v; });
         },
         'config-field': (el) => {
-          const v = num(el);
+          let v = num(el);
           if (el.value.trim() === '') { editConfig(el.dataset.path, null); return; }
           if (v == null || v < 0) { actions.toast('Enter a number of 0 or more.', 'warn'); schedule(); return; }
+          if (el.dataset.path === 'power.continuousFactor') {
+            // A share of the breaker rating: 0.8 means 80%. Typing 80 means 80%; anything else is refused.
+            if (v > 1 && v <= 100) { v = v / 100; actions.toast('Saved as ' + trimNum(v, 2) + ' (' + trimNum(v * 100, 1) + '% of the breaker rating).', 'info'); }
+            else if (!(v > 0 && v <= 1)) { actions.toast('Enter the safe share as a fraction from 0.01 to 1 (0.8 = 80%).', 'warn'); schedule(); return; }
+          }
           editConfig(el.dataset.path, v);
         },
         'outlet-field': (el) => { const v = el.value.trim(); if (v) actions.updateOutlet(el.dataset.id, { label: v.slice(0, 60) }); else schedule(); },

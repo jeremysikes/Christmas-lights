@@ -605,3 +605,26 @@ test('a chain of several runs that needs more than one feed reads "need" (plural
   assert.equal(info.length, 1);
   assert.match(info[0].message, /^Front eave and Garage eave need \d feeds: .* these connected runs use \d+\.$/);
 });
+
+// ------------------------------------------------------------------ review fixes (planning)
+test('safe share of the breaker is bounded: 80 means 80%, above 1 is never a free pass, above 0.8 is flagged', () => {
+  assert.equal(power.limitW(15, 120, 80), 1440, '80 is read as 80%');
+  assert.equal(power.limitW(15, 120, 1), 1800);
+  assert.equal(power.limitW(15, 120, 500), 1440, 'nonsense falls back to the 80% rule');
+  assert.equal(power.limitW(15, 120, -2), 1440);
+  // 300 ft of incandescent C9 on the porch circuit draws far more than any sane limit.
+  const eave = feature('ft_eave', 'roofline', [F(10, 20), F(310, 20)], { label: 'Front eave', productId: 'c9-incan' });
+  const run = (cf) => plan(project({ features: [eave], outlets: [outlet('out_a', F(5, 1.5))],
+    library: { products: null, config: { power: { continuousFactor: cf } } } }), catalog.getLibrary({ library: { config: { power: { continuousFactor: cf } } } })).power;
+  for (const cf of [80, 500]) {
+    const pw = run(cf);
+    assert.equal(pw.circuits[0].limitW, 1440, `continuousFactor ${cf}`);
+    assert.equal(pw.circuits[0].overloaded, true, `continuousFactor ${cf}`);
+    assert.ok(codes(pw).includes('circuit-overload'), `continuousFactor ${cf} still warns about the overload`);
+    assert.ok(codes(pw).includes('continuous-factor'), `continuousFactor ${cf} explains how the setting was read`);
+  }
+  const high = run(0.95);
+  assert.equal(high.circuits[0].limitW, 1710);
+  assert.ok(codes(high).includes('continuous-factor'), 'a share above the 80% rule is flagged');
+  assert.ok(!codes(run(0.8)).includes('continuous-factor'));
+});
