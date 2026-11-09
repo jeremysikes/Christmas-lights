@@ -796,7 +796,12 @@ renderSnapshot({project, plan, image, maxWidth=1600, night=true, labels=true}) �
 
 ```
 initDownloads()                               // call once at startup: caches claude.use('downloads') promise
-saveFile(filename, data /*string|Blob*/, mime) → Promise<'saved'|'declined'|'failed'>
+saveFile(filename, data /*string|Blob*/, mime) → Promise<'saved'|'declined'|'failed'|'busy'|'unavailable'|'too_large'>
+                                              // busy: a save prompt is already open (one at a time) or rate_limited;
+                                              // unavailable: inside the viewer (window.claude present) with no downloads
+                                              //   capability (use() null / timed out) or code unavailable|not_granted|capability_*
+                                              //   — never the blob fallback there; too_large: the viewer refused the size.
+                                              // The <a download> fallback runs only when window.claude is absent.
 exportPdfReport(store) → Promise              // preview snapshot + summary + measurements + BOM + power + checklist + disclaimer
 exportQuotePdf(store) → Promise               // customer-facing quote (installer mode)
 exportCsv(store) → Promise                    // bom.bomToCsv

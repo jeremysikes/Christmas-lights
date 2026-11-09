@@ -13,13 +13,18 @@
  *  - The store-level exports (exportPdfReport, exportQuotePdf, exportCsv, exportJson) do the browser work: render
  *    the night preview to a JPEG, collect photos as data URLs, and hand the file to saveFile.
  *  - saveFile uses window.claude.use('downloads') (cached once by initDownloads, because use() can take up to
- *    10 s to answer) and falls back to a blob-URL <a download> click when the page runs as a standalone file.
+ *    10 s to answer) and falls back to a blob-URL <a download> click only when the page runs as a standalone file
+ *    (no window.claude). Inside the viewer, where blob downloads are blocked, a missing or silent capability
+ *    resolves 'unavailable' rather than a false 'saved'.
  *
- * Deviations from SPEC §6.5 (documented signatures unchanged; all additive):
- *  - Export functions resolve saveFile's result ('saved' | 'declined' | 'failed') and reject with a plain-language
- *    Error when there is nothing to export (no project, or installer mode off for the quote).
- *  - initDownloads(opts) also accepts {timeoutMs} (default 12000): if use() never answers, saving falls back to the
- *    <a download> path instead of hanging. It returns the cached promise.
+ * Deviations from SPEC §6.5 (documented signatures unchanged; the result set is widened):
+ *  - saveFile (and so the export functions) resolve 'saved' | 'declined' | 'failed' | 'busy' (a save prompt is
+ *    already open, or the viewer said rate_limited) | 'unavailable' (no downloads capability in the viewer, or
+ *    unavailable / not_granted / capability_*) | 'too_large'. Only one save runs at a time. The export functions
+ *    reject with a plain-language Error when there is nothing to export (no project, or installer mode off for
+ *    the quote).
+ *  - initDownloads(opts) also accepts {timeoutMs} (default 12000): if use() never answers, saving stops waiting
+ *    (standalone: the <a download> path; viewer: 'unavailable'). It returns the cached promise.
  *  - PdfDoc: the constructor also takes {title, author, subject, creationDate}; text() also takes lineHeight
  *    (multiple of size, default 1.2) and maxLines, treats y as the TOP of the first line box, and returns
  *    {lines, width, height}. With maxWidth, align is relative to the box [x, x + maxWidth]; without it, x is the
@@ -1071,9 +1076,15 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     const s = parts.summary;
     const factor = isObj(parts.config.power) && isNum(parts.config.power.continuousFactor) ? parts.config.power.continuousFactor : 0.8;
     heading(L, 'Power plan', 70);
+    // State the continuous-load rule as kept only when the plan keeps it; otherwise name the circuits over it.
+    const over = arr(pw.circuits).filter((c) => c && (c.overloaded || (isNum(c.utilizationPct) && c.utilizationPct > 100)));
+    const rule = over.length
+      ? (over.length === 1 ? str(over[0].name) || 'One circuit' : over.map((c) => str(c.name) || 'Circuit').join(', ')) + (over.length === 1 ? ' is' : ' are') +
+        ' over its safe limit (' + Math.round(factor * 100) + '% of the breaker rating for continuous use). Move some lights to another circuit before installing.'
+      : 'Each circuit is kept at or below ' + Math.round(factor * 100) + '% of its breaker rating for continuous use.';
     paragraph(L, 'Total load ' + watts(s.watts) + (isNum(s.amps) ? ' (' + formatNumber(s.amps, 1) + ' A)' : '') + ' from ' +
       plural(isNum(s.outletsUsed) ? s.outletsUsed : 0, 'outlet', 'outlets') + ' on ' + plural(isNum(s.circuits) ? s.circuits : 0, 'circuit', 'circuits') +
-      '. Each circuit is kept at or below ' + Math.round(factor * 100) + '% of its breaker rating for continuous use.', { after: 8 });
+      '. ' + rule, { after: 8 });
 
     L.ensure(60);
     L.doc.text('Circuits', L.left, L.y, { size: 10, bold: true, color: C.ink });
@@ -1148,7 +1159,8 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
       let cordSub = null;
       if (isObj(f.cord) && arr(f.cord.pieces).length) {
         cord = arr(f.cord.pieces).map((p) => formatNumber(p, 0) + ' ft').join(' + ') + ', ' + f.cord.awg + ' AWG';
-        cordSub = 'Needs ' + formatNumber(f.cord.lengthFt, 0) + ' ft' + (isNum(f.cord.voltageDropPct) ? ', ' + formatNumber(f.cord.voltageDropPct, 1) + '% voltage drop' : '');
+        // Rounded up, like the install checklist ("about N ft needed"), so one report gives one length per cord.
+        cordSub = 'Needs ' + formatNumber(Math.ceil(f.cord.lengthFt), 0) + ' ft' + (isNum(f.cord.voltageDropPct) ? ', ' + formatNumber(f.cord.voltageDropPct, 1) + '% voltage drop' : '');
       }
       const notes = [];
       if (f.crossesWalkway) notes.push('Cord cover');
@@ -1341,7 +1353,11 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
       margin: 54, top: 46, bottom: 52,
       onPage: (index, lay) => {
         if (index === 0) return lay.top;
-        doc.text((company ? company + '  ·  ' : '') + 'Quote ' + number, lay.left, 26, { size: 8.5, color: C.muted });
+        // Keep 'Quote <number>' whole on the right; the company name takes the rest of the line, ellipsized.
+        const qn = 'Quote ' + number;
+        const qw = doc.textWidth(qn, 8.5, false);
+        doc.text(qn, lay.right, 26, { size: 8.5, color: C.muted, align: 'right' });
+        if (company) doc.text(company, lay.left, 26, { size: 8.5, color: C.muted, maxWidth: Math.max(20, lay.right - lay.left - qw - 16), maxLines: 1 });
         doc.line(lay.left, 40, lay.right, 40, { width: 0.5, color: C.line });
         return 54;
       },
@@ -1556,6 +1572,20 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
    * Save a file. Resolves 'saved', 'declined' (the viewer said no; nothing to report) or 'failed'. Never rejects.
    * data: string | Blob | Uint8Array | ArrayBuffer.
    */
+  let saving = false;
+  /** True inside the claude.ai viewer (window.claude exists), where blob <a download> links are blocked. */
+  function inViewer() {
+    try { return typeof window !== 'undefined' && !!window && !!window.claude; } catch (e) { return false; }
+  }
+  /** Map a downloads.save refusal code to a saveFile result. */
+  function refusal(err) {
+    const code = err && typeof err === 'object' ? err.code : err;
+    if (code === 'declined') return 'declined';
+    if (code === 'rate_limited') return 'busy';
+    if (code === 'too_large') return 'too_large';
+    if (code === 'unavailable' || code === 'not_granted' || (typeof code === 'string' && code.indexOf('capability') === 0)) return 'unavailable';
+    return 'failed';
+  }
   function saveFile(filename, data, mime) {
     let blob;
     try {
@@ -1563,18 +1593,22 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     } catch (e) {
       return Promise.resolve('failed');
     }
+    // One save prompt at a time: a second tap while the viewer's prompt is open would be refused (rate_limited).
+    if (saving) return Promise.resolve('busy');
+    saving = true;
     return initDownloads().then((dl) => {
-      if (!dl) return anchorDownload(filename, blob);
+      // Inside the viewer a blob download is blocked, so claiming 'saved' would be false: report unavailable.
+      if (!dl) return inViewer() ? 'unavailable' : anchorDownload(filename, blob);
       let call;
       try {
         call = dl.save({ filename, data: blob });
       } catch (e) {
-        return 'failed';
+        return refusal(e);
       }
       return Promise.resolve(call).then(
         (res) => (res === 'declined' || (isObj(res) && res.status === 'declined') ? 'declined' : 'saved'),
-        (err) => (err && (err.code === 'declined' || err === 'declined') ? 'declined' : 'failed'));
-    }).catch(() => 'failed');
+        (err) => refusal(err));
+    }).catch(() => 'failed').then((r) => { saving = false; return r; });
   }
 
   // ================================================================ browser helpers (canvas → JPEG, images)

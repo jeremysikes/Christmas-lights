@@ -563,24 +563,25 @@ test('saveFile hands a Blob to downloads.save and caches use()', async (t) => {
   assert.equal(await calls.saves[1].data.text(), '%PDF');
 });
 
-test('saveFile resolves declined quietly and failed for other refusals', async (t) => {
+test('saveFile resolves declined quietly, busy for rate_limited and failed for other refusals', async (t) => {
   let code = 'declined';
   const { claude } = fakeClaude(() => Promise.reject({ code, message: 'no' }));
   withGlobals(t, { window: { claude } });
   assert.equal(await exp.saveFile('a.pdf', 'x', 'application/pdf'), 'declined');
   code = 'rate_limited';
-  assert.equal(await exp.saveFile('a.pdf', 'x', 'application/pdf'), 'failed');
+  assert.equal(await exp.saveFile('a.pdf', 'x', 'application/pdf'), 'busy');
   code = 'rejected_extension';
   assert.equal(await exp.saveFile('a.exe', 'x', 'application/pdf'), 'failed');
 });
 
-test('saveFile falls back to an <a download> click when use() resolves null', async (t) => {
-  const { claude } = fakeClaude(() => Promise.resolve({ status: 'saved' }), { nullUse: true });
+// Inside the viewer (window.claude present) a null use() is 'unavailable' (tests/ui-export-review.test.js): the
+// <a download> fallback is for the standalone file, where there is no window.claude.
+test('saveFile falls back to an <a download> click when there is no window.claude', async (t) => {
   const fd = fakeDocument();
   const revoked = [];
   const created = [];
   const FakeURL = { createObjectURL: (b) => { created.push(b); return 'blob:fake/1'; }, revokeObjectURL: (u) => revoked.push(u) };
-  withGlobals(t, { window: { claude }, document: fd.document, URL: FakeURL });
+  withGlobals(t, { window: {}, document: fd.document, URL: FakeURL });
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const result = await exp.saveFile('lightplan-x-bom.csv', 'a,b', 'text/csv');
   assert.equal(result, 'saved');
@@ -596,13 +597,13 @@ test('saveFile without window.claude uses the fallback, and reports failed with 
   assert.equal(await exp.saveFile('a.json', '{}', 'application/json'), 'failed');
 });
 
-test('initDownloads gives up on a use() that never answers', async (t) => {
+test('initDownloads gives up on a use() that never answers (inside the viewer saving is then unavailable)', async (t) => {
   const { claude } = fakeClaude(() => Promise.resolve({ status: 'saved' }), { never: true });
   const fd = fakeDocument();
   withGlobals(t, { window: { claude }, document: fd.document, URL: { createObjectURL: () => 'blob:x', revokeObjectURL() {} } });
   assert.equal(await exp.initDownloads({ timeoutMs: 15 }), null);
-  assert.equal(await exp.saveFile('a.csv', 'x', 'text/csv'), 'saved');
-  assert.equal(fd.clicks.length, 1);
+  assert.equal(await exp.saveFile('a.csv', 'x', 'text/csv'), 'unavailable');
+  assert.equal(fd.clicks.length, 0, 'no blocked blob link is clicked inside the viewer');
 });
 
 // ---------------------------------------------------------------- store-level exports
