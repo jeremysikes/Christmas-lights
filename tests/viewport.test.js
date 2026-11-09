@@ -70,3 +70,45 @@ test('layersFor shows the right overlay per step and tool', () => {
   assert.ok(vp.layersFor(4, 'outlet').outlets, 'placing outlets always shows outlets');
   assert.ok(vp.layersFor(3, 'rect').planes && vp.layersFor(3, 'line').refs);
 });
+
+// ---------------------------------------------------------------- review findings
+test('mobile-ux:UX-04 quick taps while placing corners are never double taps; trace finishes only on the same spot', () => {
+  const last = { t: 1000, x: 100, y: 100, mode: 'rect' };
+  assert.equal(vp.isDoubleTap(last, { t: 1200, x: 125, y: 110 }, 'rect'), false, 'rect corners 27 px apart, 200 ms');
+  assert.equal(vp.isDoubleTap(Object.assign({}, last, { mode: 'line' }), { t: 1100, x: 101, y: 100 }, 'line'), false);
+  assert.equal(vp.isDoubleTap(Object.assign({}, last, { mode: 'outlet' }), { t: 1100, x: 101, y: 100 }, 'outlet'), false);
+  const tr = Object.assign({}, last, { mode: 'trace' });
+  assert.equal(vp.isDoubleTap(tr, { t: 1200, x: 130, y: 100 }, 'trace'), false, 'a nearby window corner is a new point');
+  assert.equal(vp.isDoubleTap(tr, { t: 1200, x: 104, y: 103 }, 'trace'), true, 'a second tap on the same spot finishes');
+  const sel = Object.assign({}, last, { mode: 'select' });
+  assert.equal(vp.isDoubleTap(sel, { t: 1200, x: 120, y: 100 }, 'select'), true, 'select mode keeps double-tap zoom');
+  assert.equal(vp.isDoubleTap(sel, { t: 1400, x: 100, y: 100 }, 'select'), false);
+});
+
+test('completeness:F2 the vertex snap radius is capped in image px when zoomed out', () => {
+  // Phone fit zoom on a 2016 px wide photo: 14 CSS px would be ~78 image px.
+  const r = vp.snapRadiusImg(0.18, 2016, 1512);
+  assert.ok(r <= 2016 * 0.01 + 1e-9, 'capped at 1% of the long side (' + r.toFixed(1) + ')');
+  // Zoomed in, the on-screen radius applies.
+  assert.ok(Math.abs(vp.snapRadiusImg(2, 2016, 1512) - 7) < 1e-9);
+});
+
+test('completeness:F2 snap candidates know their surface (eave/base lines lie on the wall too)', () => {
+  const c = vp.snapCandidates(project, IMG);
+  const corner = c.find((x) => x.key === 'planeRect:pl_front');
+  assert.deepEqual(corner.planes, ['pl_front']);
+  const base = c.find((x) => x.key === 'planeLine:pl_yard');
+  assert.deepEqual(base.planes.slice().sort(), ['pl_front', 'pl_yard']);
+  const walk = c.find((x) => x.key === 'feature:ft_walk_left');
+  assert.deepEqual(walk.planes, ['pl_yard']);
+});
+
+test('completeness:F8 / mobile-ux:UX-08 a selected line shows + handles between its points (not trees)', () => {
+  const eave = vp.midpointHandles(project, { kind: 'feature', id: 'ft_eave' });
+  assert.equal(eave.length, 1);
+  const f = project.features.find((x) => x.id === 'ft_eave');
+  assert.deepEqual(eave[0].p, [(f.points[0][0] + f.points[1][0]) / 2, (f.points[0][1] + f.points[1][1]) / 2]);
+  const win = project.features.find((x) => x.id === 'ft_window_left');
+  assert.equal(vp.midpointHandles(project, { kind: 'feature', id: 'ft_window_left' }).length, win.points.length, 'closed outlines get one per side');
+  assert.equal(vp.midpointHandles(project, { kind: 'feature', id: 'ft_tree' }).length, 0);
+});

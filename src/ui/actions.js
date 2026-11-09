@@ -15,12 +15,17 @@
  * Deviations from SPEC §6.2 (additive; documented actions keep their signatures):
  *  - Extra line purpose 'planeLine' (redraw a roof eave / ground base line).
  *  - completeDraft({close}) accepts close:true (used when the first point is tapped again).
- *  - Extra actions: setActivePlane, setView, setCalib, setSheet, startPlaneRect, startReference, startTrace,
+ *  - Extra actions: undo, undoLabel, canUndo (a draft point first), hasUserWork, setActiveVertex, setActivePlane, setView, setCalib, setSheet, startPlaneRect, startReference, startTrace,
  *    startOutlet, redrawPlaneLine, changeFeatureType, resetAutoPlan, setProjectName, dismissBanner,
  *    dismissToast, confirmReplace, hydrateImages, removePlaneRect.
  *  - deletePlane(id) returns a Promise<bool> (it asks first when traced items would be deleted with it).
  *  - addCircuit() returns the new circuit id; addPlane('wall') returns the new plane id.
- *  - Module exports also parseLength(text) → feet | null, nextFeatureLabel, nextOutletLabel.
+ *  - loadSample({traced, confirm}) asks before replacing the user's work (confirm:false skips) and is undoable.
+ *  - startTrace picks the surface by type (KINDS_FOR_TYPE); a walkway/stakes with no ground plane first starts the
+ *    ground base line tool (line purpose 'groundBase' with opts.thenTrace) and then traces on the new ground.
+ *  - addOutlet puts the outlet on the wall under the tap (wallForPoint), never on a roof or ground plane.
+ *  - Module exports also parseLength(text) → feet | null, nextFeatureLabel, nextOutletLabel, wallForPoint,
+ *    KINDS_FOR_TYPE.
  */
 LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesource', 'ui.persist', 'ui.store'],
   function (catalog, schema, measure, sample, imagesource, persist, storeModule) {
@@ -579,15 +584,25 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           }
         }, { gesture: !!(mopts && mopts.gesture) });
       };
+      /** Pick a traced item's point (pressed on the photo) so the editor can offer Delete point. */
+      actions.setActiveVertex = (featureId, index) => {
+        const cur = U().activeVertex;
+        if (featureId == null) { if (cur) store.setUI({ activeVertex: null }); return; }
+        if (cur && cur.featureId === featureId && cur.index === index) return;
+        store.setUI({ activeVertex: { featureId, index } });
+      };
       actions.insertVertex = (featureId, afterIndex, p) => {
         if (!isPt(p)) return;
-        store.commit('Add point', (d) => {
+        let at = null;
+        const ok = store.commit('Add point', (d) => {
           const f = byId(d.features, featureId);
           const ft = f && FEATURE_TYPES[f.type];
           if (!f || (ft && ft.maxPoints && f.points.length >= ft.maxPoints)) return false;
           const i = Math.max(0, Math.min(f.points.length - 1, Math.round(afterIndex)));
           f.points.splice(i + 1, 0, pt(p));
+          at = i + 1;
         });
+        if (ok) store.setUI({ activeVertex: { featureId, index: at } });
       };
       actions.deleteVertex = (featureId, index) => {
         const f = byId(P().features, featureId);
@@ -598,11 +613,12 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           actions.toast((f.label || 'This item') + ' needs at least ' + min + ' points. Delete the whole item instead.', 'warn');
           return;
         }
-        store.commit('Delete point', (d) => {
+        const ok = store.commit('Delete point', (d) => {
           const g = byId(d.features, featureId);
           if (!g || !g.points[index]) return false;
           g.points.splice(index, 1);
         });
+        if (ok) store.setUI({ activeVertex: null });
       };
       actions.deleteSelection = () => {
         const sel = U().selection;
@@ -985,8 +1001,8 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           store.clearImages();
           store.replaceProject(schema.createProject({ now: nowIso() }), { resetHistory: true });
           const d = storeModule.defaultUI();
-          store.setUI({ step: 1, mode: d.mode, draft: d.draft, selection: null, activePlaneId: null, calib: d.calib, bannerDismissed: false });
-          actions.toast('Everything was deleted. Add a photo to start a new plan.', 'ok');
+          store.setUI({ step: 1, mode: d.mode, draft: d.draft, selection: null, activePlaneId: null, calib: d.calib, bannerDismissed: false, toast: null });
+          // No toast: the empty-state card already asks for a photo, and a toast would cover it on a phone.
           return true;
         });
       });

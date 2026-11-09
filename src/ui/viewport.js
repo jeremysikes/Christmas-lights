@@ -16,10 +16,19 @@
  *  - In select mode, pressing a handle of the selected item drags it: store.beginGesture(), then
  *    actions.moveVertex(target, index, point, {gesture:true}) per move, then store.endGesture('Move point').
  *
- * Snapping (ui.view.snap; hold Alt with a mouse to place freely): to any vertex, rectangle corner, reference end
- * or outlet within 14 CSS px; else to horizontal/vertical within 4° in the plane's rectified coordinates
- * (measure.imageToPlane/planeToImage), falling back to image axes when the plane has no scale yet. Closing a
- * polygon (tapping its first point) always works, snap or not, and passes the first point exactly.
+ * Snapping (ui.view.snap, the magnet button on the canvas; hold Alt with a mouse to place freely): to a vertex,
+ * rectangle corner, reference end or outlet ON THE SAME SURFACE within 14 CSS px, capped at 1% of the photo's
+ * long side in image px (so a zoomed-out phone never jumps to an unrelated corner); the plane's own rectangle
+ * corners / line ends are left out while they are being redrawn. Else, for traced items only, to horizontal/
+ * vertical within 4° in the plane's rectified coordinates (measure.imageToPlane/planeToImage), falling back to
+ * image axes when the plane has no scale yet. Calibration geometry (perspective rectangles, references, eave and
+ * wall-base lines) is never axis-snapped: its perspective is the information being captured. Closing a polygon
+ * (tapping its first point) always works, snap or not, and passes the first point exactly.
+ *
+ * Double taps: in select mode a double tap zooms in. In trace mode a second tap within 8 CSS px of the first
+ * finishes the run. In the rect / line / outlet tools every tap places a point (no double-tap zoom).
+ * Editing points: a selected traced item shows a small + between each pair of points; tapping it inserts a point
+ * (actions.insertVertex). Pressing a point picks it (ui.activeVertex) for the editor's Delete point.
  *
  * Deviations from SPEC §6.3 (documented API unchanged; additive):
  *  - Extra viewport members: canvas, getView() → {scale, tx, ty, cssW, cssH, dpr, fitScale},
@@ -36,6 +45,9 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
   const TAP_MS = 500;
   const DOUBLE_TAP_MS = 320;
   const DOUBLE_TAP_SLOP = 32;
+  const FINISH_TAP_SLOP = 8;      // trace: a second tap this close to the first finishes the run
+  const SNAP_MAX_FRAC = 0.01;     // vertex snap radius cap: 1% of the photo's long side (image px)
+  const MID_MIN_SEG = 40;         // CSS px: segments shorter than this get no + (insert) handle
   const SNAP_PX = 14;
   const AXIS_SNAP_DEG = 4;
   const HANDLE_HIT = { touch: 22, pen: 14, mouse: 11 };
@@ -126,8 +138,54 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     return [];
   }
 
+  /**
+   * '+' handles between the points of a selected traced item: [{featureId, afterIndex, p}] in image px.
+   * Not for items with a fixed number of points (trees, columns).
+   */
+  function midpointHandles(project, sel) {
+    if (!project || !sel || sel.kind !== 'feature') return [];
+    const f = byId(project.features, sel.id);
+    if (!f) return [];
+    const t = FT[f.type];
+    if (t && t.maxPoints) return [];
+    const pts = arr(f.points);
+    if (pts.length < 2 || !pts.every(okPt)) return [];
+    const closed = featureClosed(f) && pts.length > 2;
+    const out = [];
+    const n = pts.length;
+    for (let i = 0; i < (closed ? n : n - 1); i++) {
+      const a = pts[i], b = pts[(i + 1) % n];
+      out.push({ featureId: f.id, afterIndex: i, p: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] });
+    }
+    return out;
+  }
+
+  /**
+   * Is this tap the second of a double tap? Select (and pan) mode: within 320 ms and 32 CSS px. Trace mode: within
+   * 320 ms and 8 CSS px of the first tap (only that finishes a run; anything farther is a new point). Rect, line
+   * and outlet tools: never, every tap places a point.
+   */
+  function isDoubleTap(last, tap, modeName) {
+    if (!last || last.mode !== modeName || !(tap.t - last.t <= DOUBLE_TAP_MS)) return false;
+    const d = Math.hypot(tap.x - last.x, tap.y - last.y);
+    if (modeName === 'trace') return d <= FINISH_TAP_SLOP;
+    if (modeName === 'select' || modeName === 'pan') return d <= DOUBLE_TAP_SLOP;
+    return false;
+  }
+
+  /** The vertex snap radius in image px: SNAP_PX on screen, capped at 1% of the photo's long side. */
+  function snapRadiusImg(scale, imgW, imgH) {
+    const r = SNAP_PX / (scale > 0 ? scale : 1);
+    const side = Math.max(imgW || 0, imgH || 0);
+    return side > 0 ? Math.min(r, Math.max(3, side * SNAP_MAX_FRAC)) : r;
+  }
+
   const candMemo = new WeakMap();
-  /** Every point on the photo a new or moved point can snap to: [{p, key, index}]. Memoized per project. */
+  /**
+   * Every point on the photo a new or moved point can snap to: [{p, key, index, planes}]. `planes` lists the
+   * surfaces the point lies on (a roof eave / ground base line lies on its plane and on the parent wall; an
+   * outlet with no surface has none). Memoized per project.
+   */
   function snapCandidates(project, imageId) {
     if (!isObj(project)) return [];
     const m = candMemo.get(project);
@@ -135,18 +193,23 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     const list = [];
     for (const f of arr(project.features)) {
       if (!onImage(f, imageId)) continue;
-      arr(f.points).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'feature:' + f.id, index: i }); });
+      const planes = f.planeId ? [f.planeId] : [];
+      arr(f.points).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'feature:' + f.id, index: i, planes }); });
     }
     for (const pl of arr(project.planes)) {
       if (!onImage(pl, imageId)) continue;
-      if (pl.rect) arr(pl.rect.corners).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'planeRect:' + pl.id, index: i }); });
-      if (pl.derived) arr(pl.derived.line).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'planeLine:' + pl.id, index: i }); });
+      const own = [pl.id];
+      if (pl.rect) arr(pl.rect.corners).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'planeRect:' + pl.id, index: i, planes: own }); });
+      if (pl.derived) {
+        const both = pl.derived.parentPlaneId ? [pl.id, pl.derived.parentPlaneId] : own;
+        arr(pl.derived.line).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'planeLine:' + pl.id, index: i, planes: both }); });
+      }
       for (const ref of arr(pl.refs)) {
-        if (ref) arr(ref.points).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'ref:' + pl.id + ':' + ref.id, index: i }); });
+        if (ref) arr(ref.points).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'ref:' + pl.id + ':' + ref.id, index: i, planes: own }); });
       }
     }
     for (const o of arr(project.outlets)) {
-      if (onImage(o, imageId) && okPt(o.point)) list.push({ p: o.point, key: 'outlet:' + o.id, index: 0 });
+      if (onImage(o, imageId) && okPt(o.point)) list.push({ p: o.point, key: 'outlet:' + o.id, index: 0, planes: o.planeId ? [o.planeId] : [] });
     }
     candMemo.set(project, { imageId, list });
     return list;
@@ -351,7 +414,8 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     }
 
     /**
-     * Snap image point ip. opt: {exclude: {key, index}, anchors: [img pts], planeId, closeFirst: img pt|null}.
+     * Snap image point ip. opt: {exclude: {key, index}, excludeKeys: [key], anchors: [img pts], planeId,
+     * surface: plane id whose points may be snapped to (null = any), noAxis, closeFirst: img pt|null}.
      * Returns {pt, kind: null|'vertex'|'close'|'axis', anchor?, axis?}.
      */
     function snapPoint(ip, opt) {
@@ -362,15 +426,19 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       if (!viewFlags(ui).snap || altKey) return { pt: ip, kind: null };
       const prj = project();
       const img = activeImage(prj);
+      const rv = snapRadiusImg(view.scale, view.imgW, view.imgH);
       let best = null;
       if (img) {
         for (const c of snapCandidates(prj, img.id)) {
           if (op.exclude && c.key === op.exclude.key && c.index === op.exclude.index) continue;
+          if (op.excludeKeys && op.excludeKeys.includes(c.key)) continue;
+          if (op.surface && c.planes && c.planes.length && !c.planes.includes(op.surface)) continue;
           const d = g.dist(ip, c.p);
-          if (d <= r && (!best || d < best.d)) best = { d, p: c.p };
+          if (d <= rv && (!best || d < best.d)) best = { d, p: c.p };
         }
       }
       if (best) return { pt: best.p.slice(), kind: 'vertex' };
+      if (op.noAxis) return { pt: ip, kind: null };
       const sol = planeSolution(safePlan(), op.planeId);
       let axisBest = null;
       for (const a of arr(op.anchors)) {
@@ -406,6 +474,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     /** Snap options for a new draft point. */
     function draftSnapOptions(ui) {
       const mode = modeOf(ui);
+      const op = isObj(mode.opts) ? mode.opts : {};
       const pts = draftPoints(ui);
       const anchors = [];
       if (pts.length) anchors.push(pts[pts.length - 1]);
@@ -413,11 +482,17 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       let closeFirst = null;
       let planeId = snapPlaneForDraft(ui);
       if (mode.name === 'trace') {
-        const t = FT[(isObj(mode.opts) && mode.opts.type) || ui.traceType];
+        const t = FT[op.type || ui.traceType];
         if (t && (t.geometry === 'polygon' || t.geometry === 'area') && pts.length >= 3) closeFirst = pts[0];
         if (t && t.geometry === 'vertical') planeId = verticalSnapPlane(planeId);
       }
-      return { anchors, planeId, closeFirst };
+      // Rectangles, references and eave / wall-base lines capture perspective: no axis snapping, and a plane's
+      // own corners / line ends are not snap targets while they are being redrawn.
+      const calibrating = mode.name === 'rect' || mode.name === 'line';
+      const excludeKeys = [];
+      if (op.purpose === 'planeRect' && op.planeId) excludeKeys.push('planeRect:' + op.planeId);
+      if (op.purpose === 'planeLine' && op.planeId) excludeKeys.push('planeLine:' + op.planeId);
+      return { anchors, planeId, closeFirst, noAxis: calibrating, excludeKeys, surface: draftPlaneId(ui) };
     }
     /**
      * Trees and columns stand upright. On a wall, "vertical" in the wall's coordinates is upright; on a roof or the
@@ -428,12 +503,16 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       return pl && pl.kind === 'wall' ? planeId : null;
     }
 
-    /** Snap options while dragging handle h: exclude itself; align to its neighbors. */
+    /**
+     * Snap options while dragging handle h: exclude itself; snap to points on its own surface; traced items align
+     * to their neighbors, calibration geometry (rectangles, references, eave/base lines) never axis-snaps.
+     */
     function dragSnapOptions(h) {
       const prj = project();
       const t = h.target;
       const anchors = [];
       let planeId = null;
+      let surface = null;
       if (t.kind === 'feature') {
         const f = byId(prj.features, t.id);
         if (f) {
@@ -445,6 +524,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
           if (prev >= 0 && okPt(pts[prev])) anchors.push(pts[prev]);
           if (next >= 0 && next !== prev && okPt(pts[next])) anchors.push(pts[next]);
           planeId = FT[f.type] && FT[f.type].geometry === 'vertical' ? verticalSnapPlane(f.planeId) : f.planeId;
+          surface = f.planeId || null;
         }
       } else if (t.kind === 'ref') {
         const pl = byId(prj.planes, t.planeId);
@@ -455,17 +535,24 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
           else pts.forEach((p, i) => { if (i !== h.index && okPt(p)) anchors.push(p); });
         }
         planeId = t.planeId;
+        surface = t.planeId;
       } else if (t.kind === 'planeRect') {
         const pl = byId(prj.planes, t.planeId);
         if (pl && pl.rect && arr(pl.rect.corners).length === 4) neighborsInQuad(pl.rect.corners, h.index).forEach((p) => anchors.push(p));
-        planeId = null;   // the rectangle defines this plane's axes: align on image axes
+        planeId = null;
+        surface = t.planeId;
       } else if (t.kind === 'planeLine') {
         const pl = byId(prj.planes, t.planeId);
         const line = pl && pl.derived ? arr(pl.derived.line) : [];
         line.forEach((p, i) => { if (i !== h.index && okPt(p)) anchors.push(p); });
         planeId = pl && pl.derived ? pl.derived.parentPlaneId : null;   // an eave/base lies on its parent wall
+        surface = planeId;
+      } else if (t.kind === 'outlet') {
+        const o = byId(prj.outlets, t.id);
+        surface = o ? o.planeId || null : null;
       }
-      return { exclude: { key: targetKey(t), index: h.index }, anchors, planeId };
+      const calibration = t.kind === 'planeRect' || t.kind === 'planeLine' || t.kind === 'ref';
+      return { exclude: { key: targetKey(t), index: h.index }, anchors, planeId, surface, noAxis: calibration };
     }
 
     function neighborsInQuad(corners, index) {
@@ -497,6 +584,31 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         if (d <= r && (!best || d < best.d)) best = Object.assign({ d }, h);
       }
       return best;
+    }
+
+    /** The '+' (insert point) handle of the selected item under screen point sp, or null. */
+    function hitMidpoint(sp, type) {
+      const ui = uiState();
+      if (modeOf(ui).name !== 'select' || !ui.selection) return null;
+      const r = hitRadius(HANDLE_HIT, type);
+      let best = null;
+      for (const m of visibleMidpoints(ui)) {
+        const s = imageToScreen(m.p);
+        const d = Math.hypot(s[0] - sp[0], s[1] - sp[1]);
+        if (d <= r && (!best || d < best.d)) best = Object.assign({ d }, m);
+      }
+      return best;
+    }
+    /** Midpoint handles whose segment is long enough on screen not to crowd the point handles. */
+    function visibleMidpoints(ui) {
+      const prj = project();
+      const f = ui.selection && ui.selection.kind === 'feature' ? byId(prj && prj.features, ui.selection.id) : null;
+      if (!f) return [];
+      const pts = arr(f.points);
+      return midpointHandles(prj, ui.selection).filter((m) => {
+        const a = imageToScreen(pts[m.afterIndex]), b = imageToScreen(pts[(m.afterIndex + 1) % pts.length]);
+        return Math.hypot(b[0] - a[0], b[1] - a[1]) >= MID_MIN_SEG;
+      });
     }
 
     function distToScreenPath(sp, pts, closed) {
@@ -637,6 +749,9 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       const ui = uiState();
       const h = hitHandle(sp, type);
       if (h) {
+        if (h.target.kind === 'feature' && typeof actions.setActiveVertex === 'function') {
+          try { actions.setActiveVertex(h.target.id, h.index); } catch (err) { /* ignore */ }
+        }
         try { store.beginGesture(); } catch (err) { /* ignore */ }
         const ip = screenToImage(sp);
         drag = { type: 'handle', id: e.pointerId, handle: h, grab: [h.p[0] - ip[0], h.p[1] - ip[1]], pointerType: type, opts: dragSnapOptions(h), moved: false };
@@ -771,11 +886,12 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       const ui = uiState();
       const mode = modeOf(ui);
       const draftLen = draftPoints(ui).length;
-      const isDouble = !!lastTap && t - lastTap.t <= DOUBLE_TAP_MS && Math.hypot(sp[0] - lastTap.x, sp[1] - lastTap.y) <= DOUBLE_TAP_SLOP && lastTap.mode === mode.name;
+      const isDouble = isDoubleTap(lastTap, { t, x: sp[0], y: sp[1] }, mode.name);
       if (isDouble) {
         lastTap = null;
         if (mode.name === 'trace') {
-          if (draftLen >= 2 && typeof actions.completeDraft === 'function') actions.completeDraft();
+          // Finish (completeDraft explains when there are too few points; the tap is never silently lost).
+          if (draftLen >= 1 && typeof actions.completeDraft === 'function') actions.completeDraft();
           return;
         }
         // The first tap of the pair already did its job (placed a point or selected); the second zooms.
@@ -800,6 +916,12 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       if (mode.name === 'select') {
         const onHandle = hitHandle(sp, type);
         if (onHandle) return;   // tapping a handle keeps the current selection
+        const mid = hitMidpoint(sp, type);
+        if (mid && typeof actions.insertVertex === 'function') {
+          actions.insertVertex(mid.featureId, mid.afterIndex, mid.p);
+          lastTap = null;
+          return;
+        }
         const hit = hitTest(sp, type);
         if (typeof actions.select === 'function') actions.select(hit);
       }
@@ -1211,7 +1333,15 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         else if (t && t.geometry === 'vertical') { const mid = g.lerp(S[0], S[S.length - 1], 0.5); at = [mid[0] + 14, mid[1]]; }
         else { const mp = polylineMidpoint(S); at = [mp.p[0] + mp.n[0] * 15, mp.p[1] + mp.n[1] * 15]; }
         const conf = m && m.ok && m.confidence ? CONF_COLORS[m.confidence.level] || null : (m ? CONF_COLORS.low : null);
-        labels.push({ text: featureLabelText(prj, f, m), x: at[0], y: at[1], dot: conf, priority: isSel ? 4 : 1, faint });
+        // On a small screen, short items lose their label first so the long runs stay readable; longer runs win
+        // label collisions over shorter ones.
+        let span = 0;
+        if (S.length >= 2) {
+          const b = g.bbox(S);
+          span = closed ? Math.hypot(b.maxX - b.minX, b.maxY - b.minY) : S.reduce((acc, q, i) => (i ? acc + Math.hypot(q[0] - S[i - 1][0], q[1] - S[i - 1][1]) : 0), 0);
+        }
+        if (!isSel && view.cssW < 600 && span < 44) continue;
+        labels.push({ text: featureLabelText(prj, f, m), x: at[0], y: at[1], dot: conf, priority: isSel ? 4 : 1 + Math.min(2, span / 300), faint });
       }
     }
 
@@ -1374,6 +1504,21 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         }
         dot(s, r + 1.5, 'rgba(4,8,14,0.55)');
         dot(s, r, '#ffffff', color, 2.5);
+      }
+      if (!active) {
+        // '+' between points: tap to insert a point there.
+        for (const m of visibleMidpoints(ui)) {
+          const s = imageToScreen(m.p);
+          dot(s, 7.5, 'rgba(4,8,14,0.7)', color, 1.5);
+          ctx.save();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.moveTo(s[0] - 3.5, s[1]); ctx.lineTo(s[0] + 3.5, s[1]);
+          ctx.moveTo(s[0], s[1] - 3.5); ctx.lineTo(s[0], s[1] + 3.5);
+          ctx.stroke();
+          ctx.restore();
+        }
       }
     }
 
@@ -1691,5 +1836,5 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     };
   }
 
-  return { createViewport, selectionHandles, snapCandidates, layersFor, targetKey };
+  return { createViewport, selectionHandles, snapCandidates, layersFor, targetKey, midpointHandles, isDoubleTap, snapRadiusImg };
 });
