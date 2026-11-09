@@ -4,8 +4,9 @@
 //   npm run e2e                          build dist/ and run every pass (phone, desktop, desktop dark,
 //                                        blocked storage)
 //   node tests/e2e/smoke.mjs             run against the existing dist/lightplan.html
-//   node tests/e2e/smoke.mjs --only=phone        one pass: phone | desktop | dark | storage
-//                                                (storage = localStorage and IndexedDB blocked)
+//   node tests/e2e/smoke.mjs --only=phone        one pass: phone | desktop | dark | storage | inputs
+//                                                (storage = localStorage and IndexedDB blocked;
+//                                                inputs = safe share, tax, file version, damaged photo)
 //
 // It opens dist/lightplan.html over file://, drives the real app the way a person would
 // (step bar, tracing taps on the canvas, typed overrides, undo/redo, outlet placement,
@@ -35,7 +36,7 @@ const PASSES = {
 };
 
 const onlyArg = process.argv.find((a) => a.startsWith('--only='));
-const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES).concat('storage');
+const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES).concat('storage', 'inputs');
 
 if (!fs.existsSync(APP)) {
   console.error('dist/lightplan.html is missing. Run "node build.js" first (npm run e2e does both).');
@@ -394,12 +395,93 @@ async function runBlockedStorage(browser) {
   return t;
 }
 
+// ------------------------------------------------------------------ planning inputs
+// Inputs whose values the planner and the file format must agree on (desktop, sample house).
+async function runPlanningInputs(browser) {
+  const t = new Check('inputs');
+  console.log('\n== planning inputs 1280x800');
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+  await context.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push('page error: ' + e.message));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push('console error: ' + m.text()); });
+  /** Set an input's value and fire change, the way a person typing then leaving the field does. */
+  const setInput = (selector, value) => page.evaluate(([sel, v]) => {
+    const el = document.querySelector(sel);
+    if (!el) return false;
+    el.value = v;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }, [selector, value]);
+  const toast = () => page.evaluate(() => { const ui = window.LightPlanApp.store.ui(); return ui.toast ? ui.toast.message : ''; });
+  try {
+    await page.goto(URL);
+    await waitForApp(page);
+
+    // Safe share of the breaker: 80 means 80%, never 8,000%.
+    await page.click('button.step[data-step="4"]');
+    await sleep(300);
+    t.ok(await setInput('[data-act="config-field"][data-path="power.continuousFactor"]', '80'), 'the safe-share field exists');
+    await sleep(300);
+    const cf = await page.evaluate(() => window.LightPlanApp.store.plan().library.config.power.continuousFactor);
+    t.ok(cf === 0.8, 'typing 80 for the safe share stores 0.8 (' + cf + ')');
+    await page.click('button.step[data-step="5"]');
+    await sleep(300);
+    const meter = await page.locator('.meter-text').first().innerText();
+    t.ok(/\(80% of /.test(meter) && !/8000%/.test(meter), 'the circuit meter reads 80% of the breaker (' + meter.trim() + ')');
+
+    // Tax above 100% is refused in the app, so a reload cannot silently change the quote.
+    await page.click('button.step[data-step="6"]');
+    await sleep(300);
+    await page.evaluate(() => window.LightPlanApp.actions.updateQuote({ enabled: true }));
+    await sleep(300);
+    const taxBefore = await page.evaluate(() => window.LightPlanApp.store.project().quote.taxPct);
+    t.ok(await setInput('[data-act="quote-num"][data-field="taxPct"]', '825'), 'the tax field exists');
+    await sleep(300);
+    const taxAfter = await page.evaluate(() => window.LightPlanApp.store.project().quote.taxPct);
+    t.ok(taxAfter === taxBefore, 'tax 825% is refused (' + taxBefore + ' -> ' + taxAfter + ')');
+    t.ok(/from 0 to 100/.test(await toast()), 'a toast says the tax must be 0 to 100%');
+    const shown = await page.evaluate(() => document.querySelector('[data-act="quote-num"][data-field="taxPct"]').value);
+    t.ok(shown !== '825', 'the tax field shows the kept value again (' + shown + ')');
+
+    // An export wrapper whose version is the string "2" is refused like version 2; the plan stays.
+    const featuresBefore = (await projectInfo(page)).features;
+    const project = await page.evaluate(() => window.LightPlanApp.store.project());
+    const future = path.join(OUT, 'inputs-future-export-str.json');
+    fs.writeFileSync(future, JSON.stringify({ schema: 'lightplan/export', version: '2', exportedAt: null, project: Object.assign({}, project, { features: [] }), images: {}, derived: null }));
+    await page.setInputFiles('#json-input', future);
+    await page.waitForFunction(() => !window.LightPlanApp.store.ui().busy, null, { timeout: 10000 });
+    await sleep(300);
+    t.ok(/newer version/.test(await toast()), 'a wrapper version "2" is refused as newer (' + (await toast()) + ')');
+    t.ok((await projectInfo(page)).features === featuresBefore, 'the current plan is not replaced');
+
+    // A file whose photo data is damaged says so (not "not saved").
+    const damaged = path.join(OUT, 'inputs-bad-dataurl.json');
+    const photoProject = JSON.parse(JSON.stringify(project));
+    photoProject.images[0].source.kind = 'upload';
+    photoProject.images[0].storageKey = 'img_x';
+    fs.writeFileSync(damaged, JSON.stringify({ schema: 'lightplan/export', version: 1, exportedAt: null, project: photoProject, images: { img_x: 'data:image/jpeg;base64,AAAA' }, derived: null }));
+    await page.setInputFiles('#json-input', damaged);
+    await page.waitForFunction(() => !window.LightPlanApp.store.ui().busy, null, { timeout: 10000 });
+    await sleep(500);
+    const msg = await toast();
+    t.ok(/photo in this file is damaged/.test(msg) && !/not saved/.test(msg), 'a damaged photo is reported as damaged (' + msg + ')');
+  } catch (e) {
+    t.ok(false, 'unexpected error: ' + (e && e.message ? e.message.split('\n')[0] : e));
+  }
+  t.ok(errors.length === 0, 'no console or page errors' + (errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''));
+  await context.close();
+  return t;
+}
+
 // ------------------------------------------------------------------ main
 
 const browser = await chromium.launch();
 const results = [];
 for (const name of selected) {
   if (name === 'storage') { results.push(await runBlockedStorage(browser)); continue; }
+  if (name === 'inputs') { results.push(await runPlanningInputs(browser)); continue; }
   if (!PASSES[name]) { console.error('unknown pass ' + name); process.exitCode = 2; continue; }
   results.push(await runPass(browser, name));
 }

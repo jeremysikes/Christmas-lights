@@ -22,6 +22,9 @@
  *  - validateProject (and so importProject) checks each custom product like the product editor does: a known
  *    category and unit, price and wattsPerUnit numbers of 0 or more, stringLengthFt and maxEndToEnd above 0,
  *    unique ids. ENUMS gains productCategory, productUnit and productTech.
+ *  - importProject reads the export wrapper version like migrateProject reads a project version (numeric
+ *    strings count, non-integers are refused), so "2" is refused as newer instead of opened as version 1.
+ *  - quoteFieldProblem(field, value) → plain reason or null: the quote rules of normalizeProject, for the UI.
  *  - importProject also accepts a JSON string. Extra exports: EXPORT_SCHEMA_ID, EXPORT_VERSION,
  *    ENUMS, ID_PREFIX, createDefaultSettings, createDefaultQuote.
  */
@@ -523,6 +526,20 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
       validDays: intOr(q.validDays, d.validDays, 0),
       notes: str(q.notes, d.notes),
     }, q, []);
+  }
+  /**
+   * Plain reason a quote field value would be rewritten by normalizeProject (so the UI can refuse it up front
+   * and the app never holds a value that a reload or import would silently reset), or null when it is kept.
+   */
+  function quoteFieldProblem(field, value) {
+    const d = createDefaultQuote();
+    if (!has(d, field)) return null;
+    const kept = normQuote(Object.assign(d, { [field]: value }))[field];
+    if (kept === value) return null;
+    if (field === 'taxPct') return 'Tax must be a percentage from 0 to 100.';
+    if (field === 'validDays') return 'Enter a whole number of days, 0 or more.';
+    if (typeof d[field] === 'number') return 'Enter a number of 0 or more.';
+    return 'That value cannot be used for the quote.';
   }
   function normLibrary(raw) {
     const l = isObj(raw) ? raw : {};
@@ -1162,8 +1179,13 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     let rawProject = data;
     let rawImages = {};
     if (data.schema === EXPORT_SCHEMA_ID || (data.schema === undefined && isObj(data.project))) {
-      const v = data.version === undefined ? EXPORT_VERSION : data.version;
-      if (typeof v === 'number' && v > EXPORT_VERSION) {
+      // Read the wrapper version the way migrateProject reads a project version: numeric strings count.
+      let v = data.version === undefined || data.version === null ? EXPORT_VERSION : data.version;
+      if (typeof v === 'string' && /^\d+$/.test(v.trim())) v = Number(v.trim());
+      if (!Number.isInteger(v) || v < 1) {
+        throw new Error('This file has an unknown export version (' + String(data.version) + '), so it cannot be opened.');
+      }
+      if (v > EXPORT_VERSION) {
         throw new Error('This file was exported by a newer version of LightPlan (export version ' + v + '). Update LightPlan to open it.');
       }
       rawProject = data.project;
@@ -1187,7 +1209,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
   return {
     SCHEMA_ID, SCHEMA_VERSION, EXPORT_SCHEMA_ID, EXPORT_VERSION, JSON_SCHEMA, ENUMS, ID_PREFIX,
     uid, createProject, createImage, createPlane, createRef, createFeature, createOutlet, createCircuit,
-    createDefaultSettings, createDefaultQuote,
+    createDefaultSettings, createDefaultQuote, quoteFieldProblem,
     normalizeProject, migrateProject, validateProject, exportProject, importProject,
   };
 });

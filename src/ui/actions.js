@@ -609,8 +609,14 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
         store.commit('Edit settings', (d) => { Object.assign(d.settings, catalog.deepClone(patch)); });
       };
       actions.updateQuote = (patch) => {
-        if (!patch) return;
+        if (!patch) return false;
+        // Refuse values normalizeProject would rewrite, so a reload or import never changes the quote silently.
+        for (const k of Object.keys(patch)) {
+          const problem = schema.quoteFieldProblem(k, patch[k]);
+          if (problem) { actions.toast(problem, 'warn'); return false; }
+        }
         store.commit('Edit quote', (d) => { Object.assign(d.quote, catalog.deepClone(patch)); });
+        return true;
       };
       actions.updateCustomer = (patch) => {
         if (!patch) return;
@@ -724,9 +730,15 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           }
           const url = imagesByKey && key ? imagesByKey[key] : null;
           if (!url) return Promise.resolve(im.name || 'photo');
-          return imagesource.loadElement(url).then((el) => { store.setImage(im.id, el, url, { persist: write }); return null; }, () => im.name || 'photo');
+          // The data is there but cannot be decoded: damaged, not missing.
+          return imagesource.loadElement(url).then((el) => { store.setImage(im.id, el, url, { persist: write }); return null; },
+            () => ({ damaged: true, name: im.name || 'photo' }));
         });
-        return Promise.all(tasks).then((r) => ({ missing: r.filter(Boolean) }));
+        // missing lists every photo that did not load; damaged is the subset whose data was there but unreadable.
+        return Promise.all(tasks).then((r) => ({
+          missing: r.filter(Boolean).map((x) => (typeof x === 'string' ? x : x.name)),
+          damaged: r.filter((x) => x && typeof x === 'object' && x.damaged).map((x) => x.name),
+        }));
       };
 
       /** True when the current project holds work the user made (so replacing it should ask first). */
@@ -864,7 +876,8 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
               step: proj.features.length ? 6 : hasImage ? 2 : 1,
             }));
             const name = proj.name ? "'" + proj.name + "'" : 'the project';
-            if (h.missing.length) actions.toast('Opened ' + name + ', but its photo was not saved in the file. The plan and measurements are kept.', 'warn');
+            if (h.damaged && h.damaged.length) actions.toast('Opened ' + name + ', but the photo in this file is damaged and could not be opened. The plan and measurements are kept; choose the photo again to see it.', 'warn');
+            else if (h.missing.length) actions.toast('Opened ' + name + ', but its photo was not saved in the file. The plan and measurements are kept.', 'warn');
             else actions.toast('Opened ' + name + '.', 'ok');
             return true;
           });

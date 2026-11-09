@@ -1618,7 +1618,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         'quote-num': (el) => {
           const v = num(el);
           if (v == null || v < 0) { actions.toast('Enter a number of 0 or more.', 'warn'); schedule(); return; }
-          actions.updateQuote({ [el.dataset.field]: el.dataset.field === 'validDays' ? Math.round(v) : v });
+          // updateQuote refuses (with a toast) values a reload would reset, e.g. a tax rate above 100%.
+          if (actions.updateQuote({ [el.dataset.field]: el.dataset.field === 'validDays' ? Math.round(v) : v }) === false) schedule();
         },
         'quote-method': (el) => actions.updateQuote({ laborMethod: el.value === 'perHour' ? 'perHour' : 'perFt' }),
         'customer-text': (el) => actions.updateCustomer({ [el.dataset.field]: el.value.trim().slice(0, 200) }),

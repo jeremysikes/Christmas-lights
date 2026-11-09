@@ -359,3 +359,34 @@ test('confirm resolves false when replaced by a second dialog', async () => {
   store.ui().dialog.onConfirm();
   assert.equal(await second, true);
 });
+
+test('updateQuote refuses a value that a reload would reset (tax above 100%) and says why', () => {
+  const { store, actions } = setup();
+  const before = store.project().quote.taxPct;
+  assert.equal(actions.updateQuote({ taxPct: 825 }), false);
+  assert.equal(store.project().quote.taxPct, before, 'the store keeps the old tax rate');
+  assert.match(store.ui().toast.message, /from 0 to 100/);
+  actions.updateQuote({ taxPct: 8.25 });
+  assert.equal(store.project().quote.taxPct, 8.25);
+  const reloaded = schema.normalizeProject(JSON.parse(JSON.stringify(store.project())));
+  assert.equal(reloaded.quote.taxPct, 8.25, 'what the app holds survives a reload');
+});
+
+test('hydrateImages tells a photo missing from the file from one that is there but damaged', async () => {
+  const { actions } = setup();
+  const p = blankWithPhoto();
+  p.images.push(schema.createImage({ id: 'img_2', name: 'back.jpg', width: 10, height: 10, storageKey: 'img_2' }));
+  // In Node no photo can be decoded, so a present data URL stands in for a damaged one.
+  const r = await actions.hydrateImages(p, { img_1: 'data:image/jpeg;base64,AAAA' }, { persist: false });
+  assert.deepEqual(r.damaged, ['front.jpg']);
+  assert.deepEqual(r.missing.slice().sort(), ['back.jpg', 'front.jpg'], 'missing still lists every photo that did not load');
+});
+
+test('opening a file whose photo data is damaged says the photo is damaged, not that it was not saved', async () => {
+  const { store, actions } = setup();
+  const exported = schema.exportProject(blankWithPhoto(), null, { img_1: 'data:image/jpeg;base64,AAAA' }, null);
+  const ok = await actions.importProjectFile({ text: () => Promise.resolve(JSON.stringify(exported)) });
+  assert.equal(ok, true);
+  assert.match(store.ui().toast.message, /photo in this file is damaged/);
+  assert.doesNotMatch(store.ui().toast.message, /not saved/);
+});

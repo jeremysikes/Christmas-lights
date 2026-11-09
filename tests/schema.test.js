@@ -498,3 +498,28 @@ test('importProject checks custom products: bad watts, price, lengths, unit or c
     assert.equal(schema.validateProject(schema.normalizeProject(raw)).ok, false);
   }
 });
+
+test('importProject reads the export wrapper version like the project version: "2" is refused as newer, 1.5 as unknown', () => {
+  const wrap = (version) => ({ schema: 'lightplan/export', version, exportedAt: null, project: sampleProject(), images: {}, derived: null });
+  assert.equal(schema.importProject(wrap('1')).project.name, '123 Maple St');
+  assert.equal(schema.importProject(wrap(' 1 ')).project.name, '123 Maple St');
+  assert.throws(() => schema.importProject(wrap('2')), /exported by a newer version of LightPlan \(export version 2\)/);
+  assert.throws(() => schema.importProject(wrap(2)), /exported by a newer version of LightPlan \(export version 2\)/);
+  assert.throws(() => schema.importProject(wrap(1.5)), /unknown export version \(1\.5\)/);
+  assert.throws(() => schema.importProject(wrap('two')), /unknown export version \(two\)/);
+});
+
+test('quoteFieldProblem uses the same rules as normalizeProject, so the app never holds a quote value a reload would reset', () => {
+  assert.match(schema.quoteFieldProblem('taxPct', 825), /from 0 to 100/);
+  assert.equal(schema.quoteFieldProblem('taxPct', 8.25), null);
+  assert.equal(schema.quoteFieldProblem('taxPct', 100), null);
+  assert.match(schema.quoteFieldProblem('markupPct', -1), /0 or more/);
+  assert.match(schema.quoteFieldProblem('validDays', 2.5), /whole number/);
+  assert.equal(schema.quoteFieldProblem('validDays', 30), null);
+  assert.equal(schema.quoteFieldProblem('notes', 'hello'), null);
+  for (const [k, v] of [['taxPct', 825], ['markupPct', -1], ['validDays', 2.5]]) {
+    const p = sampleProject();
+    p.quote[k] = v;
+    assert.notEqual(schema.normalizeProject(p).quote[k], v, k + ' really is rewritten by normalize');
+  }
+});
