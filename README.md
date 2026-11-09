@@ -10,7 +10,7 @@ Measure a house from one photo, design a Christmas-light layout, and get a bill 
 2. **Calibrate.** Tap the four corners of a rectangle on the wall (a garage door, the front door, or the wall itself). LightPlan computes a perspective transform (homography) so measurements come out as if you stood straight in front of the wall. Add references of known size (door height, garage door, siding or brick courses, any tape-measured length); when two references disagree, you get an accuracy warning, and every measurement's confidence reflects how far tap error could move it. Add more planes for walls that are set back, a roof slope (for receding rakes, ridges and hips, corrected for pitch), and the ground (for walkways).
 3. **Trace** rooflines, rakes, gutters, ridges, windows, doors, columns, railings, walkways, bushes, trees and ground stakes. Each measurement shows a High / Medium / Low confidence with the reasons, and any length can be overridden with a tape-measured value.
 4. **Design.** An auto-plan picks a product for every run, counts strings, clips and stakes, and renders glowing bulbs on the photo with a day/night toggle and twinkle.
-5. **Power.** Place outlets and assign circuits. Runs are chained end to end within each product's limit, fed from the nearest outlet with capacity, and kept at or below 80% of the breaker rating. Cords are sized by load and length. Warnings cover incandescent loads, overloaded circuits, cords across walkways and missing GFCI protection.
+5. **Power.** Place outlets and assign circuits. Runs are chained end to end within each product's limit (a string carries on around a corner; spare strings are bought but not counted as load), fed from the nearest outlet with capacity (or from the middle of a long run when that saves cord), and kept at or below 80% of the breaker rating. Each outlet's cords share one receptacle, timer and power stake, so an outlet carries at most 1,440 W. Cords are sized by load and the length actually bought (15 A plug limit, 3% voltage drop). Warnings cover incandescent loads, overloaded circuits and outlets, too many cords at one outlet, cords across walkways or doorways, long cords and missing GFCI protection.
 6. **Review & export.** Summary, editable BOM, installer quote (labor, markup, takedown and storage fees), install checklist, and exports: PDF report, customer quote PDF, CSV BOM, and a reloadable JSON project file.
 
 ## Repository layout
@@ -34,9 +34,11 @@ Requires Node 18+ (no npm dependencies).
 
 ```sh
 npm run build   # node build.js → dist/lightplan.html and dist/lightplan.artifact.html
-npm test        # node --test → unit tests for every core module, incl. sample-house accuracy
-npm run e2e     # build + Playwright smoke test in Chromium (mobile and desktop)
+npm test        # node --test → 304 unit tests (core modules, UI logic, sample-house accuracy, confidence simulation)
+npm run e2e     # build + node tests/e2e/smoke.mjs: Playwright/Chromium smoke test, 185 checks
 ```
+
+The smoke test drives the built file through eight passes: phone (390 px), desktop, dark scheme, blocked storage, input validation, measurement callouts, the UI review findings and a landscape phone. `node tests/e2e/smoke.mjs --only=phone` runs one pass; screenshots land in `tests/e2e/out/` (gitignored). Playwright is not an npm dependency: install it yourself (`npm i -D playwright` and `npx playwright install chromium`) where it is not preinstalled.
 
 ## Documents
 
@@ -48,7 +50,7 @@ npm run e2e     # build + Playwright smoke test in Chromium (mobile and desktop)
 
 ## Accuracy notes
 
-- Lengths on a wall with a perspective rectangle are exact up to tap precision; on the sample house they match the 3D ground truth within 1%.
+- Lengths on a wall with a perspective rectangle are exact up to tap precision. On the sample house, whose taps are exact projections of a 3D model, lines match the ground truth within 0.4% (bushes traced on the wall come out 6–11% wide, and are flagged). The sample still shows most items as Low: ratings assume a person's taps, not exact ones (see below).
 - Confidence is honest about tap precision: every calibration tap and every traced point is assumed to be off by about 2.5 px, and the resulting expected error decides the level (High within ±3%, Medium within ±6%; checked by a seeded simulation of random houses in `tests/measure-honesty.test.js`). High needs a large known-size rectangle, zoomed taps and a cross-check.
 - Roof-slope and ground-plane lengths use the camera pose recovered from the wall rectangle and the focal length (from EXIF, the rectangle, or a phone-camera preset). They are very sensitive to tap error and are usually rated Low; a tape-measured reference on the ground plane re-fits it, and roof items need the pitch entered. A lens setting that disagrees with the photo's rectangles is flagged.
 - Trees, posts and bushes traced on a wall stand in front of it, so their sizes come out too large and are flagged; on a ground plane they are measured in 3D.

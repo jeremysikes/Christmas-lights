@@ -4,6 +4,10 @@ This document is the contract between modules. Every module author codes against
 signatures here. If you must deviate, keep the documented signature working and note the
 deviation at the top of your file in a comment. **Do not edit files you do not own.**
 
+> **Phase 2 readers:** this contract was written before the build. Where the shipped code differs (extra fields,
+> refined definitions, widened result sets), the code wins; **§7 Implementation notes** lists every such
+> deviation, and each source file repeats its own list in its header comment.
+
 LightPlan measures a house from one photo, designs a Christmas-light layout, and produces a
 bill of materials (BOM), a power/circuit plan, a quote and an install checklist.
 Phase 1 ships as **one self-contained HTML file** (`dist/lightplan.html`) built from small
@@ -132,7 +136,7 @@ All ids are strings with a prefix (`prj_`, `img_`, `pl_`, `ref_`, `ft_`, `out_`,
   "customer": { "name": "", "address": "", "phone": "", "email": "" },
   "settings": {
     "wastePct": 10,
-    "roofPitch": { "rise": 6, "run": 12 },        // project default; null = unknown → estimate
+    "roofPitch": { "rise": 6, "run": 12 },        // project default; null (what createProject sets) = unknown → estimate
     "colorMode": "warmWhite",                      // warmWhite | coolWhite | multicolor | custom
     "customColors": ["#ff3b30", "#34c759"],
     "lengthFormat": "ft-in"                        // ft-in | ft-decimal
@@ -396,7 +400,7 @@ PlaneSolution = {
   Himg2plane, Hplane2img,        // image px ↔ plane feet (null when !ok)
   scale: {sx, sy, anisotropic: bool},
   refResults: [{refId, label, expectedFt, measuredFt, errorPct}],   // measured with the FINAL solution
-  disagreementPct,               // max |errorPct| over independent checks, null if no cross-check possible
+  disagreementPct,               // spread (max/min ratio − 1)·100 over independent checks (step 3), null if none
   checks: number,                // count of independent size constraints beyond the first
   viewAngleDeg, pose, K,         // pose/K null when unavailable
   pitch: {rise, run, source} | null,   // roof planes
@@ -424,8 +428,10 @@ Wall plane algorithm:
      < σ_K = aspect sensitivity × focal σ: EXIF 3%, preset 12%, manual/default 25%, rectangle 3.5·relStd), or when
      they disagree with K by z > 2; in the latter case K's proportions count as the cross-check
      (`checks = used − 1`) and `disagreementPct` = |sx/sy − 1|·100. Otherwise `checks = used − 2`.
-   - `errorPct = 100·(measured − expected)/expected`; `disagreementPct = max |errorPct|`
-     when `checks ≥ 1`, else null.
+   - `errorPct = 100·(measured − expected)/expected`; `disagreementPct` = the spread between independent size
+     constraints, `(max ratio / min ratio − 1)·100` with ratio = measured/expected under the final solution (on
+     rect-known the rectangle counts as ratio 1), when `checks ≥ 1`, else null. When separate scales were switched on
+     because the refs disagree with K, it is the larger of that K-vs-refs gap |sx/sy − 1|·100 and (with ≥ 3 refs) the spread. (The original "max |errorPct|" under-reports when the fit sits between two refs.)
 4. Pose: `poseFromHomography(Hplane2img, K)` when mode is rect-*; `viewAngleDeg` at the rect center.
    - `disagreementZ` = max pairwise |ln(rᵢ/rⱼ)| / hypot(σᵢ, σⱼ) with σ = 2.5·√2 px / ref length on screen
      (rect side: 2.5 px / side length): how much of a disagreement tap noise alone explains.
@@ -720,7 +726,9 @@ actions.completeDraft()                       // finalize per mode.opts.purpose:
     //       purpose 'roofEave'  {planeId (parent), pitch} → new roof plane; 'groundBase' {planeId} → new ground plane
     // trace {type, planeId} → new feature (stays in trace mode, same type, empty draft)
     // rect/line completion returns to 'select' mode and selects the created item
-actions.addOutlet([x,y])                      // creates outlet on activePlaneId; default circuit (creates one if none)
+actions.addOutlet([x,y])                      // creates outlet on the WALL under the tap (wallForPoint: rect / refs /
+                                              // traced-item hull contains it, else the nearest wall; never roof/ground);
+                                              // default circuit (creates one if none)
 actions.moveVertex(target, index, [x,y], {gesture})
     // target: {kind:'feature', id} | {kind:'planeRect', planeId} | {kind:'planeLine', planeId} |
     //         {kind:'ref', planeId, refId} | {kind:'outlet', id}   (index ignored for outlet)
@@ -732,7 +740,7 @@ actions.updateFeature(id, patch) / updatePlane(id, patch) / updateRef(planeId, r
         setLibraryProducts(products|null) / setLibraryConfig(config|null) / updateImageCamera(imageId, patch)
 actions.addPlane(kind='wall') ; actions.deletePlane(id)
 actions.loadImageFile(file, {sourceKind:'upload'|'camera'})   // via ui.imagesource; starts a fresh project keeping settings
-actions.loadSample({traced})
+actions.loadSample({traced, confirm=true})    // asks first when the user has work (in-page dialog); undoable
 actions.newProject() ; actions.startOver()    // startOver shows in-page dialog, then clears storage + loads blank
 actions.importProjectFile(file) ; actions.toast(message, kind)
 actions.confirm({title, body, confirmLabel, danger}) → Promise<bool>   // in-page dialog
@@ -750,16 +758,19 @@ viewport.destroy()
   devicePixelRatio, `touch-action:none`, ResizeObserver. Subscribes to the store and redraws via rAF
   (continuous rAF only while twinkle is on, preview visible, and the tab is visible).
 - Pointer events: one pointer drag on empty space pans (in every mode); two pointers pinch-zoom + pan;
-  wheel zooms at cursor; double-click/double-tap zooms in (except in trace mode where it finishes a polyline);
-  a tap is a press+release with < 8 px movement and < 500 ms.
+  wheel zooms at cursor; double-click/double-tap zooms in only in select mode (in trace mode a second tap within
+  8 CSS px finishes the polyline; in rect/line/outlet modes every tap places a point); a tap is a press+release
+  with < 8 px movement and < 500 ms (in the placing tools a stationary press of any length also places a point).
 - Modes per §6.2: taps call `actions.addDraftPoint`. In `select` mode taps hit-test (handles first, then
   outlets, features (distance to polyline/inside polygon), refs, plane rects) and call `actions.select`.
   Dragging a handle of the selected item: `store.beginGesture()`, `actions.moveVertex(..., {gesture:true})`
   per move, `store.endGesture('Move point')` on release. Handle hit radius ≥ 22 CSS px on touch.
-- Snapping when `ui.view.snap`: to any existing vertex/corner/ref endpoint/outlet within 14 CSS px; else
-  axis snap (segment within 4° of horizontal/vertical **in the active plane's rectified coordinates**,
-  using measure.imageToPlane/planeToImage; falls back to image axes when the plane is uncalibrated).
-  Draw a small snap indicator.
+- Snapping when `ui.view.snap` (the canvas Snap button, `#ctl-snap`, in every step): to an existing
+  vertex/corner/ref endpoint/outlet **on the same surface** within 14 CSS px, capped at 1% of the photo's long side
+  (image px); a plane's own rect corners / line ends are excluded while it is being redrawn. Else, for traced items
+  only, axis snap (segment within 4° of horizontal/vertical **in the active plane's rectified coordinates**, using
+  measure.imageToPlane/planeToImage; falls back to image axes when the plane is uncalibrated). Calibration
+  geometry (rects, refs, eave/base lines) is never axis-snapped. Draw a small snap indicator.
 - Loupe: while a finger places or drags a point (touch only), draw a 2.5× magnifier circle (~110 px)
   offset above the finger with a crosshair at the true point.
 - Overlay (when `ui.view.overlay`), by step: (2) plane rect outlines + rectified grid (`measure.planeGridLines`,
@@ -820,7 +831,9 @@ on store changes **without destroying focused inputs** (patch values or re-rende
 changes; commit text inputs on `change`, not on every keystroke). `ui.app.start()` boots: persist.load →
 store → actions → viewport → panels → top bar/step bar/canvas controls wiring → `export.initDownloads()`.
 First run (nothing saved) opens the traced sample house at step 1 with the night preview on, and a banner
-explaining it is a sample.
+explaining it is a sample. A restored plan reopens at the step saved in the `ui` pref, in day view while nothing
+is traced. Persistent notes (`ui.notice`) cover blocked storage, an autosave this version cannot read (kept as a
+backup with a Download button) and another tab saving over the plan (autosave pauses).
 
 ### 6.7 Visual design direction
 
@@ -839,3 +852,153 @@ Subject: a lighting installer's planning tool, used outdoors on a phone and at n
   `max(16px, env(safe-area-inset-*))` on panels.
 - Theme tokens: bare `:root` light; `@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){...}}`
   and `:root[data-theme="dark"]{...}` dark; `body{background:var(--bg)}`.
+
+---------------------------------------------------------------------------------------------
+
+## 7. Implementation notes (shipped Phase 1 vs. this contract)
+
+The code is the source of truth. Every documented signature above still works; the items below are where the
+shipped modules add to or refine the contract. Each file's header comment carries the same list in more detail.
+Phase 2 ports (TypeScript `@lightplan/core`) should keep these behaviours, and the unit tests pin most of them.
+
+### 7.1 Core
+
+**camera**
+- `resolveCamera(image, planes, opts?)` returns `{ok, f, cx, cy, source, label, relStd, rectEstimate, focalQuad,
+  exifIgnored}`. `ok:false` (with `f:null`, label 'Photo size unknown') when the image has no usable width/height.
+  'auto' also considers rectangle *references* (e.g. a door drawn as a rect), lowest relStd wins. EXIF focal35 is
+  ignored (`exifIgnored` = plain reason) when the EXIF pixel size does not fit the stored photo (crop / resize).
+- `estimateFocalFromQuad` also returns `samples`; `poseFromHomography` also returns `consistency
+  {normRatio, cosAngle}`; `viewAngleDeg(pose, point, normal?)` takes an optional plane normal.
+- Extra exports: `getPreset, DEFAULT_PRESET_ID, FULL_FRAME_DIAGONAL_MM, Kmatrix, KinvMatrix, focalFromQuadQuick`.
+
+**exif** — one entry whose value lies outside the EXIF block is skipped (that field is null) instead of the whole
+block returning null. Also reads `width`/`height` from 0xA002/0xA003 (used by the crop check). Extra export `TAG`.
+
+**measure**
+- `solvePlanes(...).cameras[imageId]` is the full `resolveCamera` result above (not just K + source/label/relStd).
+- `measureProject` also returns `ok` (false only for a non-object input). Its warnings may carry `imageId` and
+  `suggestedFocalPx` ('focal-mismatch'); `plan.collectWarnings` keeps only featureId/planeId/outletId/circuitId/
+  stage, so the UI reads lens warnings from `plan.measured.warnings`.
+- PlaneSolution extras: `reason` (why !ok), `issues [{code, level, message}]`, `calib {scaleFrom: 'rect'|'refs'|
+  'parent', onlyMediumLowRefs, minCourses, rectProblem, refsBothDirections, anisotropic}`, `frame` (roof/ground 3D
+  frame), `gridExtent` (overlay box on every plane; `extent` stays the rect box or null), `parentPlaneId`,
+  `disagreementZ`, `poseConsistencyPct`, `poseTolerancePct`, `focalMismatchPct`, `pitchInfo {onEave, spread,
+  samples}`, `groundScale`, `frameHimg2plane`, `frontSign` (horizon test), `promotedRefId` (a rect ref used as the
+  plane rect), `uncertaintyPct` (typical item, 2σ %) and `confidence` (plane-level rating shown on its pill).
+- `disagreementPct` is a spread, not max |errorPct| (§5.5 step 3). `scale.sx/sy` are fitted factors in ft per base
+  unit (1 for rect-known, ft/px for refs-only). Roof/ground `viewAngleDeg` is the parent wall's.
+- Derived planes do not inherit the wall's `checks`/`disagreementPct`; ground refs re-fit the ground scale about the
+  camera foot; roof/ground points at or above the surface's horizon make the item `ok:false`.
+- On a plane without `rect`, the largest valid known-size rect ref becomes the plane rect. An unknown-size rect with
+  one known side uses that side as an extra scale reference.
+- FeatureMeasurement extras: `reason`, `pixelLength`, `segmentsFt`, `uncertaintyPct` (2σ %, `Infinity` when a ±2.5 px
+  nudge breaks the measurement, null outside measureProject). Trees, columns and bushes on a ground plane with a
+  pose are measured on a vertical plane through their base (method 'ground-3d').
+- `scoreConfidence` takes the extra factors listed in §5.5 and applies level caps after the deductions; the
+  practical effect is that High needs a known-size rectangle (or cross-checked refs) whose tap-precision error is
+  ≤ 3%, and roof/ground items are Low unless pitch is entered and the lens/rectangle agree.
+- Extra exports: `QUALITY_WEIGHT, getRefPreset, refLabel, resolvePitch, spiralWrapFt`.
+
+**design** — clip rule widened (string products on roof-edge mounts get all-in-one clips, rope gets adhesive clips;
+mount 'zipTie' → zip ties, 'stake' → none, explicit 'none' → none); light stakes for any stake-mounted string or
+per-foot run; tree canopies use method 'bush-rule'; `lengthFt`/`withWasteFt` are always numbers (0 when unmeasured);
+LED-first product fallback with a run warning; products with unusable data are skipped with a warning. Extra
+exports: `resolveProduct, clipsFor, productDataProblem`.
+
+**power** — 3D cross-plane distances (camera frame) with a direction-aware Jacobian fallback; hung vs bought strings
+(spares), strings counted along each chain, mid-run feeds where hung strings end, feeding from the middle when it
+saves ≥ 10% cord; outlet limit = plugAmps · V · factor (1,440 W) with 'outlet-overload'; 'timer-tungsten';
+'many-cords'; continuous factor bounded to (0, 1]; chained power stakes `ceil((n−1)/(splitterOutlets−1))`; cord gauge
+and drop computed on the pieces bought (`cord.boughtFt`); same-wall cords past a traced door or a walkway meeting
+the wall get a cover ('cord-doorway'). Feeds also carry `cordUnknown`; feeds consider only outlets on the same photo
+unless `params.outletId` forces one. Extra codes: cord-unknown, outlet-no-circuit, outlet-missing, cord-ampacity.
+Extra exports: `limitW, continuousFactorOf, voltageDropPct, chooseCordGauge, cordPieces, sizeCord, DISCLAIMER`.
+
+**bom** — results carry `ok` (false + `reason` when the data is unusable); light lines keyed by product + color mode
+(custom palettes split lines); clip packs add waste, light stakes do not; quote omits zero fees/tax; checklist
+follows `feed.portions`, chains power stakes and adds "No outlet chosen yet" / "Not in the plan yet" groups;
+`bomToCsv` uses CRLF, neutralises formula-leading cells and writes the subtotal in a summary row (blank row, then
+'Subtotal' in SKU and the amount in Item) so summing Line Total is not doubled. Extra exports: `round2, emptyBom`.
+
+**schema** — factories take `opts.id`, `opts.rng` and (createProject) `opts.now`; without `now`, createdAt/updatedAt
+are null (core never reads the clock). `settings.roofPitch` defaults to **null** (unknown → estimated, else 6/12).
+`normalizeProject` keeps unknown keys on every nested object, drops a top-level `derived`, nulls dangling ids and
+drops refs with the wrong point count. `validateProject` checks custom products like the product editor.
+`importProject` also accepts a JSON string and reads a string wrapper version ("2" → refused as newer). Extra
+exports: `EXPORT_SCHEMA_ID, EXPORT_VERSION, ENUMS, ID_PREFIX, createDefaultSettings, createDefaultQuote,
+quoteFieldProblem`.
+
+**plan** — `computePlan` never throws: a failing stage adds a danger warning `{code:'internal-error', stage}` and an
+empty result. Run warnings become `{level:'warn', code:'run', message, featureId}`. `summary.circuits` counts
+circuits that power a feed; `summary.quoteTotal` is null when installer mode is off. `mergeRunInfo` also copies
+power's per-run quantity/hung/watts/amps/bulbs and a detail note. Extra exports: `mergeRunInfo, collectWarnings,
+summarize, emptyMeasured, emptyPower`.
+
+**sample** — groundTruth values are numbers except bushes (`{widthFt, heightFt}`); the tree's value is its trunk
+height. `camera.distanceFt` is added; extra exports `SAMPLE_WIDTH, SAMPLE_HEIGHT`. The sample's taps are exact
+projections, so its lengths match ground truth within 0.4% (bushes, traced on the wall, come out 6–11% wide and are
+flagged), yet most items are rated **Low**: ratings assume a human's ±2.5 px taps on a 1600 × 1100 photo, and the
+front wall's rectangle is sized by references, the roof pitch is estimated and the ground is far away.
+
+### 7.2 UI
+
+**store** — UI state also has `calib`, `bannerDismissed`, `busy`, `notice` and `activeVertex`. `createStore` accepts
+`opts.persist` (null disables autosave) and `opts.now`. `commit()` returns true when the project changed; a mutator
+may return false to cancel. `setImage(id, el, dataUrl, {persist:false})`. undo/redo are no-ops inside a gesture.
+Extra methods: `undoLabel(), redoLabel(), getImageData(imageId) → dataUrl | null, inGesture(), clearImages()`.
+Extra exports: `defaultUI, sanitizeUI, activeImageOf, MAX_HISTORY`.
+
+**actions** — extra line purpose 'planeLine' (redraw a roof eave / ground base); `completeDraft({close})`;
+`addOutlet` uses `wallForPoint`; `startTrace` picks the surface by `KINDS_FOR_TYPE` and, for a walkway/stakes with no
+ground plane, starts the ground base line first (`opts.thenTrace`); `loadSample` asks first and is undoable;
+`deletePlane` returns `Promise<bool>`; `addCircuit`/`addPlane` return the new id; `updateQuote` returns false (and
+toasts) for values a reload would reset. Extra actions: `undo, undoLabel, canUndo` (a draft point first),
+`hasUserWork, setActiveVertex, setActivePlane, setView, setCalib, setSheet, startPlaneRect, removePlaneRect,
+startReference, startTrace, startOutlet, redrawPlaneLine, changeFeatureType, resetAutoPlan, setProjectName,
+dismissBanner, dismissToast, confirmReplace, hydrateImages` (resolves `{missing, damaged}`), `deleteFeature,
+deleteRef, deleteOutlet`. Module exports also `parseLength(text)` (6'-8", 6' 8 1/2", 36-1/2", 1,200 …),
+`nextFeatureLabel, nextOutletLabel, wallForPoint, KINDS_FOR_TYPE`.
+
+**persist** (not specified in §6) — project JSON in localStorage `lightplan:v1:project`, photos in IndexedDB
+`lightplan/images` (localStorage fallback `lightplan:v1:img:<key>`), prefs `lightplan:v1:pref:<name>` (including
+`ui` = {step, night, preview}); the sample photo is never stored. Exports `load` (also returns `raw`), `clear,
+saveProject` (debounced ~400 ms), `saveProjectNow, flush, isAvailable, backupUnreadable/loadBackup/clearBackup`
+(`lightplan:v1:project:unreadable`), `handleStorageEvent, setForeignChangeHandler, isAutosavePaused/pauseAutosave/
+resumeAutosave, saveImage, loadImage, deleteImage, pruneImages` (keeps photos of the backup and of another tab's
+plan), `savePref, loadPref, setErrorHandler` and the key constants. Every call resolves; nothing rejects.
+
+**imagesource** — `SampleImageSource.acquire` also returns `sample` (the full createSample result). Extra exports:
+`decodeArrayBuffer, decodeFile, loadElement, renderSample, isHeic, maxImageSide, undecodableMessage`.
+
+**viewport** — snapping and double-tap rules as in §6.3 (same-surface vertex snap capped at 1% of the photo, no
+axis snap on calibration geometry). A selected traced item shows "+" midpoint handles (insertVertex); pressing a
+point sets `ui.activeVertex`. Extra members `canvas, getView, setView, zoomIn, zoomOut, isAnimating`; extra keys
++ / − / 0 and Delete; step 5 labels cord paths with their length. Module extras for tests: `selectionHandles,
+snapCandidates` (entries carry `planes[]`), `layersFor, targetKey, midpointHandles, isDoubleTap, snapRadiusImg`.
+
+**preview** — Bulb also has `a, run, s, dim`; the returned array carries `strands` and `imageId`; `drawBase` takes
+width/height; `drawBulbs` takes `dpr` and `cache` (layer cache + 6 twinkle groups); `renderSnapshot` takes `imageId`.
+Extra exports: `clearCaches, twinkleFactor, roundRectPath, BULB_RADIUS_IN, MAX_BUSH_BULBS, MIN_SPACING_PX`.
+
+**export** — `saveFile` result set as in §6.5; only one save at a time; inside the viewer the blob fallback is never
+tried. `initDownloads({timeoutMs=12000})` returns the cached promise. PdfDoc is richer than §6.5 (title/author
+metadata, lineHeight/maxLines, `wrapText`, `setPage`, dashed lines, rounded rects; `text()` returns
+`{lines, width, height}` and treats y as the top of the first line). Export functions reject with a plain Error
+when there is nothing to export. Extra exports include `buildReportPdf, buildQuotePdf, parseJpeg` and formatting
+helpers; `_resetDownloads` is for tests only.
+
+**panels / app** — `mount()` returns `{render, destroy}`; extra exports `icon, h, morph, pickFile, exportFile,
+stepWarnings, warningStep, STEPS, validateProducts, diffConfig, ICONS`. `warningStep` routes 'focal-mismatch' and
+'exif-ignored' to step 1, where the Lens section offers "Use N px" (click action 'lens-use'). The safe-share field
+reads 1–100 as a percent. `ui.app` loads viewport and export lazily and guarded (they are not `define()`
+dependencies), exports `start, hintFor`, and adds the hint-bar surface picker (`#hint-plane`), the persistent
+`#notice` and a short-landscape layout (side panel, compact bars).
+
+### 7.3 Tests and verification at hand-off
+
+- `node --test`: 304 unit tests, all passing (incl. `measure-honesty.test.js`, a seeded 250-house simulation: 98%
+  of High results within ±3%, 99% of Medium within ±6%).
+- `node tests/e2e/smoke.mjs` (after `node build.js`; Playwright Chromium): passes phone 41, desktop 41, dark 41,
+  blocked-storage 4, inputs 11, measure 8, review 35, landscape 4 — 185 checks. `LP_SECTIONS=<regex>` with
+  `--only=<pass>` runs a subset; screenshots go to `tests/e2e/out/` (gitignored).

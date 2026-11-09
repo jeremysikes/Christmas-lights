@@ -930,6 +930,13 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
 .lp-app[data-mode="line"] .toast-region,
 .lp-app[data-mode="trace"] .toast-region,
 .lp-app[data-mode="outlet"] .toast-region { top: auto; bottom: 68px; }
+@media (max-width: 899px) {
+  /* Below 900 px the zoom buttons sit at the bottom right of the photo: keep the toast clear of them. */
+  .lp-app[data-mode="rect"] .toast-region,
+  .lp-app[data-mode="line"] .toast-region,
+  .lp-app[data-mode="trace"] .toast-region,
+  .lp-app[data-mode="outlet"] .toast-region { right: calc(var(--gutter-r) + 60px); }
+}
 .banner-short { display: none; }
 
 /* Phones: the sample note is one compact row so the photo keeps its room. */
@@ -948,7 +955,8 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
   .topbar { min-height: 44px; }
   .step { min-height: 40px; flex-direction: row; gap: 6px; }
   .step-num { width: 22px; height: 22px; font-size: 12px; }
-  .step-badge { top: 2px; }
+  /* The number and label sit in a row here, so the badge follows the label instead of covering it. */
+  .step-badge { position: static; flex: none; }
   .workspace { flex-direction: row; }
   .panel,
   .lp-app[data-sheet="min"] .panel,

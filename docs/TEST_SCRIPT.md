@@ -1,5 +1,7 @@
 # Field test: LightPlan vs. a tape measure
 
+Before going out, check the build: `npm run build`, `npm test` (304 unit tests, all passing) and `npm run e2e` (185 smoke checks in Chromium, all passing). Then open `dist/lightplan.html` on the phone you will use.
+
 About 45 minutes on a real house. You need a 25 ft (or longer) tape measure, a phone, and a helper for the long measurements. Do everything from the ground; no ladder is needed.
 
 ## 1. Tape-measure the house first
@@ -26,7 +28,7 @@ Do not crop or edit the photos. Upload the originals so LightPlan can read the l
 
 ## 3. Measure in LightPlan (straight-on photo)
 
-1. **Upload.** Step 1, Choose photo. Check that the lens line says the focal length came from the photo (EXIF). If it says "assumed", keep going and note it.
+1. **Upload.** Step 1, Choose photo. In the Lens section, check that the badge says "From the photo" (EXIF). If it says "Assumed", keep going and note it: once a rectangle is marked it may change to "Measured". If a lens warning appears later with a "Use N px" button, the lens setting disagrees with the rectangles in the photo; note it, then tap the button.
 2. **Garage wall.** Step 2. Add a wall plane named "Garage". Choose the rectangle preset that matches your garage door (single 9 × 7 ft or double 16 × 7 ft) and tap its four corners. Zoom in so each tap lands on the corner; use the magnifier on a phone.
 3. **Front wall.** Select "Front wall". Rectangle: "Size unknown" and tap the four corners of the wall (foundation corners and the two top corners under the eave). Add two references: "Entry door height (80 in)" along the door's edge, and a long horizontal one: Custom length with the tape value of D (the wall along the foundation) or of the garage door width (B). A short reference such as the 36 in door width adds more tap error than it removes. If your door is not standard, use Custom length with the tape value from A. For the best rating, use the tape value of D as the rectangle's width instead ("Custom rectangle"): a large rectangle of known size is what earns "High".
 4. **Read the reference check.** Each reference shows expected vs. measured. A disagreement warning above 5% means a tap is off or a reference size is wrong; fix it before going on. On a short reference part of the gap can be tap error: zoom in and re-tap its ends.
@@ -37,7 +39,7 @@ Do not crop or edit the photos. Upload the originals so LightPlan can read the l
 
 1. **Swap references.** Delete the horizontal reference and re-read D. Then put it back and delete the door-height reference. Lengths should move by less than the expected error listed under their confidence pill. A bigger change means one reference is misplaced.
 2. **Angled photo.** Repeat section 3 with the angled photo. In-plane lengths (A–E) should agree with the straight-on results within 3%.
-3. **Override.** Type the tape value for D into the override box. The confidence changes to "Tape-measured", and the string counts, BOM and power plan update.
+3. **Override.** Type the tape value for D into the "Tape-measured length" box. The pill changes to "High · tape" (reason "Tape-measured"), and the string counts, BOM and power plan update.
 4. **Pitch.** If you measured H, compare it with the estimated pitch in step 2 (shown as "estimated" on the roof plane).
 
 ## 5. Results table
