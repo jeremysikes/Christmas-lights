@@ -61,10 +61,20 @@
       <div class="stage-top">
         <div id="hintbar" class="hintbar" role="status" hidden>
           <p class="hint-line"><span id="hint-text"></span> <span id="hint-count" class="hint-count num" hidden></span></p>
+          <label id="hint-plane-wrap" class="hint-plane" hidden><span>On</span><select id="hint-plane" aria-label="Surface to trace on"></select></label>
           <div class="hint-actions">
             <button id="hint-undo" type="button" class="btn small">Undo point</button>
             <button id="hint-cancel" type="button" class="btn small">Cancel</button>
             <button id="hint-finish" type="button" class="btn small primary">Finish</button>
+          </div>
+        </div>
+        <div id="notice" class="sample-banner notice" role="alert" hidden>
+          <span class="banner-icon" data-icon="warning"></span>
+          <p id="notice-text"></p>
+          <div class="banner-actions">
+            <button id="notice-a" type="button" class="btn small primary"></button>
+            <button id="notice-b" type="button" class="btn small" hidden></button>
+            <button id="notice-close" type="button" class="icon-btn small" aria-label="Hide this note" title="Hide this note"><span data-icon="close"></span></button>
           </div>
         </div>
         <div id="sample-banner" class="sample-banner" hidden>
@@ -87,6 +97,7 @@
         <button id="ctl-twinkle" class="ctl" type="button" aria-pressed="false" aria-label="Twinkle"><span data-icon="sparkle"></span></button>
         <button id="ctl-overlay" class="ctl" type="button" aria-pressed="true" aria-label="Tracing overlay"><span data-icon="layers"></span></button>
         <button id="ctl-labels" class="ctl" type="button" aria-pressed="true" aria-label="Length labels"><span data-icon="tag"></span></button>
+        <button id="ctl-snap" class="ctl" type="button" aria-pressed="true" aria-label="Snap to points"><span data-icon="magnet"></span></button>
       </div>
 
       <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>

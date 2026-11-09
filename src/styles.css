@@ -910,6 +910,69 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
   .stage-top { right: calc(var(--gutter-r) + 56px); max-width: 720px; }
   .zoom-controls { top: 8px; bottom: auto; }
 }
+/* ---------------------------------------------------------------- hint bar surface picker, notices */
+.hint-plane { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; color: #cfd8e2; }
+.hint-plane select {
+  min-height: 36px;
+  max-width: 190px;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #f2f5f8;
+  font: inherit;
+  font-weight: 700;
+}
+.hint-plane select option { color: #15302b; background: #fff; }
+.notice .banner-icon { color: #ffbf5a; }
+/* While a tool is active the hint bar holds the instructions: toasts move to the bottom of the photo. */
+.lp-app[data-mode="rect"] .toast-region,
+.lp-app[data-mode="line"] .toast-region,
+.lp-app[data-mode="trace"] .toast-region,
+.lp-app[data-mode="outlet"] .toast-region { top: auto; bottom: 68px; }
+.banner-short { display: none; }
+
+/* Phones: the sample note is one compact row so the photo keeps its room. */
+@media (max-width: 599px) {
+  .sample-banner:not(.notice) { flex-wrap: nowrap; gap: 8px; padding: 4px 4px 4px 12px; }
+  .sample-banner:not(.notice) .banner-icon { display: none; }
+  .sample-banner:not(.notice) p { flex: 1 1 auto; font-size: 13px; line-height: 1.25; }
+  .sample-banner:not(.notice) .banner-actions { flex-wrap: nowrap; }
+  .banner-long { display: none; }
+  .banner-short { display: inline; }
+  .notice p { font-size: 13px; }
+}
+
+/* Phones held sideways: the photo needs the height, so the panel moves to the side and the bars shrink. */
+@media (max-width: 899px) and (max-height: 500px) and (orientation: landscape) {
+  .topbar { min-height: 44px; }
+  .step { min-height: 40px; flex-direction: row; gap: 6px; }
+  .step-num { width: 22px; height: 22px; font-size: 12px; }
+  .step-badge { top: 2px; }
+  .workspace { flex-direction: row; }
+  .panel,
+  .lp-app[data-sheet="min"] .panel,
+  .lp-app[data-sheet="full"] .panel {
+    flex: 0 0 min(340px, 42vw);
+    margin-top: 0;
+    border-top: 0;
+    border-left: 1px solid var(--line);
+    border-radius: 0;
+    box-shadow: none;
+    transition: none;
+  }
+  .sheet-handle { display: none; }
+  .panel-root { padding-top: 12px; }
+  .lp-app[data-sheet="full"][data-has-image="true"] .canvas-controls { display: flex; }
+  .stage-top { top: 6px; gap: 6px; }
+  .hintbar { padding: 4px 4px 4px 10px; gap: 4px 8px; }
+  .hint-line { flex-basis: 160px; font-size: 13px; }
+  .zoom-controls { bottom: 6px; }
+  .view-controls { bottom: 6px; }
+  /* The side panel's trace bar is in view and has the same Undo / Cancel / Finish buttons. */
+  .lp-app[data-mode="trace"] .hint-actions { display: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .lp-app *, .lp-app *::before, .lp-app *::after { animation: none !important; transition: none !important; }
 }

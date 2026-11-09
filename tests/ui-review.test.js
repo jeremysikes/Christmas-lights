@@ -218,3 +218,110 @@ test('mobile-ux:UX-12 Undo while tracing removes the last tapped point before to
   actions.undo();
   assert.equal(store.project().features.length, 0, 'with no draft, Undo reverts the last change');
 });
+
+// ---------------------------------------------------------------- persist with a fake localStorage
+function fakeStorage() {
+  const m = new Map();
+  return {
+    get length() { return m.size; },
+    key: (i) => Array.from(m.keys())[i] ?? null,
+    getItem: (k) => (m.has(k) ? m.get(k) : null),
+    setItem: (k, v) => { m.set(k, String(v)); },
+    removeItem: (k) => { m.delete(k); },
+    _map: m,
+  };
+}
+function withStorage(ls, fn) {
+  const had = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, get: () => { if (ls === 'throw') throw new Error('SecurityError'); return ls; } });
+  const done = () => { if (had) Object.defineProperty(globalThis, 'localStorage', had); else delete globalThis.localStorage; };
+  try {
+    const r = fn();
+    if (r && typeof r.then === 'function') return r.finally(done);
+    done();
+    return r;
+  } catch (e) { done(); throw e; }
+}
+
+test('mobile-ux:UX-03 / data-export:F2 persist says when storage is unavailable and reports failed saves', () => {
+  const persist = LP.require('ui.persist');
+  const msgs = [];
+  persist.setErrorHandler((m) => msgs.push(m));
+  withStorage('throw', () => {
+    assert.equal(persist.isAvailable(), false);
+    assert.equal(persist.saveProjectNow({ a: 1 }), false);
+  });
+  assert.equal(msgs.length, 1, 'a failed autosave is reported even when storage cannot be reached');
+  withStorage(fakeStorage(), () => { assert.equal(persist.isAvailable(), true); });
+  persist.setErrorHandler(null);
+});
+
+test('data-export:F3 an unreadable autosave is backed up and its photos are kept', async () => {
+  const persist = LP.require('ui.persist');
+  const ls = fakeStorage();
+  await withStorage(ls, async () => {
+    const raw = JSON.stringify({ schema: 'lightplan/project', version: 2, name: 'My real house', images: [{ id: 'img_9', storageKey: 'img_9' }] });
+    ls.setItem(persist.PROJECT_KEY, raw);
+    ls.setItem(persist.IMAGE_PREFIX + 'img_9', 'data:image/jpeg;base64,AAAA');
+    ls.setItem(persist.IMAGE_PREFIX + 'img_old', 'data:image/jpeg;base64,BBBB');
+    const saved = await persist.load();
+    assert.equal(saved.raw, raw, 'load returns the raw text so it can be kept');
+    assert.equal(persist.backupUnreadable(saved.raw), true);
+    assert.equal(persist.loadBackup(), raw);
+    // The app shows the sample and the user edits it: autosave overwrites the main key, the backup stays.
+    persist.saveProjectNow({ name: 'Sample house' });
+    assert.equal(persist.loadBackup(), raw);
+    await persist.pruneImages(['sample']);
+    assert.ok(ls.getItem(persist.IMAGE_PREFIX + 'img_9'), 'the backed-up plan keeps its photo');
+    assert.equal(ls.getItem(persist.IMAGE_PREFIX + 'img_old'), null, 'other unused photos are still pruned');
+  });
+});
+
+test('data-export:F5 a save from another tab pauses autosave here and its photos are not pruned', async () => {
+  const persist = LP.require('ui.persist');
+  const ls = fakeStorage();
+  await withStorage(ls, async () => {
+    persist.resumeAutosave();
+    persist.saveProjectNow({ name: 'Tab A house', images: [{ storageKey: 'img_a' }] });
+    ls.setItem(persist.IMAGE_PREFIX + 'img_a', 'data:a');
+    ls.setItem(persist.IMAGE_PREFIX + 'img_b', 'data:b');
+    // Tab B writes its own project (this is what the browser's storage event reports).
+    const other = JSON.stringify({ name: 'Tab B house', images: [{ storageKey: 'img_b' }] });
+    ls.setItem(persist.PROJECT_KEY, other);
+    let told = 0;
+    persist.setForeignChangeHandler(() => { told += 1; });
+    persist.handleStorageEvent({ key: persist.PROJECT_KEY, newValue: other });
+    assert.equal(told, 1, 'the app is told another tab changed the plan');
+    assert.equal(persist.isAutosavePaused(), true);
+    assert.equal(persist.saveProjectNow({ name: 'Tab A house 2' }), false, 'this tab no longer overwrites the other tab');
+    assert.equal(JSON.parse(ls.getItem(persist.PROJECT_KEY)).name, 'Tab B house');
+    // Replacing the project in this tab must not delete the other tab's photo.
+    await persist.pruneImages(['img_new']);
+    assert.ok(ls.getItem(persist.IMAGE_PREFIX + 'img_b'), "the other tab's photo is kept");
+    // An echo of this tab's own write is not a foreign change.
+    persist.resumeAutosave();
+    persist.saveProjectNow({ name: 'Mine' });
+    persist.handleStorageEvent({ key: persist.PROJECT_KEY, newValue: ls.getItem(persist.PROJECT_KEY) });
+    assert.equal(told, 1);
+    persist.setForeignChangeHandler(null);
+  });
+});
+
+// ---------------------------------------------------------------- completeness:F8 / mobile-ux:UX-08 (actions side)
+test('completeness:F8 inserting a point picks it; Delete point removes the picked point', () => {
+  const { store, actions } = setup(tracedSample());
+  actions.select({ kind: 'feature', id: 'ft_eave' });
+  const before = store.project().features.find((f) => f.id === 'ft_eave').points.length;
+  actions.insertVertex('ft_eave', 0, [700, 641]);
+  assert.equal(store.project().features.find((f) => f.id === 'ft_eave').points.length, before + 1);
+  assert.deepEqual(store.ui().activeVertex, { featureId: 'ft_eave', index: 1 });
+  actions.deleteVertex('ft_eave', 1);
+  assert.equal(store.project().features.find((f) => f.id === 'ft_eave').points.length, before);
+  assert.equal(store.ui().activeVertex, null);
+  // Clips, forced outlet and direction are honoured by the plan.
+  actions.updateFeature('ft_eave', { params: { mount: 'gutter', outletId: 'out_garage', reverse: true } });
+  const run = store.plan().runs.find((r) => r.featureId === 'ft_eave');
+  assert.equal(run.clips && run.clips.type, 'gutter');
+  const feed = store.plan().power.feeds.find((fd) => fd.runIds.includes(run.id));
+  assert.equal(feed.outletId, 'out_garage');
+});

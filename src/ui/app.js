@@ -79,17 +79,40 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
         project.updatedAt = t;
         try { sampleCanvas = imagesource.renderSample(s.primitives, s.width, s.height); } catch (e) { sampleCanvas = null; }
       }
+      // An autosave this version cannot open is copied to a backup key before the sample's autosave can replace it;
+      // if even that fails, autosave pauses until the user downloads it or closes the note.
+      let unreadable = null;
+      if (restoreProblem && saved && typeof saved.raw === 'string') {
+        const kept = persist.backupUnreadable(saved.raw);
+        if (!kept) persist.pauseAutosave();
+        unreadable = { raw: saved.raw, kept, message: restoreProblem };
+      }
+      // A restored plan reopens at the step and view the user left (day view while nothing is traced yet).
+      const pref = firstRun ? null : persist.loadPref('ui', null);
+      const prefStep = pref && Number.isInteger(pref.step) && pref.step >= 1 && pref.step <= 6 ? pref.step : 1;
+      const traced = project.features.length > 0;
+      const night = firstRun ? true : traced && !(pref && pref.night === false);
+      const lightsOn = firstRun ? true : !(pref && pref.preview === false);
       const defaults = storeModule.defaultUI();
       const store = storeModule.createStore({
         project,
         ui: {
-          step: 1,
+          step: firstRun ? 1 : prefStep,
           sheet: 'half',
-          view: Object.assign({}, defaults.view, { preview: true, night: true, twinkle: firstRun && !reducedMotion() }),
+          view: Object.assign({}, defaults.view, { preview: lightsOn, night, twinkle: firstRun && !reducedMotion() }),
+          notice: !persist.isAvailable() ? { kind: 'storage' } : unreadable ? { kind: 'unreadable', raw: unreadable.raw, kept: unreadable.kept, message: unreadable.message } : null,
         },
       });
       const actions = actionsModule.createActions(store);
-      persist.setErrorHandler((msg) => actions.toast(msg, 'warn'));
+      persist.setErrorHandler((msg) => {
+        // The storage note already says nothing is being saved; do not repeat it as a toast on every edit.
+        const n = store.ui().notice;
+        if (n && n.kind === 'storage') return;
+        actions.toast(msg, 'warn');
+      });
+      // Another tab saved over this plan: this tab stops autosaving (persist pauses) and asks what to do.
+      persist.setForeignChangeHandler(() => store.setUI({ notice: { kind: 'foreign' } }));
+      try { window.addEventListener('storage', (e) => persist.handleStorageEvent(e)); } catch (e) { /* ignore */ }
 
       if (firstRun) {
         if (sampleCanvas) store.setImage(project.images[0].id, sampleCanvas, null);
@@ -115,8 +138,7 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
       shell.render();
       store.subscribe(() => shell.schedule());
 
-      if (restoreProblem) actions.toast(restoreProblem + ' Showing the sample house instead.', 'error');
-      else if (!firstRun) actions.toast('Welcome back. Your plan was restored.', 'ok');
+      if (!restoreProblem && !firstRun) actions.toast('Welcome back. Your plan was restored.', 'ok');
 
       // Expose for debugging and end-to-end tests (read-only use).
       try { window.LightPlanApp = { store, actions, viewport }; } catch (e) { /* ignore */ }
@@ -180,6 +202,13 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
       const hintUndo = $('hint-undo');
       const hintCancel = $('hint-cancel');
       const hintFinish = $('hint-finish');
+      const hintPlaneWrap = $('hint-plane-wrap');
+      const hintPlane = $('hint-plane');
+      const notice = $('notice');
+      const noticeText = $('notice-text');
+      const noticeA = $('notice-a');
+      const noticeB = $('notice-b');
+      const noticeClose = $('notice-close');
       const banner = $('sample-banner');
       const empty = $('empty-state');
       const busy = $('busy');
@@ -195,7 +224,7 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
       const panelEl = $('panel');
       const ctl = {
         zoomIn: $('ctl-zoom-in'), zoomOut: $('ctl-zoom-out'), fit: $('ctl-fit'),
-        night: $('ctl-night'), twinkle: $('ctl-twinkle'), overlay: $('ctl-overlay'), labels: $('ctl-labels'),
+        night: $('ctl-night'), twinkle: $('ctl-twinkle'), overlay: $('ctl-overlay'), labels: $('ctl-labels'), snap: $('ctl-snap'),
       };
 
       let scheduled = false;
@@ -206,6 +235,9 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
       let restoreSheet = null;
       let lastModeName = 'select';
       let dialogReturnFocus = null;
+      let lastPref = null;
+      let lastSelKey = null;
+      let hintPlaneKey = null;
 
       const on = (el, ev, fn, opts) => { if (el) el.addEventListener(ev, fn, opts); };
 
@@ -257,22 +289,62 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
       on(ctl.zoomOut, 'click', () => viewport.zoomBy(1 / 1.4));
       on(ctl.fit, 'click', () => viewport.fit());
       const flip = (key) => actions.setView({ [key]: !store.ui().view[key] });
+      // The buttons show night/twinkle as on only while the lights are on, so a tap acts on what is shown: with the
+      // lights off, Night or Twinkle turns the lights on with it.
       on(ctl.night, 'click', () => {
         const v = store.ui().view;
-        // Night only makes sense with the lights on, so turning night on also turns the preview on.
-        actions.setView(v.night ? { night: false } : { night: true, preview: true });
+        actions.setView(v.night && v.preview ? { night: false } : { night: true, preview: true });
       });
       on(ctl.twinkle, 'click', () => {
         const v = store.ui().view;
-        actions.setView(v.twinkle ? { twinkle: false } : { twinkle: true, preview: true });
+        actions.setView(v.twinkle && v.preview ? { twinkle: false } : { twinkle: true, preview: true });
       });
       on(ctl.overlay, 'click', () => flip('overlay'));
       on(ctl.labels, 'click', () => flip('labels'));
+      on(ctl.snap, 'click', () => flip('snap'));
 
       // ---------------------------------------------------------------- hint bar, banner, empty state
       on(hintUndo, 'click', () => actions.removeLastDraftPoint());
       on(hintCancel, 'click', () => actions.cancelDraft());
       on(hintFinish, 'click', () => actions.completeDraft());
+      on(hintPlane, 'change', () => actions.setActivePlane(hintPlane.value));
+
+      // ---------------------------------------------------------------- notice (storage, unreadable autosave, other tab)
+      function saveRaw(raw) {
+        const exp = LP.has('ui.export') ? LP.require('ui.export') : null;
+        if (!exp) return Promise.resolve('failed');
+        return Promise.resolve().then(() => exp.saveFile('lightplan-saved-plan.json', raw, 'application/json'));
+      }
+      on(noticeA, 'click', () => {
+        const n = store.ui().notice;
+        if (!n) return;
+        if (n.kind === 'storage') panels.exportFile(store, actions, 'json');
+        else if (n.kind === 'unreadable') {
+          saveRaw(n.raw).then((res) => {
+            if (res === 'saved') {
+              persist.resumeAutosave();
+              store.setUI({ notice: null });
+              actions.toast('The saved plan was downloaded. Open it with a newer LightPlan.', 'ok');
+            } else if (res !== 'declined') actions.toast('The saved plan could not be downloaded here.', 'error');
+          });
+        } else if (n.kind === 'foreign') {
+          try { window.location.reload(); } catch (e) { /* ignore */ }
+        }
+      });
+      on(noticeB, 'click', () => {
+        const n = store.ui().notice;
+        if (n && n.kind === 'foreign') {
+          persist.resumeAutosave();
+          persist.saveProjectNow(store.project());
+          store.setUI({ notice: null });
+          actions.toast('This tab\'s plan is saved again. The other tab\'s changes were replaced.', 'ok');
+        }
+      });
+      on(noticeClose, 'click', () => {
+        const n = store.ui().notice;
+        if (n && n.kind === 'unreadable') persist.resumeAutosave();
+        store.setUI({ notice: null });
+      });
       on($('banner-close'), 'click', () => actions.dismissBanner());
       for (const b of Array.from(document.querySelectorAll('[data-pick]'))) {
         on(b, 'click', () => {
@@ -352,15 +424,17 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
         if (!drag || (e && e.pointerId !== drag.id)) return;
         const d = drag;
         drag = null;
-        appEl.classList.remove('sheet-dragging');
         if (!d.moved) {
+          appEl.classList.remove('sheet-dragging');
           const cur = store.ui().sheet;
           actions.setSheet(cur === 'min' ? 'half' : cur === 'half' ? 'full' : 'min');
           return;
         }
         const hNow = panelEl.getBoundingClientRect().height;
         panelEl.style.flexBasis = '';
-        // Snap to the nearest size by measuring each one.
+        // Snap to the nearest size by measuring each one. 'sheet-dragging' stays on while measuring: it turns the
+        // flex-basis transition off, without which every size would measure as the current, mid-transition height.
+        appEl.classList.add('sheet-dragging');
         let best = 'half';
         let bestD = Infinity;
         for (const s of SHEETS) {
@@ -368,7 +442,9 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
           const dist = Math.abs(panelEl.getBoundingClientRect().height - hNow);
           if (dist < bestD) { bestD = dist; best = s; }
         }
-        appEl.setAttribute('data-sheet', store.ui().sheet);
+        appEl.setAttribute('data-sheet', best);
+        void panelEl.offsetHeight;   // apply the chosen size before the transition comes back
+        appEl.classList.remove('sheet-dragging');
         actions.setSheet(best);
         restoreSheet = null;
       };
@@ -416,6 +492,42 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
         toastRegion.appendChild(el);
         if (toastTimer) clearTimeout(toastTimer);
         toastTimer = setTimeout(() => actions.dismissToast(t.id), TOAST_MS[t.kind] || 4000);
+      }
+
+      function renderNotice(ui) {
+        const n = ui.notice;
+        if (!notice) return;
+        notice.hidden = !n;
+        if (!n) return;
+        let text = '';
+        let a = null;
+        let b = null;
+        let closable = true;
+        if (n.kind === 'storage') {
+          text = 'This browser is not saving your plan, so it is lost when the page closes. Use Save project before you leave.';
+          a = 'Save project';
+        } else if (n.kind === 'unreadable') {
+          text = (n.message || 'The saved plan could not be opened.') + (n.kept
+            ? ' It is kept in this browser; download it to open it elsewhere. The sample house is shown meanwhile.'
+            : ' Download it now: until you do (or close this note), this page does not autosave.');
+          a = 'Download it';
+        } else if (n.kind === 'foreign') {
+          text = 'This plan was changed in another tab. This tab stopped saving so it does not overwrite that work.';
+          a = 'Reload';
+          b = 'Keep this tab\'s plan';
+          closable = false;
+        }
+        noticeText.textContent = text;
+        noticeA.textContent = a || '';
+        noticeA.hidden = !a;
+        noticeB.textContent = b || '';
+        noticeB.hidden = !b;
+        noticeClose.hidden = !closable;
+      }
+      function planeLabel(p) {
+        const kind = p.kind === 'roof' ? 'roof' : p.kind === 'ground' ? 'ground' : 'wall';
+        const name = p.name || kind;
+        return name.toLowerCase().indexOf(kind) >= 0 ? name : name + ' · ' + kind;
       }
 
       function renderDialog(ui) {
@@ -466,7 +578,24 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
           return;
         }
         lastModeName = ui.mode.name;
+        // Phone: a canvas tap that selects an item raises a collapsed sheet so its editor (and Delete) can be seen.
+        const sel = ui.selection;
+        const selKey = sel ? sel.kind + ':' + sel.id : null;
+        if (selKey !== lastSelKey) {
+          const was = lastSelKey;
+          lastSelKey = selKey;
+          if (selKey && was !== selKey && ui.mode.name === 'select' && !isDesktop() && ui.sheet === 'min') {
+            actions.setSheet('half');
+            return;
+          }
+        }
         appEl.setAttribute('data-sheet', ui.sheet);
+        // Remember the step and view so a reload reopens where the user was.
+        const prefNow = ui.step + '|' + ui.view.night + '|' + ui.view.preview;
+        if (prefNow !== lastPref) {
+          lastPref = prefNow;
+          persist.savePref('ui', { step: ui.step, night: !!ui.view.night, preview: !!ui.view.preview });
+        }
         if (handle) {
           handle.setAttribute('aria-label', 'Panel size: ' + ui.sheet + '. Tap to change.');
         }
@@ -477,7 +606,7 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
         redoBtn.disabled = !store.canRedo();
         const ul = actions.undoLabel();
         const rl = store.redoLabel();
-        undoBtn.title = ul ? 'Undo: ' + ul : 'Undo';
+        undoBtn.title = ul === 'Undo point' ? ul : ul ? 'Undo: ' + ul : 'Undo';
         undoBtn.setAttribute('aria-label', undoBtn.title);
         redoBtn.title = rl ? 'Redo: ' + rl : 'Redo';
         redoBtn.setAttribute('aria-label', redoBtn.title);
@@ -505,12 +634,13 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
         setPressed(ctl.night, v.night && v.preview, 'Night preview (on)', 'Night preview (off)');
         if (ctl.night) {
           const ic = ctl.night.querySelector('[data-icon]');
-          const want = v.night ? 'moon' : 'sun';
+          const want = v.night && v.preview ? 'moon' : 'sun';
           if (ic && ic.getAttribute('data-icon') !== want) { ic.setAttribute('data-icon', want); ic.textContent = ''; ic.appendChild(panels.icon(want)); }
         }
         setPressed(ctl.twinkle, v.twinkle && v.preview, 'Twinkle (on)', 'Twinkle (off)');
         setPressed(ctl.overlay, v.overlay, 'Tracing overlay (on)', 'Tracing overlay (off)');
         setPressed(ctl.labels, v.labels, 'Length labels (on)', 'Length labels (off)');
+        setPressed(ctl.snap, v.snap, 'Snap to points (on)', 'Snap to points (off)');
         for (const k of ['zoomIn', 'zoomOut', 'fit']) if (ctl[k]) ctl[k].disabled = !image;
 
         // Hint bar
@@ -525,16 +655,43 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
           hintFinish.hidden = !(ui.mode.name === 'trace' && FEATURE_TYPES[ui.mode.opts.type] && FEATURE_TYPES[ui.mode.opts.type].geometry !== 'vertical');
           hintFinish.disabled = !hint.finish;
         }
+        // The surface being traced on, with a picker, right in the hint bar (the panel is collapsed while tracing).
+        const tracing = ui.mode.name === 'trace';
+        if (hintPlaneWrap) hintPlaneWrap.hidden = !tracing;
+        if (tracing && hintPlane) {
+          const planes = project.planes.filter((p) => !image || p.imageId === image.id);
+          const key = planes.map((p) => p.id + '=' + p.name + '/' + p.kind).join('|');
+          if (key !== hintPlaneKey) {
+            hintPlaneKey = key;
+            hintPlane.textContent = '';
+            for (const p of planes) {
+              const o = document.createElement('option');
+              o.value = p.id;
+              o.textContent = planeLabel(p);
+              hintPlane.appendChild(o);
+            }
+          }
+          const pid = ui.mode.opts.planeId || ui.activePlaneId || '';
+          if (hintPlane.value !== pid) hintPlane.value = pid;
+        }
+        renderNotice(ui);
 
         // Banner, empty state, busy
         const isSample = !!(image && image.source && image.source.kind === 'sample');
-        banner.hidden = !(isSample && !ui.bannerDismissed && !hint);
+        banner.hidden = !(isSample && !ui.bannerDismissed && !hint && !ui.notice);
         const traced = project.features.length > 0;
         const bannerText = $('sample-banner-text');
         if (bannerText) {
-          bannerText.textContent = traced
+          const long = traced
             ? 'This is a sample house, already measured and traced. Use your own photo to plan your house.'
             : 'This is the sample house with nothing measured yet. Practice calibrating and tracing, then use your own photo.';
+          const short = traced ? 'Sample house, already traced.' : 'Sample house to practice on.';
+          if (bannerText.getAttribute('data-text') !== long) {
+            bannerText.setAttribute('data-text', long);
+            bannerText.textContent = '';
+            bannerText.appendChild(panels.h('span', { class: 'banner-long' }, long));
+            bannerText.appendChild(panels.h('span', { class: 'banner-short' }, short));
+          }
         }
         empty.hidden = !!image;
         busy.hidden = !ui.busy;

@@ -12,7 +12,9 @@
  *  - Listeners get {projectChanged, uiChanged} and are called synchronously; renderers batch with rAF.
  *
  * Deviations from SPEC §6.1 (additive; the documented API is unchanged):
- *  - UI state also has `calib` (calibration form values), `bannerDismissed` and `busy` (a progress message).
+ *  - UI state also has `calib` (calibration form values), `bannerDismissed`, `busy` (a progress message),
+ *    `notice` (a persistent note the app shows: storage blocked, unreadable autosave, another tab) and
+ *    `activeVertex` ({featureId, index} of the point last pressed, for Delete point).
  *  - createStore accepts opts.persist (default ui.persist; null disables autosave, for tests) and opts.now
  *    (() => ISO string, for tests).
  *  - commit() returns true when the project changed. A mutator may return false to cancel the commit.
@@ -44,6 +46,8 @@ LP.define('ui.store', ['catalog', 'plan', 'ui.persist'], function (catalog, plan
       calib: { rectPresetId: 'unknown', rectWidthFt: null, rectHeightFt: null, refPresetId: 'door-height', refLengthFt: null, refCourses: 12, refWidthFt: null, refHeightFt: null },
       bannerDismissed: false,
       busy: null,
+      activeVertex: null,
+      notice: null,          // persistent note: {kind:'storage'|'unreadable'|'foreign', ...}
     };
   }
 

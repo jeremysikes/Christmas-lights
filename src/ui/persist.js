@@ -16,12 +16,22 @@
  *
  * Deviations from SPEC (additive): besides load() and clear() this module exports saveProject (debounced),
  * saveProjectNow, flush, saveImage, loadImage, deleteImage, pruneImages, savePref, loadPref, setErrorHandler
- * and the key constants.
+ * and the key constants, plus:
+ *   isAvailable()                 true when localStorage can be written (else nothing survives a reload)
+ *   backupUnreadable(raw) / loadBackup() / clearBackup()
+ *                                 keep an autosave this version cannot open under "lightplan:v1:project:unreadable"
+ *                                 so the fallback sample's autosave never destroys it
+ *   handleStorageEvent(e), setForeignChangeHandler(fn), isAutosavePaused(), pauseAutosave(), resumeAutosave()
+ *                                 another tab saved over this plan: autosave pauses here until the user decides
+ * load() also returns `raw` (the stored project text). pruneImages keeps photos referenced by the backup and
+ * by a project another tab saved, so one tab never deletes another tab's photo.
  */
 LP.define('ui.persist', [], function () {
   'use strict';
 
   const PROJECT_KEY = 'lightplan:v1:project';
+  const BACKUP_KEY = 'lightplan:v1:project:unreadable';
+  const PROBE_KEY = 'lightplan:v1:probe';
   const IMAGE_PREFIX = 'lightplan:v1:img:';
   const PREF_PREFIX = 'lightplan:v1:pref:';
   const ALL_PREFIX = 'lightplan:v1:';
@@ -141,20 +151,70 @@ LP.define('ui.persist', [], function () {
     })).catch(() => ({ ok: false, value: undefined }));
   }
 
+  /** True when localStorage can be written and read back (blocked or missing storage means nothing is kept). */
+  function isAvailable() {
+    const s = storage();
+    if (!s) return false;
+    try {
+      s.setItem(PROBE_KEY, '1');
+      const ok = s.getItem(PROBE_KEY) === '1';
+      s.removeItem(PROBE_KEY);
+      return ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // ---------------------------------------------------------------- project
   let pendingProject = null;
   let saveTimer = null;
+  let lastWritten = null;      // the project text this tab last wrote or restored
+  let paused = false;          // another tab saved over this plan: do not overwrite it
+  let foreignHandler = null;
 
   /** Write the project JSON right away. Returns true when it was stored. */
   function saveProjectNow(project) {
     if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
     pendingProject = null;
+    if (paused) return false;
     let json;
     try { json = JSON.stringify(project); } catch (e) { return false; }
     if (typeof json !== 'string') return false;
     const ok = lsSet(PROJECT_KEY, json);
-    if (!ok && storage()) reportError('Autosave failed because browser storage is full or blocked. Save the project to a file to keep it.');
+    if (ok) lastWritten = json;
+    else reportError('Autosave failed because browser storage is full or blocked. Save the project to a file to keep it.');
     return ok;
+  }
+
+  /** The browser's 'storage' event: another tab wrote the project key. */
+  function handleStorageEvent(e) {
+    if (!e || e.key !== PROJECT_KEY || e.newValue == null || e.newValue === lastWritten) return;
+    paused = true;
+    if (typeof foreignHandler === 'function') {
+      try { foreignHandler(); } catch (err) { /* ignore */ }
+    }
+  }
+  function setForeignChangeHandler(fn) { foreignHandler = typeof fn === 'function' ? fn : null; }
+  function isAutosavePaused() { return paused; }
+  function pauseAutosave() { paused = true; }
+  function resumeAutosave() { paused = false; }
+
+  // ---------------------------------------------------------------- unreadable autosave backup
+  function backupUnreadable(raw) {
+    if (typeof raw !== 'string' || !raw) return false;
+    return lsSet(BACKUP_KEY, raw);
+  }
+  function loadBackup() { const v = lsGet(BACKUP_KEY); return typeof v === 'string' && v ? v : null; }
+  function clearBackup() { lsRemove(BACKUP_KEY); }
+  /** Photo storage keys named in a stored project text (empty when it cannot be read). */
+  function keysIn(raw) {
+    if (typeof raw !== 'string' || !raw) return [];
+    try {
+      const p = JSON.parse(raw);
+      return (Array.isArray(p && p.images) ? p.images : []).map((im) => im && im.storageKey).filter((k) => typeof k === 'string' && k);
+    } catch (e) {
+      return [];
+    }
   }
   /** Debounced autosave: the last project passed within ~400 ms is written. */
   function saveProject(project) {
@@ -181,7 +241,7 @@ LP.define('ui.persist', [], function () {
     return idbRun('readwrite', (store) => store.put(dataUrl, key)).then((r) => {
       if (r.ok) { lsRemove(IMAGE_PREFIX + key); return true; }
       const ok = lsSet(IMAGE_PREFIX + key, dataUrl);
-      if (!ok && storage()) reportError('The photo could not be saved in this browser (storage is full or blocked). Save the project to a file to keep it.');
+      if (!ok) reportError('The photo could not be saved in this browser (storage is full or blocked). Save the project to a file to keep it.');
       return ok;
     }).catch(() => false);
   }
@@ -202,6 +262,10 @@ LP.define('ui.persist', [], function () {
   /** Delete every stored photo whose key is not in keepKeys (an array of storage keys). */
   function pruneImages(keepKeys) {
     const keep = new Set(Array.isArray(keepKeys) ? keepKeys : []);
+    // Never delete photos of a backed-up unreadable plan, or of a plan another tab saved since this tab's write.
+    for (const k of keysIn(loadBackup())) keep.add(k);
+    const stored = lsGet(PROJECT_KEY);
+    if (stored && stored !== lastWritten) for (const k of keysIn(stored)) keep.add(k);
     for (const k of lsKeys(IMAGE_PREFIX)) {
       if (!keep.has(k.slice(IMAGE_PREFIX.length))) lsRemove(k);
     }
@@ -232,13 +296,14 @@ LP.define('ui.persist', [], function () {
   function load() {
     return new Promise((resolve) => {
       let project = null;
+      const raw = lsGet(PROJECT_KEY);
       try {
-        const raw = lsGet(PROJECT_KEY);
         if (raw) project = JSON.parse(raw);
       } catch (e) {
         project = null;
       }
       if (!project || typeof project !== 'object' || Array.isArray(project)) { resolve(null); return; }
+      lastWritten = raw;
       const keys = [];
       try {
         for (const im of Array.isArray(project.images) ? project.images : []) {
@@ -250,9 +315,9 @@ LP.define('ui.persist', [], function () {
         .then((pairs) => {
           const images = {};
           for (const [k, v] of pairs) if (v) images[k] = v;
-          resolve({ project, images });
+          resolve({ project, images, raw });
         })
-        .catch(() => resolve({ project, images: {} }));
+        .catch(() => resolve({ project, images: {}, raw }));
     });
   }
 
@@ -265,8 +330,10 @@ LP.define('ui.persist', [], function () {
   }
 
   return {
-    PROJECT_KEY, IMAGE_PREFIX, PREF_PREFIX, DB_NAME, DB_STORE, SAMPLE_KEY, SAVE_DELAY_MS,
-    load, clear, saveProject, saveProjectNow, flush,
+    PROJECT_KEY, BACKUP_KEY, IMAGE_PREFIX, PREF_PREFIX, DB_NAME, DB_STORE, SAMPLE_KEY, SAVE_DELAY_MS,
+    load, clear, saveProject, saveProjectNow, flush, isAvailable,
+    backupUnreadable, loadBackup, clearBackup,
+    handleStorageEvent, setForeignChangeHandler, isAutosavePaused, pauseAutosave, resumeAutosave,
     saveImage, loadImage, deleteImage, pruneImages, savePref, loadPref, setErrorHandler,
   };
 });
