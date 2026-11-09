@@ -1626,13 +1626,13 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
   }
 
   /** Night preview of the active photo as JPEG bytes ({bytes}), or null when it cannot be made. */
-  function snapshotJpeg(store, project, plan, maxWidth, quality) {
+  function snapshotJpeg(store, project, plan, maxWidth, quality, labels) {
     try {
       const preview = optional('ui.preview');
       const im = activeImage(project);
       if (!preview || typeof preview.renderSnapshot !== 'function' || !im) return null;
       const el = typeof store.getImage === 'function' ? store.getImage(im.id) : null;
-      const canvas = preview.renderSnapshot({ project, plan, image: el, imageId: im.id, maxWidth, night: true, labels: true });
+      const canvas = preview.renderSnapshot({ project, plan, image: el, imageId: im.id, maxWidth, night: true, labels: labels !== false });
       const url = canvas ? elementToJpegDataUrl(canvas, quality) : null;
       const bytes = url ? dataUrlToBytes(url) : null;
       return bytes && parseJpeg(bytes) ? { bytes } : null;
@@ -1709,7 +1709,8 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
       }
       return nextFrame().then(() => {
         const plan = planOf(store);
-        const image = snapshotJpeg(store, project, plan, 1100, 0.85);
+        // The customer sees a clean picture: no run-number tags (those belong to the installer's report).
+        const image = snapshotJpeg(store, project, plan, 1100, 0.85, false);
         const doc = buildQuotePdf({ project, plan, image, date: new Date() });
         return saveFile(exportFilename(project, 'quote'), pdfBlobData(doc), 'application/pdf');
       });
