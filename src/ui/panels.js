@@ -222,6 +222,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       if (w.code === 'internal-error') return STAGE_STEP[w.stage] || 6;
       if (POWER_CODES.has(w.code) || w.outletId || w.circuitId) return 5;
       if (w.code === 'run') return 4;
+      if (w.code === 'focal-mismatch' || w.code === 'exif-ignored') return 1;
       if (w.planeId || /^(pitch|ref|plane|rect|measure|derived)/.test(w.code || '')) return 2;
       if (w.featureId) return 3;
       return 6;
@@ -506,6 +507,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
 
     function planeConfidence(ctx, sol) {
       if (!sol || !sol.ok) return null;
+      // measure rates each plane itself (tap precision, caps); this fallback is for older solutions only.
+      if (sol.confidence && sol.confidence.level) return sol.confidence;
       const K = ctx.image ? ctx.plan.measured.cameras[ctx.image.id] : null;
       return measure.scoreConfidence({
         mode: sol.mode, checks: sol.checks, disagreementPct: sol.disagreementPct,
@@ -575,7 +578,16 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           h('span', { class: 'badge ' + (K.source === 'default' ? 'warn' : 'ok') }, FOCAL_SOURCE[K.source] || 'Lens'),
           h('span', null, K.label + (isNum(K.f) ? ' · ' : ''), isNum(K.f) ? h('span', { class: 'num' }, fmtNum(K.f, 0) + ' px') : null)));
       }
-      kids.push(h('p', { class: 'hint' }, 'Automatic uses the lens data in the photo, then measures it from a perspective rectangle, and otherwise assumes a phone main camera. For a Street View screenshot, pick that preset.'));
+      // The lens setting disagrees with what the rectangles in the photo measure (zoomed Street View, a crop...).
+      const mismatch = arr(plan.measured && plan.measured.warnings).find((w) => w && w.code === 'focal-mismatch' && w.imageId === image.id);
+      if (mismatch) {
+        kids.push(callout('warn', mismatch.message, {
+          key: 'lens-mismatch',
+          after: isNum(mismatch.suggestedFocalPx) ? button('Use ' + fmtNum(mismatch.suggestedFocalPx, 0) + ' px', { act: 'lens-use', data: { id: image.id, f: mismatch.suggestedFocalPx }, cls: 'small' }) : null,
+        }));
+      }
+      if (K && K.exifIgnored) kids.push(callout('info', K.exifIgnored, { key: 'lens-exif-ignored' }));
+      kids.push(h('p', { class: 'hint' }, 'Automatic uses the lens data in the photo, then measures it from a perspective rectangle, and otherwise assumes a phone main camera. For a Street View screenshot, keep Automatic once a rectangle is marked: Street View zooms, so its field of view is not fixed.'));
       return section('Lens', kids, { key: 'lens' });
     }
 
@@ -659,6 +671,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       }
       const issues = sol ? arr(sol.warnings).filter((w) => !/disagree/i.test(w)) : [];
       for (const w of issues) kids.push(callout('warn', w, { key: 'pw-' + hashKey(w) }));
+      // Notes explain how the plane was solved (e.g. separate horizontal/vertical scales, a promoted rectangle).
+      for (const n of sol ? arr(sol.notes) : []) kids.push(callout('info', n, { key: 'pn-' + hashKey(n) }));
       return section(pl.name || 'Surface', kids, { key: 'plane-' + pl.id, cls: 'plane-editor' });
     }
 
@@ -1394,6 +1408,10 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
 
       const CLICK = {
         'go-step': (el) => actions.goStep(Number(el.dataset.step)),
+        'lens-use': (el) => {
+          const f = Number(el.dataset.f);
+          if (f > 0) actions.updateImageCamera(el.dataset.id, { mode: 'manual', focalPx: Math.round(f) });
+        },
         pick: (el) => pickFile(actions, el.dataset.kind),
         'load-sample': (el) => actions.loadSample({ traced: el.dataset.traced !== '0' }),
         'select-plane': (el) => actions.select({ kind: 'plane', id: el.dataset.id }),

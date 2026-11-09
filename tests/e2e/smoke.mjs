@@ -4,7 +4,7 @@
 //   npm run e2e                          build dist/ and run every pass (phone, desktop, desktop dark,
 //                                        blocked storage)
 //   node tests/e2e/smoke.mjs             run against the existing dist/lightplan.html
-//   node tests/e2e/smoke.mjs --only=phone        one pass: phone | desktop | dark | storage | inputs
+//   node tests/e2e/smoke.mjs --only=phone        one pass: phone | desktop | dark | storage | inputs | measure
 //                                                (storage = localStorage and IndexedDB blocked;
 //                                                inputs = safe share, tax, file version, damaged photo)
 //
@@ -36,7 +36,7 @@ const PASSES = {
 };
 
 const onlyArg = process.argv.find((a) => a.startsWith('--only='));
-const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES).concat('storage', 'inputs');
+const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES).concat('storage', 'inputs', 'measure');
 
 if (!fs.existsSync(APP)) {
   console.error('dist/lightplan.html is missing. Run "node build.js" first (npm run e2e does both).');
@@ -475,6 +475,68 @@ async function runPlanningInputs(browser) {
   return t;
 }
 
+// ------------------------------------------------------------------ measurement honesty in the UI
+// A lens setting that disagrees with the photo's rectangles is flagged at step 1 with a one-tap fix, and two
+// references on a wall of unknown size are compared (step 2 shows the disagreement and how the plane was solved).
+async function runMeasureChecks(browser) {
+  const t = new Check('measure');
+  console.log('\n== measurement checks 390x844');
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
+  await context.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push('page error: ' + e.message));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push('console error: ' + m.text()); });
+  try {
+    await page.goto(URL);
+    await waitForApp(page);
+    // Street View preset on the sample (its rectangles measure a ~69° lens, not 90°).
+    await page.evaluate(() => {
+      const s = window.LightPlanApp.store;
+      window.LightPlanApp.actions.updateImageCamera(s.project().images[0].id, { mode: 'preset', presetId: 'streetview' });
+    });
+    await page.click('button.step[data-step="1"]');
+    await sleep(400);
+    const mismatch = page.locator('[data-key="lens-mismatch"]');
+    t.ok(await mismatch.count() === 1, 'step 1 flags the lens setting that does not match the rectangles');
+    const useBtn = page.locator('[data-act="lens-use"]');
+    t.ok(await useBtn.count() === 1, 'the lens warning offers the measured focal length');
+    const walkLevel = await page.evaluate(() => window.LightPlanApp.store.plan().measured.features.ft_walk_left.confidence.level);
+    t.ok(walkLevel === 'low', 'with the wrong lens the walkway is rated Low (' + walkLevel + ')');
+    await useBtn.scrollIntoViewIfNeeded();
+    await useBtn.click();
+    await sleep(400);
+    const cam = await page.evaluate(() => window.LightPlanApp.store.project().images[0].camera);
+    t.ok(cam.mode === 'manual' && cam.focalPx > 1100 && cam.focalPx < 1230, 'tapping it sets the measured focal length (' + cam.focalPx + ' px)');
+    t.ok(await page.locator('[data-key="lens-mismatch"]').count() === 0, 'the lens warning goes away');
+
+    // A 15% wrong window reference on the Front wall (rectangle size unknown) is compared with the door height.
+    await page.evaluate(() => {
+      const s = window.LightPlanApp.store;
+      s.commit('test: wrong window width', (d) => {
+        const front = d.planes.find((pl) => pl.id === 'pl_front');
+        front.refs.find((r) => r.id === 'ref_window_width').lengthFt = 4.6;
+      });
+      window.LightPlanApp.actions.select({ kind: 'plane', id: 'pl_front' });
+    });
+    await page.click('button.step[data-step="2"]');
+    await sleep(400);
+    await page.evaluate(() => { const b = document.querySelector('[data-act="select-plane"][data-id="pl_front"]'); if (b) b.click(); });
+    await sleep(300);
+    const disagree = await page.evaluate(() => { const el = document.querySelector('[data-key="disagree"]'); return el ? el.textContent : ''; });
+    t.ok(/disagree by \d+(\.\d)?%/.test(disagree), 'the Front wall shows the reference disagreement (' + disagree.slice(0, 60) + ')');
+    const badges = await page.evaluate(() => Array.from(document.querySelectorAll('.ref-item .err-badge')).map((b) => b.textContent.trim()));
+    t.ok(badges.some((b) => /[1-9]\.\d%|[1-9]\d\.\d%/.test(b)), 'each reference shows its own error against the fit (' + badges.join(', ') + ')');
+    const shot = path.join(OUT, 'measure-disagree.png');
+    await page.screenshot({ path: shot, fullPage: false });
+  } catch (e) {
+    t.ok(false, 'unexpected error: ' + (e && e.message ? e.message.split('\n')[0] : e));
+  }
+  t.ok(errors.length === 0, 'no console or page errors' + (errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''));
+  await context.close();
+  return t;
+}
+
 // ------------------------------------------------------------------ main
 
 const browser = await chromium.launch();
@@ -482,6 +544,7 @@ const results = [];
 for (const name of selected) {
   if (name === 'storage') { results.push(await runBlockedStorage(browser)); continue; }
   if (name === 'inputs') { results.push(await runPlanningInputs(browser)); continue; }
+  if (name === 'measure') { results.push(await runMeasureChecks(browser)); continue; }
   if (!PASSES[name]) { console.error('unknown pass ' + name); process.exitCode = 2; continue; }
   results.push(await runPass(browser, name));
 }

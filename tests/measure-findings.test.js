@@ -349,3 +349,13 @@ test('F7: a tree wrapped with the assumed 10 in trunk diameter is flagged and no
   assert.ok(m.confidence.reasons.some((s) => /Trunk diameter assumed \(10 in\)/.test(s)), m.confidence.reasons.join(' | '));
   assert.notEqual(m.confidence.level, 'high');
 });
+
+// ================================================================== UI routing of the new lens warnings
+test('F3: lens warnings are routed to step 1 (Upload → Lens), where the "Use N px" fix lives', () => {
+  const path = require('path');
+  for (const f of ['persist', 'store', 'imagesource', 'actions', 'panels']) require(path.join(__dirname, '..', 'src', 'ui', f + '.js'));
+  const panels = LP.require('ui.panels');
+  assert.equal(panels.warningStep({ code: 'focal-mismatch', imageId: 'img' }), 1);
+  assert.equal(panels.warningStep({ code: 'exif-ignored', imageId: 'img' }), 1);
+  assert.equal(panels.warningStep({ code: 'pitch-spread', planeId: 'pl_r' }), 2);
+});
