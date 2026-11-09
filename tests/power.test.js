@@ -830,3 +830,27 @@ test('sample house: the roofline chains buy 6 C9 LED strings, not 8', { skip: !L
   assert.ok(want < 8, 'per-run rounding bought 8');
   assert.equal(out.summary.strings, out.runs.filter((r) => r.unit === 'string').reduce((s, r) => s + r.quantity, 0));
 });
+
+test('an outlet under the middle of a long run feeds it from the middle: two feeds working outward, short cords', () => {
+  // 200 ft C9 LED eave at 12 ft, one outlet directly below its middle.
+  const eave = feature('ft_eave', 'roofline', [F(10, 12), F(210, 12)], { label: 'Eave' });
+  const { power: pw } = plan(project({ features: [eave], outlets: [outlet('out_a', F(110, 1.5), { label: 'Outlet 1' })] }));
+  assert.equal(pw.feeds.length, 2, JSON.stringify(pw.feeds.map((f) => f.start.label)));
+  for (const f of pw.feeds) {
+    close(f.cord.lengthFt, 10.5 * 1.15 + 4, 1.5);
+    close(f.start.point[0], F(110, 12)[0], 15);
+  }
+  assert.deepEqual(byCode(pw, 'long-cord'), []);
+  assert.equal(pw.feeds.reduce((s, f) => s + f.strings, 0), 8, '4 strings each way cover the 200 ft');
+  assert.equal(pw.runInfo.run_ft_eave.quantity, 9, 'spares are counted over the chain: 220 ft with waste = 9 strings, not 5 + 5');
+  assert.equal(pw.chains[0].spares, 1);
+  assert.deepEqual(byCode(pw, 'max-end-to-end'), [], '8 strings are well within the limit of 30');
+  assert.match(byCode(pw, 'fed-from-middle')[0].message, /^Eave is fed from the point nearest Outlet 1: 2 cords work outward from there/);
+  const towards = pw.feeds.map((f) => f.start.toward).sort();
+  assert.deepEqual(towards, ['left end of Eave', 'right end of Eave']);
+  assert.ok(pw.cords.every((c) => c.lengthFt <= 25), JSON.stringify(pw.cords));
+  // An outlet near one end still feeds from that end with one cord.
+  const end = plan(project({ features: [eave], outlets: [outlet('out_a', F(5, 1.5))] })).power;
+  assert.equal(end.feeds.length, 1);
+  assert.equal(end.feeds[0].start.label, 'left end of Eave');
+});

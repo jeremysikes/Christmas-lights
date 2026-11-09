@@ -35,6 +35,9 @@
  *    plan.mergeRunInfo copies onto the run. A mid-run feed starts where the hung strings end
  *    (feed.start.toward names the end it works toward), and every feed lists its `portions`
  *    [{runId, units, total, startsRun, endsRun}] for the checklist.
+ *  - Feeding from the middle. Besides the two end-fed walks, a chain can be fed at the point nearest an
+ *    outlet (by cord length): it is split there into two walks working outward (each filled up to the
+ *    end-to-end limit), and that plan is kept when it needs at least 10% less cord in total.
  *  - Splitters: the power stakes at an outlet are chained from its one timer socket (each extra stake uses
  *    a socket of the one before), so an outlet with n > 1 cords needs ceil((n − 1) / (splitterOutlets − 1))
  *    stakes, not ceil(n / splitterOutlets). More than 6 cords at one outlet adds a 'many-cords' warning.
@@ -62,6 +65,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
   const MANY_CORDS = 6;               // more cords than this at one outlet gets a 'many-cords' warning
   const WALKWAY_NEAR_WALL_FT = 3;     // a walkway edge within this distance of the wall base meets the wall
   const SPAN_TOL_FT = 0.25;           // spans that only touch at their ends do not cross
+  const SPLIT_GAIN = 0.9;             // feeding a chain from the middle must save at least 10% of the cord
   const DISCLAIMER = 'This is a planning estimate, not an electrical inspection. Check your breaker sizes ' +
     'and what else shares each circuit, use outdoor-rated cords and GFCI protection, and ask a licensed ' +
     'electrician before adding outlets or circuits.';
@@ -623,6 +627,34 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       if (lastHung !== null) out[lastHung].bought += boughtT - hungT;
     }
 
+    /**
+     * Spares bought for waste do not depend on where the strings hang: over walks that feed one chain from the
+     * middle, buy max(hung, ceil(length with waste / string length)) strings per string and color, with the
+     * spares on the last step that hangs one (not a separate rounding on each side).
+     */
+    function settleSpares(placedWalks) {
+      const groups = new Map();
+      for (const pl of placedWalks) {
+        for (const ps of pl) {
+          const it = items[ps.k];
+          if (!it.len) continue;
+          const key = it.len + '|' + colorKey(it.run);
+          const g = groups.get(key) || { len: it.len, hung: 0, withWaste: 0, steps: [] };
+          const Lp = Math.max(0, ps.to - ps.from);
+          g.hung += ps.hung;
+          g.withWaste += it.L > 0 ? it.LW * (Lp / it.L) : 0;
+          g.steps.push(ps);
+          groups.set(key, g);
+        }
+      }
+      for (const g of groups.values()) {
+        const bought = Math.max(g.hung, g.withWaste > 1e-9 ? Math.ceil(g.withWaste / g.len - 1e-9) : 0);
+        let lastHung = null;
+        for (const ps of g.steps) { ps.bought = ps.hung; if (ps.hung > 0) lastHung = ps; }
+        if (lastHung) lastHung.bought += bought - g.hung;
+      }
+    }
+
     // ---- 2. feeds for one walk: fill each feed up to maxEndToEnd hung units, splitting between runs, and
     // splitting a run along its length only when that run alone is longer than the limit. A mid-run feed
     // starts where the strings already hung end (string length along the run, not a share of the count).
@@ -747,6 +779,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     /** Feeds and cord totals for an option made of one or more walks (each walk is fed from its first step). */
     function evaluate(opt) {
       opt.placed = opt.walks.map(layout);
+      if (opt.placed.length > 1) settleSpares(opt.placed);
       opt.feeds = [];
       for (const pl of opt.placed) {
         const built = buildFeeds(pl);
@@ -758,6 +791,51 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       opt.totalCord = opt.feeds.reduce((s, f) => { const L = cordLen(pickOutlet(f, tentative), f); return s + (L === Infinity ? 1e6 : L); }, 0);
       return opt;
     }
+    /**
+     * Feeding a chain from the middle: the point of the walk nearest an outlet (by cord length) splits it into
+     * two walks that work outward from there, each filled up to the end-to-end limit. null when that point is
+     * an end of the chain or the chain cannot be split (a forced direction, nothing to split mid-run).
+     */
+    function splitOption(steps) {
+      if (steps.some((st) => items[st.k].forcedReverse)) return null;
+      let bestPt = null;
+      steps.forEach((st, si) => {
+        const it = items[st.k];
+        const path = traversal(it.shape, st.reversed);
+        const xs = [];
+        if (si > 0) xs.push(0); // between two runs
+        if (it.len && it.shape.kind === 'open' && it.L > 0) {
+          const step = Math.max(0.5, it.L / 200);
+          for (let x = step; x < it.L - 1e-6; x += step) xs.push(x);
+        }
+        for (const x of xs) {
+          const point = x <= 1e-9 ? path[0].slice() : pointAlong(path, x / it.L, space.sol(it.planeId), space);
+          const start = { point, imageId: it.imageId, planeId: it.planeId };
+          for (const o of outlets) {
+            if (!isPt(o.point) || (o.imageId && it.imageId && o.imageId !== it.imageId)) continue;
+            if (it.forcedOutlet && it.forcedOutlet !== o.id) continue;
+            const L = route(o, start).lengthFt;
+            if (L !== null && (!bestPt || L < bestPt.cord - 1e-9)) bestPt = { si, x, cord: L };
+          }
+        }
+      });
+      if (!bestPt) return null;
+      const { si, x } = bestPt;
+      const it = items[steps[si].k];
+      const back = (st) => ({ k: st.k, reversed: !st.reversed, from: 0, to: items[st.k].L });
+      const A = [], B = [];
+      if (x > 1e-9) {
+        // Split inside run si: A works back from x to the run's entry end, B on from x to its exit end.
+        A.push({ k: steps[si].k, reversed: !steps[si].reversed, from: it.L - x, to: it.L });
+        B.push({ k: steps[si].k, reversed: steps[si].reversed, from: x, to: it.L });
+      } else {
+        B.push(Object.assign({}, steps[si]));
+      }
+      for (let i = si - 1; i >= 0; i--) A.push(back(steps[i]));
+      for (let i = si + 1; i < steps.length; i++) B.push(Object.assign({}, steps[i]));
+      if (!A.length || !B.length) return null;
+      return { walks: [A, B], w: 2, split: true, order: steps.map((st) => st.k) };
+    }
     for (const n of order) {
       const m = comps[n];
       let options = walks(m).map((steps, w) => ({ walks: [steps], w }));
@@ -765,7 +843,13 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       if (allowed.length) options = allowed;
       for (const opt of options) evaluate(opt);
       options.sort((x, y) => x.firstCord - y.firstCord || x.totalCord - y.totalCord || x.w - y.w);
-      const best = options[0];
+      let best = options[0];
+      // An outlet under the middle of a long chain: two feeds working outward can need far less cord.
+      const split = splitOption(best.walks[0]);
+      if (split) {
+        evaluate(split);
+        if (split.totalCord < SPLIT_GAIN * best.totalCord) best = split;
+      }
       chosen[n] = best;
       // Tentatively load circuits so later chains see what is already planned.
       for (const f of best.feeds) {
@@ -851,7 +935,13 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
               : `; the last ${unitWord(it.run.unit, 1)} of the run before carries on along this one, so none is bought for it.`);
         }
       }
-      if (opt.feeds.length > 1) {
+      if (opt.split) {
+        const o = pickOutlet(opt.feeds[0], tentative);
+        warn('info', 'fed-from-middle',
+          `${chainLabels.get(chainId)} ${runIds.length > 1 ? 'are' : 'is'} fed from the point nearest ${(o && o.label) || 'the outlet'}: ${opt.feeds.length} cords work outward from there, ` +
+          'which needs much less cord than feeding from one end.', { featureId: items[m[0]].feature.id });
+      }
+      if (opt.feeds.length > opt.walks.length) {
         const product = items[m[0]].product;
         const unit = items[m[0]].run.unit;
         const what = runIds.length > 1 ? 'these connected runs use' : 'this run uses';
