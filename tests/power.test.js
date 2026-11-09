@@ -142,7 +142,7 @@ test('10 incandescent C9 strings on one 15 A circuit: overload warning; a second
   assert.equal(pw.warnings[0].code, 'circuit-overload'); // danger sorts first
   assert.match(byCode(pw, 'incandescent')[0].message, /Front eave uses incandescent lights .*10 strings draw 1,750 W\. The LED version \(C9 LED string, 25 bulbs\) would draw about 96 W/);
   assert.match(byCode(pw, 'max-end-to-end')[0].message, /^Front eave needs 4 feeds: .* allows only 3 strings end to end and this run uses 10\.$/);
-  assert.equal(pw.counts.splitters, 2);   // 4 feeds on one outlet → ceil(4 / 3)
+  assert.equal(pw.counts.splitters, 2);   // 4 feeds on one outlet → 2 chained stakes (5 sockets)
   assert.equal(pw.counts.timers, 1);
 
   // A second outlet on another circuit, almost as close: the third 525 W feed moves there.
@@ -313,7 +313,7 @@ test('equal distances break ties by outlet id', () => {
   assert.equal(pw.feeds[0].outletId, 'out_a');
 });
 
-test('timers: one per outlet with feeds; splitters: ceil(feeds / 3) on outlets with more than one feed', () => {
+test('timers: one per outlet with feeds; splitters: chained 3-outlet stakes on outlets with more than one feed', () => {
   // four separate windows (closed outlines, 1 mini string each) near one outlet → 4 feeds
   const wins = [0, 1, 2, 3].map((i) => feature('ft_w' + i, 'window',
     [F(10 + i * 10, 15), F(15 + i * 10, 15), F(15 + i * 10, 10), F(10 + i * 10, 10)], { label: 'Window ' + (i + 1) }));
@@ -675,4 +675,18 @@ test('plug-in cords, timers, power stakes and outlets are 15 A devices: cords ca
   assert.deepEqual(byCode(two, 'outlet-overload'), []);
   assert.ok(two.outlets.every((o) => o.watts <= 1440), JSON.stringify(two.outlets.map((o) => o.watts)));
   assert.ok(two.outlets.every((o) => o.feedIds.length > 0), 'both outlets are used');
+});
+
+test('power stakes are daisy-chained from one timer socket: n stakes give 2n + 1 sockets', () => {
+  const windows = (n) => Array.from({ length: n }, (_, i) => feature('ft_w' + i, 'window',
+    [F(10 + i * 10, 15), F(15 + i * 10, 15), F(15 + i * 10, 10), F(10 + i * 10, 10)], { label: 'Window ' + (i + 1) }));
+  const sockets = (stakes) => (stakes > 0 ? 2 * stakes + 1 : 1);
+  for (const [n, want] of [[1, 0], [2, 1], [3, 1], [4, 2], [5, 2], [6, 3], [7, 3], [8, 4], [13, 6]]) {
+    const pw = plan(project({ features: windows(n), outlets: [outlet('out_a', F(5, 1.5))] })).power;
+    assert.equal(pw.feeds.length, n);
+    const o = pw.outlets[0];
+    assert.equal(o.splitters, want, `${n} cords need ${want} chained 3-outlet stakes`);
+    assert.ok(sockets(o.splitters) >= n, `${n} cords fit in ${sockets(o.splitters)} sockets`);
+    assert.equal(byCode(pw, 'many-cords').length, n > 6 ? 1 : 0, `${n} cords`);
+  }
 });

@@ -15,6 +15,8 @@
  *  - Quote lines omit Takedown and Storage when the fee is 0 and Tax when the rate is 0. Labor hours are
  *    rounded to the nearest 0.25 h; installed feet to the nearest foot; setup hours apply only when
  *    there is something to install.
+ *  - Checklist: several power stakes at one outlet are chained (stake 1 into the timer, each next stake into a
+ *    socket of the one before), and the step says how many sockets that gives.
  *  - Checklist: runs that are planned but sit on no feed (power plan missing) get hang steps in the
  *    "No outlet chosen yet" group; runs with nothing to buy are listed in a "Not in the plan yet" group.
  *  - bomToCsv uses CRLF line ends (RFC 4180) and prefixes text cells that start with = + - @ with an
@@ -418,8 +420,15 @@ LP.define('bom', ['catalog'], function (catalog) {
       if (adapter) steps.push(`Plug a portable outdoor GFCI adapter into ${label}.`);
       if (timer) steps.push(`Plug an outdoor timer or smart plug into ${adapter ? 'the GFCI adapter' : label} and leave it switched off while you work.`);
       const splitters = Math.max(0, Math.round(fin(info.splitters, 0)));
-      if (splitters > 0) {
-        steps.push(`Plug ${splitters === 1 ? 'an outdoor power stake' : splitters + ' outdoor power stakes'} (3 outlets each) into the ${timer ? 'timer' : 'outlet'} so it can feed ${fs.length} cords.`);
+      const per = Math.max(2, Math.round(pos(isObj(config.power) ? config.power.splitterOutlets : null) || 3));
+      const into = timer ? 'timer' : 'outlet';
+      if (splitters === 1) {
+        steps.push(`Plug an outdoor power stake (${per} outlets each) into the ${into} so it can feed ${fs.length} cords.`);
+      } else if (splitters > 1) {
+        // Stakes are chained: the first goes into the timer, each other one into a free socket of the stake before it.
+        const sockets = splitters * (per - 1) + 1;
+        steps.push(`Plug an outdoor power stake (${per} outlets) into the ${into}, then plug each of the other ${splitters - 1} stakes into a free socket ` +
+          `of the stake before it. The ${splitters} stakes give ${sockets} sockets for the ${fs.length} cords.`);
       }
       fs.forEach((f, i) => {
         const prefix = fs.length > 1 ? `Cord ${i + 1} of ${fs.length}: ` : '';

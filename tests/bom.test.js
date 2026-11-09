@@ -438,3 +438,17 @@ test('buildChecklist never throws and never mutates its inputs', () => {
     assert.equal(out[out.length - 1].title, 'Safety and final test');
   }
 });
+
+test('checklist: several power stakes are chained, each into a socket of the one before', () => {
+  const feeds = Array.from({ length: 8 }, (_, i) => ({ id: 'f' + i, chainId: 'c' + i, runIds: ['run_w' + i], strings: 1, outletId: 'out_1',
+    circuitId: 'cir_1', start: { label: 'top-left corner of Window ' + (i + 1) }, cord: { lengthFt: 10, awg: 16, pieces: [15], voltageDropPct: 0 }, crossesWalkway: false }));
+  const runs = feeds.map((f, i) => run('w' + i, { label: 'Window ' + (i + 1), featureType: 'window', productId: 'mini-led-100', quantity: 1 }));
+  const pw = power({
+    chains: feeds.map((f) => ({ id: f.chainId, runIds: f.runIds, feedIds: [f.id] })), feeds,
+    outlets: [{ id: 'out_1', label: 'Porch outlet', circuitId: 'cir_1', feedIds: feeds.map((f) => f.id), watts: 38.4, needsSplitter: true, splitters: 4, timer: true }],
+  });
+  const p = project({ outlets: [{ id: 'out_1', label: 'Porch outlet', type: 'exteriorGfci', gfci: true, circuitId: 'cir_1' }] });
+  const steps = bom.buildChecklist(p, runs, pw, null)[0].steps;
+  const stake = steps.find((s) => /power stake/.test(s));
+  assert.equal(stake, 'Plug an outdoor power stake (3 outlets) into the timer, then plug each of the other 3 stakes into a free socket of the stake before it. The 4 stakes give 9 sockets for the 8 cords.');
+});

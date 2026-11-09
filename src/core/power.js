@@ -21,6 +21,9 @@
  *    one receptacle, timer and power stake, all 15 A gear, so an outlet carries at most plugAmps × V ×
  *    continuous factor = 1,440 W), timer-tungsten (more incandescent watts through one timer than
  *    config.power.timerTungstenW, 1,250 W by default).
+ *  - Splitters: the power stakes at an outlet are chained from its one timer socket (each extra stake uses
+ *    a socket of the one before), so an outlet with n > 1 cords needs ceil((n − 1) / (splitterOutlets − 1))
+ *    stakes, not ceil(n / splitterOutlets). More than 6 cords at one outlet adds a 'many-cords' warning.
  *  - Outlet choice also keeps each outlet within its plug-in limit when another outlet can take the feed.
  *    Outlet objects carry extra limitW, overloaded and incandescentW fields.
  *  - Feeds only consider outlets on the same photo (unless forced with params.outletId); feeds with no
@@ -42,6 +45,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
   const DEFAULT_CONTINUOUS_FACTOR = 0.8; // the 80% rule for continuous loads (ASSUMPTIONS.md #6)
   const DEFAULT_PLUG_AMPS = 15;       // plug-in cords, timers, power stakes and duplex outlets are 15 A devices
   const DEFAULT_TIMER_TUNGSTEN_W = 1250; // typical outdoor timer rating for incandescent (tungsten) loads
+  const MANY_CORDS = 6;               // more cords than this at one outlet gets a 'many-cords' warning
   const DISCLAIMER = 'This is a planning estimate, not an electrical inspection. Check your breaker sizes ' +
     'and what else shares each circuit, use outdoor-rated cords and GFCI protection, and ask a licensed ' +
     'electrician before adding outlets or circuits.';
@@ -296,7 +300,10 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     const gapFt = Number.isFinite(cfg.chainGapFt) && cfg.chainGapFt >= 0 ? cfg.chainGapFt : 3;
     const routingFactor = pos(cfg.routingFactor) || 1;
     const slackFt = Number.isFinite(cfg.cordSlackFt) && cfg.cordSlackFt >= 0 ? cfg.cordSlackFt : 0;
-    const splitterOutlets = pos(cfg.splitterOutlets) || 3;
+    // Power stakes hang off the outlet's one timer socket and are chained: each extra stake takes one socket of
+    // the stake before it, so n stakes of k sockets give n·(k − 1) + 1 sockets.
+    const splitterOutlets = Math.max(2, Math.round(pos(cfg.splitterOutlets) || 3));
+    const stakesFor = (cords) => (cords > 1 ? Math.ceil((cords - 1) / (splitterOutlets - 1)) : 0);
     const space = makeSpace(project, measured);
     const warnings = [];
     const warn = (level, code, message, extra) => warnings.push(Object.assign({ level, code, message }, extra || {}));
@@ -670,7 +677,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       return {
         id: o.id, label: o.label || 'Outlet', circuitId: o.circuitId && circuitById.has(o.circuitId) ? o.circuitId : null,
         feedIds: fs.map((f) => f.id), watts: w,
-        needsSplitter: n > 1, splitters: n > 1 ? Math.ceil(n / splitterOutlets) : 0,
+        needsSplitter: n > 1, splitters: stakesFor(n),
         timer: n > 0 && cfg.timerPerOutlet !== false,
         limitW: lim, overloaded: w > lim + 1e-9,
         incandescentW: round(fs.filter((f) => f._incandescent).reduce((s, f) => s + f.watts, 0), 2),
@@ -743,6 +750,11 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         warn('danger', 'outlet-overload',
           `${o.label} would feed ${fmtInt(o.watts)} W through one ${gear}, over the ${fmtInt(o.limitW)} W safe limit for ${fmtInt(plugAmps)} A plug-in gear ` +
           `(${fmtInt(factor * 100)}%). Move a cord to another outlet${o.incandescentW > 0 ? ' or switch to LED' : ''}.`, { outletId: o.id });
+      }
+      if (o.feedIds.length > MANY_CORDS) {
+        warn('warn', 'many-cords',
+          `${o.label} feeds ${o.feedIds.length} cords through ${o.splitters} chained power stakes. Spread the cords over more outlets if you can, ` +
+          'and keep every stake and joint off the ground.', { outletId: o.id });
       }
       if (o.timer && o.incandescentW > tungstenW + 1e-9) {
         warn('warn', 'timer-tungsten',
