@@ -18,7 +18,12 @@
  *  - viewAngleDeg(pose, point, normal?) takes an optional plane normal (default: the wall normal (0,0,1)).
  *  - estimateFocalFromQuad() also returns `samples` (the perturbed estimates) for debugging.
  *  - poseFromHomography() also returns `consistency: {normRatio, cosAngle}` (how well H agrees with K).
- *  - Extra exports: getPreset, DEFAULT_PRESET_ID, FULL_FRAME_DIAGONAL_MM, Kmatrix, KinvMatrix.
+ *  - resolveCamera(image, planes, opts?) also returns `rectEstimate` (best rectangle focal estimate, whatever the
+ *    source, for lens-mismatch checks), `focalQuad` ({planeId, refId} of the rectangle the focal came from) and
+ *    `exifIgnored` (why EXIF was not used: EXIF PixelX/YDimension do not fit the stored photo, i.e. it was cropped
+ *    or resized, so the 35 mm focal no longer gives the right field of view).
+ *  - Extra exports: getPreset, DEFAULT_PRESET_ID, FULL_FRAME_DIAGONAL_MM, Kmatrix, KinvMatrix,
+ *    focalFromQuadQuick(quad, cx, cy) (focal from an ordered quad without the stability study; null if none).
  */
 LP.define('camera', ['geometry'], function (g) {
   'use strict';
@@ -137,22 +142,87 @@ LP.define('camera', ['geometry'], function (g) {
     return { ok: true, f, relStd, reason: null, samples };
   }
 
+  /** Focal length (px) from a rectangle's corners without the stability study; null when not finite. */
+  function focalFromQuadQuick(quad, cx, cy) {
+    if (!isQuad(quad)) return null;
+    const f2 = focalSquaredFromQuad(quad, cx, cy);
+    return f2 > 0 ? Math.sqrt(f2) : null;
+  }
+
   // ---------------------------------------------------------------- choosing the camera for an image
+  const DEFAULT_MAX_IMAGE_SIDE = 2048;
+  const EXIF_SIZE_TOL = 0.015;
+
+  /**
+   * Why the EXIF focal length no longer describes the stored pixels, or null when it does (or cannot be told).
+   * EXIF PixelX/YDimension describe the original frame. A different aspect ratio means a crop; at native size
+   * (the stored photo is below the downscale cap) any size difference means a crop or a resize. Either way the
+   * 35 mm equivalent focal length would give the wrong field of view.
+   */
+  function exifMismatch(img, maxSide) {
+    const e = img.exif;
+    if (!e || !(e.width > 0) || !(e.height > 0) || !isNum(e.width) || !isNum(e.height)) return null;
+    let ew = e.width, eh = e.height;
+    if (e.orientation >= 5 && e.orientation <= 8) { const t = ew; ew = eh; eh = t; }
+    // The browser may or may not have applied the orientation: accept either way round.
+    const fits = (a, b) => {
+      const aspectOff = Math.abs((img.width / img.height) / (a / b) - 1);
+      if (aspectOff > EXIF_SIZE_TOL) return false;
+      const native = Math.max(img.width, img.height) < maxSide - 1;
+      return !native || Math.abs(img.width / a - 1) <= EXIF_SIZE_TOL;
+    };
+    if (fits(ew, eh) || fits(eh, ew)) return null;
+    return 'The photo was cropped or resized after it was taken, so its lens data no longer fits and was not used.';
+  }
+
+  /** Best (lowest relStd) ok focal estimate over the image's wall rectangles and rectangle references. */
+  function bestRectEstimate(img, planes, cx, cy) {
+    let best = null;
+    for (const pl of Array.isArray(planes) ? planes : []) {
+      if (!pl || (img.id != null && pl.imageId !== img.id) || (pl.kind && pl.kind !== 'wall')) continue;
+      const quads = [];
+      if (pl.rect && isQuad(pl.rect.corners)) quads.push({ quad: pl.rect.corners, what: 'rectangle', refId: null });
+      for (const r of Array.isArray(pl.refs) ? pl.refs : []) {
+        if (r && r.kind === 'rect' && isQuad(r.points)) quads.push({ quad: r.points, what: 'reference rectangle', refId: r.id != null ? r.id : null });
+      }
+      for (const c of quads) {
+        const est = estimateFocalFromQuad(c.quad, cx, cy);
+        if (est.ok && (!best || est.relStd < best.relStd)) best = Object.assign({ plane: pl, what: c.what, refId: c.refId }, est);
+      }
+    }
+    return best;
+  }
+
   /**
    * Resolve intrinsics for an image. Order for 'auto': EXIF 35 mm focal → best rectangle estimate → phone 1×.
    * 'exif' with no EXIF focal falls back to the 'auto' order (minus EXIF). 'manual' with a bad focalPx and
    * 'preset' with an unknown preset fall back to the default preset.
+   * Also returns:
+   *  - rectEstimate {f, relStd, planeId, planeName, what, refId} | null: the best rectangle estimate, whatever
+   *    the source, so callers can flag a lens setting that disagrees with the photo;
+   *  - focalQuad {planeId, refId} | null: which tapped rectangle the focal length came from (source 'rectangle');
+   *  - exifIgnored: plain reason when the EXIF focal length was present but not used (cropped/resized photo).
+   * opts: {maxImageSide} (default 2048), the cap photos are downscaled to when stored.
    */
-  function resolveCamera(image, planes) {
+  function resolveCamera(image, planes, opts) {
     const img = image || {};
     const w = img.width, h = img.height;
+    const base = { rectEstimate: null, focalQuad: null, exifIgnored: null };
     if (!(w > 0) || !(h > 0) || !isNum(w) || !isNum(h)) {
-      return { ok: false, f: null, cx: null, cy: null, source: 'default', label: 'Photo size unknown', relStd: null };
+      return Object.assign({ ok: false, f: null, cx: null, cy: null, source: 'default', label: 'Photo size unknown', relStd: null }, base);
     }
     const cx = w / 2, cy = h / 2;
     const cam = img.camera || {};
     const mode = cam.mode || 'auto';
-    const out = (f, source, label, relStd) => ({ ok: true, f, cx, cy, source, label, relStd: relStd == null ? null : relStd });
+    const maxSide = opts && opts.maxImageSide > 0 ? opts.maxImageSide : DEFAULT_MAX_IMAGE_SIDE;
+    let best;
+    try { best = bestRectEstimate(img, planes, cx, cy); } catch (e) { best = null; }
+    const rectEstimate = best ? {
+      f: best.f, relStd: best.relStd, planeId: best.plane.id != null ? best.plane.id : null,
+      planeName: typeof best.plane.name === 'string' ? best.plane.name : '', what: best.what, refId: best.refId,
+    } : null;
+    const extra = { rectEstimate, focalQuad: null, exifIgnored: null };
+    const out = (f, source, label, relStd) => Object.assign({ ok: true, f, cx, cy, source, label, relStd: relStd == null ? null : relStd }, extra);
 
     if (mode === 'manual' && cam.focalPx > 0 && isNum(cam.focalPx)) {
       return out(cam.focalPx, 'manual', 'Focal length entered by hand (' + Math.round(cam.focalPx) + ' px)', null);
@@ -161,28 +231,18 @@ LP.define('camera', ['geometry'], function (g) {
       const p = getPreset(cam.presetId);
       return out(focalFromPreset(p.id, w, h), 'preset', p.label, null);
     }
-    const exifF35 = img.exif && isNum(img.exif.focal35) && img.exif.focal35 > 0 ? img.exif.focal35 : null;
+    let exifF35 = img.exif && isNum(img.exif.focal35) && img.exif.focal35 > 0 ? img.exif.focal35 : null;
+    if (exifF35 && (mode === 'auto' || mode === 'exif')) {
+      const why = exifMismatch(img, maxSide);
+      if (why) { extra.exifIgnored = why; exifF35 = null; }
+    }
     if ((mode === 'auto' || mode === 'exif') && exifF35) {
       return out(focalFromF35(exifF35, w, h), 'exif', 'From the photo data (' + Math.round(exifF35) + ' mm equivalent)', null);
     }
-    if (mode === 'auto' || mode === 'exif') {
-      let best = null;
-      for (const pl of Array.isArray(planes) ? planes : []) {
-        if (!pl || (img.id != null && pl.imageId !== img.id) || (pl.kind && pl.kind !== 'wall')) continue;
-        const quads = [];
-        if (pl.rect && isQuad(pl.rect.corners)) quads.push({ quad: pl.rect.corners, what: 'rectangle' });
-        for (const r of Array.isArray(pl.refs) ? pl.refs : []) {
-          if (r && r.kind === 'rect' && isQuad(r.points)) quads.push({ quad: r.points, what: 'reference rectangle' });
-        }
-        for (const c of quads) {
-          const est = estimateFocalFromQuad(c.quad, cx, cy);
-          if (est.ok && (!best || est.relStd < best.relStd)) best = Object.assign({ plane: pl, what: c.what }, est);
-        }
-      }
-      if (best) {
-        const name = best.plane.name ? "'" + best.plane.name + "'" : 'a wall';
-        return out(best.f, 'rectangle', 'Measured from the ' + best.what + ' on ' + name, best.relStd);
-      }
+    if ((mode === 'auto' || mode === 'exif') && best) {
+      const name = best.plane.name ? "'" + best.plane.name + "'" : 'a wall';
+      extra.focalQuad = { planeId: rectEstimate.planeId, refId: best.refId };
+      return out(best.f, 'rectangle', 'Measured from the ' + best.what + ' on ' + name, best.relStd);
     }
     const def = getPreset(DEFAULT_PRESET_ID);
     return out(focalFromPreset(def.id, w, h), 'default', 'Assumed: ' + def.label, null);
@@ -329,7 +389,7 @@ LP.define('camera', ['geometry'], function (g) {
 
   return {
     FULL_FRAME_DIAGONAL_MM, CAMERA_PRESETS, DEFAULT_PRESET_ID, getPreset,
-    focalFromF35, focalFromHfov, focalFromPreset, estimateFocalFromQuad, resolveCamera,
+    focalFromF35, focalFromHfov, focalFromPreset, estimateFocalFromQuad, focalFromQuadQuick, resolveCamera,
     rectAspectFromQuad, poseFromHomography, viewAngleDeg, rayThroughPixel, projectPoint,
     roofFrame, groundFrame, homographyForFrame, orthoPitchLength,
     Kmatrix, KinvMatrix,

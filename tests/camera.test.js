@@ -174,3 +174,38 @@ test('resolveCamera order: manual, preset, EXIF, rectangle, default', () => {
   assert.equal(r6.ok, false);
   assert.doesNotThrow(() => camera.resolveCamera(null, [null, 5, 'x']));
 });
+
+test('resolveCamera distrusts EXIF focal35 when the photo was cropped or resized (M5)', () => {
+  const cam = makeCamera();
+  const quad = WALL.map((X) => project(cam, X));
+  const planes = [{ id: 'pl', imageId: 'img', name: 'Front wall', kind: 'wall', rect: { corners: quad, widthFt: null, heightFt: null }, refs: [] }];
+  // Stored at native size (below the 2048 px cap) but EXIF says the original was twice as big: cropped.
+  const cropped = { id: 'img', width: W, height: H, exif: { focal35: 26, width: 2 * W, height: 2 * H }, camera: { mode: 'auto' } };
+  const r = camera.resolveCamera(cropped, planes);
+  assert.notEqual(r.source, 'exif');
+  assert.equal(r.source, 'rectangle');
+  assert.match(r.exifIgnored, /cropped|resized/);
+  // Different aspect ratio (a crop) even when the stored photo was downscaled.
+  const big = { id: 'img', width: 2048, height: 1536, exif: { focal35: 26, width: 4032, height: 2268 }, camera: { mode: 'auto' } };
+  assert.notEqual(camera.resolveCamera(big, []).source, 'exif');
+  // Matching dimensions (downscaled 4032 x 3024 → 2048 x 1536), or rotated by the orientation tag: trusted.
+  const ok1 = { id: 'img', width: 2048, height: 1536, exif: { focal35: 26, width: 4032, height: 3024 }, camera: { mode: 'auto' } };
+  assert.equal(camera.resolveCamera(ok1, []).source, 'exif');
+  const ok2 = { id: 'img', width: 1536, height: 2048, exif: { focal35: 26, width: 4032, height: 3024, orientation: 6 }, camera: { mode: 'auto' } };
+  assert.equal(camera.resolveCamera(ok2, []).source, 'exif');
+  const ok3 = { id: 'img', width: W, height: H, exif: { focal35: 26 }, camera: { mode: 'auto' } };
+  assert.equal(camera.resolveCamera(ok3, []).source, 'exif');
+});
+
+test('resolveCamera reports the rectangle estimate next to a preset/EXIF focal so a mismatch can be flagged (F3)', () => {
+  const cam = makeCamera();
+  const quad = WALL.map((X) => project(cam, X));
+  const planes = [{ id: 'pl', imageId: 'img', name: 'Front wall', kind: 'wall', rect: { corners: quad, widthFt: null, heightFt: null }, refs: [] }];
+  const r = camera.resolveCamera({ id: 'img', width: W, height: H, exif: null, camera: { mode: 'preset', presetId: 'streetview' } }, planes);
+  assert.equal(r.source, 'preset');
+  assert.ok(r.rectEstimate && relErr(r.rectEstimate.f, F26) < 0.01);
+  assert.equal(r.rectEstimate.planeId, 'pl');
+  const auto = camera.resolveCamera({ id: 'img', width: W, height: H, exif: null, camera: { mode: 'auto' } }, planes);
+  assert.deepEqual(auto.focalQuad, { planeId: 'pl', refId: null });
+  assert.ok(relErr(camera.focalFromQuadQuick(g.orderQuad(quad), W / 2, H / 2), F26) < 0.01);
+});
