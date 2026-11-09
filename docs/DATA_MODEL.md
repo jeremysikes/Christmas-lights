@@ -241,7 +241,10 @@ each image's `storageKey`. Every access is wrapped in try/catch because either s
   strings, replaces unknown enum values with defaults, gives missing or duplicate ids position-based ids,
   sets references to deleted items to null, infers a missing `imageId` from the item's plane or the active
   photo, drops calibration refs with the wrong number of points, keeps unknown keys (so newer optional
-  fields survive a round trip) and drops a top-level `derived` key.
+  fields survive a round trip) and drops a top-level `derived` key. Unknown keys are kept on the project,
+  on every entity and on every nested object it rebuilds: `settings`, `customer`, `quote`, `library`,
+  `pricing`, an image's `source`, `camera` and `exif`, a plane's `rect` and `derived`, a feature's `params`
+  and `color`. Known fields are always normalized; an unknown key never overrides one.
 - `validateProject` returns readable sentences, e.g. `Feature "Front eave" has an unknown type "spaceship".`
 
 **Versioning policy.**

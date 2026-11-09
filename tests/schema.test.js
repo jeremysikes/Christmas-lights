@@ -446,3 +446,32 @@ test('ENUMS stay in step with the catalog', () => {
   assert.deepEqual(schema.ENUMS.colorMode, Object.keys(catalog.COLOR_MODES));
   assert.deepEqual(schema.ENUMS.mount.filter((m) => !['stake', 'none'].includes(m)).sort(), Object.keys(catalog.CLIP_TYPES).sort());
 });
+
+test('unknown fields survive normalize, export and import on every nested object, not only the top level', () => {
+  const raw = sampleProject();
+  const mark = (o) => { o.zzFutureField = 'v2'; return o; };
+  mark(raw); mark(raw.settings); mark(raw.customer); mark(raw.quote); mark(raw.library); mark(raw.pricing);
+  mark(raw.images[0]); mark(raw.images[0].source); mark(raw.images[0].camera); mark(raw.images[0].exif);
+  mark(raw.planes[0]); mark(raw.planes[0].rect); mark(raw.planes[0].refs[0]); mark(raw.planes[1].derived);
+  mark(raw.features[0]); mark(raw.features[0].params); mark(raw.features[1].color);
+  mark(raw.outlets[0]); mark(raw.circuits[0]);
+  raw.settings.currency = 'USD';
+  raw.quote.depositPct = 25;
+  const paths = ['', 'settings', 'customer', 'quote', 'library', 'pricing', 'images.0', 'images.0.source', 'images.0.camera', 'images.0.exif',
+    'planes.0', 'planes.0.rect', 'planes.0.refs.0', 'planes.1.derived', 'features.0', 'features.0.params', 'features.1.color',
+    'outlets.0', 'circuits.0'];
+  const at = (o, p) => (p ? p.split('.').reduce((x, k) => x[k], o) : o);
+  const norm = schema.normalizeProject(deepFreeze(clone(raw)));
+  const back = schema.importProject(JSON.parse(JSON.stringify(schema.exportProject(raw, null, {}, null)))).project;
+  for (const p of paths) {
+    assert.equal(at(norm, p).zzFutureField, 'v2', 'normalize keeps ' + (p || 'the project') + '.zzFutureField');
+    assert.equal(at(back, p).zzFutureField, 'v2', 'export + import keeps ' + (p || 'the project') + '.zzFutureField');
+  }
+  assert.equal(back.settings.currency, 'USD');
+  assert.equal(back.quote.depositPct, 25);
+  assert.equal(schema.validateProject(back).ok, true);
+  // Known fields are still normalized, never overwritten by the extras pass.
+  const bad = clone(raw);
+  bad.settings.wastePct = 'abc';
+  assert.equal(schema.normalizeProject(bad).settings.wastePct, 10);
+});

@@ -13,8 +13,9 @@
  *    without it both are null, because core code never reads the clock.
  *  - settings.roofPitch defaults to null (unknown, so measure.js estimates it from gable rakes and
  *    falls back to 6/12). A 6/12 default would silently block the estimate.
- *  - normalizeProject keeps unknown keys on the project and on each entity (deep-cloned) so data from
- *    other modules is not lost, drops the top-level "derived" key (derived results are never trusted
+ *  - normalizeProject keeps unknown keys (deep-cloned) on the project, on each entity and on every nested
+ *    object it rebuilds (settings, customer, quote, library, pricing, image source/camera/exif, plane rect
+ *    and derived, feature params and color) so newer optional fields survive a round trip, drops the top-level "derived" key (derived results are never trusted
  *    from input), nulls references that point at missing items, infers a missing imageId from the
  *    item's plane or the active image, drops calibration refs whose point count is wrong, and keeps
  *    features of unknown type (validateProject reports them).
@@ -484,17 +485,17 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     const d = createDefaultSettings();
     const s = isObj(raw) ? raw : {};
     const colors = Array.isArray(s.customColors) ? s.customColors.filter(isHex) : d.customColors;
-    return {
+    return keepExtras({
       wastePct: num(s.wastePct, d.wastePct, 0, 100),
       roofPitch: has(s, 'roofPitch') ? normPitch(s.roofPitch) : d.roofPitch,
       colorMode: oneOf(s.colorMode, ENUMS.colorMode, d.colorMode),
       customColors: colors,
       lengthFormat: oneOf(s.lengthFormat, ENUMS.lengthFormat, d.lengthFormat),
-    };
+    }, s, []);
   }
   function normCustomer(raw) {
     const c = isObj(raw) ? raw : {};
-    return { name: str(c.name, ''), address: str(c.address, ''), phone: str(c.phone, ''), email: str(c.email, '') };
+    return keepExtras({ name: str(c.name, ''), address: str(c.address, ''), phone: str(c.phone, ''), email: str(c.email, '') }, c, []);
   }
   function createDefaultQuote() {
     return { enabled: false, company: '', laborMethod: 'perFt', ratePerFt: 3.5, ratePerHour: 65, markupPct: 30,
@@ -503,7 +504,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
   function normQuote(raw) {
     const d = createDefaultQuote();
     const q = isObj(raw) ? raw : {};
-    return {
+    return keepExtras({
       enabled: bool(q.enabled, d.enabled),
       company: str(q.company, d.company),
       laborMethod: oneOf(q.laborMethod, ENUMS.laborMethod, d.laborMethod),
@@ -515,14 +516,14 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
       taxPct: num(q.taxPct, d.taxPct, 0, 100),
       validDays: intOr(q.validDays, d.validDays, 0),
       notes: str(q.notes, d.notes),
-    };
+    }, q, []);
   }
   function normLibrary(raw) {
     const l = isObj(raw) ? raw : {};
     const products = Array.isArray(l.products) ? l.products.filter((p) => isObj(p) && cleanId(p.id)).map(jsonClone).filter(Boolean) : [];
     for (const p of products) p.id = cleanId(p.id);
     const config = isObj(l.config) ? jsonClone(l.config) : null;
-    return { products: products.length ? products : null, config: isObj(config) ? config : null };
+    return keepExtras({ products: products.length ? products : null, config: isObj(config) ? config : null }, l, []);
   }
   function normPricing(raw) {
     const p = isObj(raw) ? raw : {};
@@ -533,7 +534,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
         if (v !== null && sku) overrides[sku] = v;
       }
     }
-    return { overrides };
+    return keepExtras({ overrides }, p, []);
   }
 
   const IMAGE_KEYS = ['id', 'name', 'width', 'height', 'source', 'exif', 'camera', 'storageKey'];
@@ -549,23 +550,24 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
       if (has(e, 'width')) exif.width = posOrNull(e.width);
       if (has(e, 'height')) exif.height = posOrNull(e.height);
       if (has(e, 'dateTime')) exif.dateTime = strOrNull(e.dateTime);
+      keepExtras(exif, e, ['orientation', 'width', 'height', 'dateTime']);
     }
     const out = {
       id,
       name: str(im.name, ''),
       width: posOrNull(im.width),
       height: posOrNull(im.height),
-      source: {
+      source: keepExtras({
         kind: oneOf(src.kind, ENUMS.sourceKind, 'upload'),
         capturedAt: strOrNull(src.capturedAt),
         attribution: strOrNull(src.attribution),
-      },
+      }, src, []),
       exif,
-      camera: {
+      camera: keepExtras({
         mode: oneOf(cam.mode, ENUMS.cameraMode, 'auto'),
         presetId: has(cam, 'presetId') ? strOrNull(cam.presetId) : 'phone1x',
         focalPx: posOrNull(cam.focalPx),
-      },
+      }, cam, []),
       storageKey: typeof im.storageKey === 'string' && im.storageKey ? im.storageKey : (im.storageKey === null ? null : id),
     };
     return keepExtras(out, im, IMAGE_KEYS);
@@ -597,7 +599,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     if (isObj(pl.rect)) {
       const corners = toPoints(pl.rect.corners);
       if (corners.length === 4) {
-        rect = { corners, widthFt: posOrNull(pl.rect.widthFt), heightFt: posOrNull(pl.rect.heightFt), presetId: strOrNull(pl.rect.presetId) };
+        rect = keepExtras({ corners, widthFt: posOrNull(pl.rect.widthFt), heightFt: posOrNull(pl.rect.heightFt), presetId: strOrNull(pl.rect.presetId) }, pl.rect, []);
       }
     }
     const refs = [];
@@ -608,11 +610,11 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     let derived = null;
     if (kind !== 'wall' && isObj(pl.derived)) {
       const line = toPoints(pl.derived.line);
-      derived = {
+      derived = keepExtras({
         parentPlaneId: cleanId(pl.derived.parentPlaneId),
         line: line.length === 2 ? line : null,
         pitch: normPitch(pl.derived.pitch),
-      };
+      }, pl.derived, []);
     }
     const defaultName = kind === 'wall' ? 'Wall ' + (index + 1) : kind === 'roof' ? 'Roof' : 'Ground';
     const out = {
@@ -647,7 +649,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     if (!isObj(raw) || !ENUMS.colorMode.includes(raw.mode)) return null;
     const out = { mode: raw.mode };
     if (raw.mode === 'custom' || Array.isArray(raw.colors)) out.colors = arr(raw.colors).filter(isHex);
-    return out;
+    return keepExtras(out, raw, ['colors']);
   }
 
   const FEATURE_KEYS = ['id', 'imageId', 'planeId', 'type', 'label', 'points', 'closed', 'overrideFt', 'productId', 'color', 'params'];
