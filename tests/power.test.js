@@ -92,10 +92,10 @@ test('circuit limits: 15 A → 1,440 W and 20 A → 1,920 W (80% continuous load
 });
 
 test('cord gauge: thinnest gauge that carries the current within 3% voltage drop', () => {
-  // 50 W LED at 80 ft: 0.42 A, 16 AWG drops 0.22%
+  // 50 W LED at 80 ft: 0.42 A; the 100 ft 16 AWG cord bought drops 0.28% (0.22% over the 80 ft needed)
   const c1 = power.sizeCord(80, 50, lib.config.power);
   assert.equal(c1.awg, 16);
-  close(c1.voltageDropPct, 0.22, 0.01);
+  close(c1.voltageDropPct, 0.28, 0.01);
   assert.equal(power.chooseCordGauge(80, 50 / 120, lib.config.power).awg, 16);
   // 1500 W at 100 ft: 12.5 A; 16 AWG 8.4%, 14 AWG 5.3%, 12 AWG 3.3% → none meets 3% → 12 AWG, flagged
   const c2 = power.sizeCord(100, 1500, lib.config.power);
@@ -430,7 +430,8 @@ test('1,500 W feed with a ~95 ft cord: 12 AWG and a voltage-drop warning; long c
   assert.ok(f.cord.voltageDropPct > 3);
   const vd = byCode(pw, 'voltage-drop');
   assert.equal(vd.length, 1);
-  assert.match(vd[0].message, /^The 95 ft cord to the left end of Front eave would lose 3\.1% of its voltage even with 12 AWG cord \(limit 3%\)\. Use a closer outlet or split the run\.$/);
+  // The 100 ft cord bought carries the current: 2 · 100 · 1.588/1000 · 12.5 / 120 = 3.3%.
+  assert.match(vd[0].message, /^The 100 ft cord to the left end of Front eave \(about 95 ft needed\) would lose 3\.3% of its voltage even with 12 AWG cord \(limit 3%\)\. Use a closer outlet or split the run\.$/);
   assert.deepEqual(byCode(pw, 'long-cord'), []);
 
   // Long cord: 145 ft across + 18.5 ft up → 163.5 × 1.15 + 4 = 192 ft → two 100 ft cords
@@ -627,4 +628,21 @@ test('safe share of the breaker is bounded: 80 means 80%, above 1 is never a fre
   assert.equal(high.circuits[0].limitW, 1710);
   assert.ok(codes(high).includes('continuous-factor'), 'a share above the 80% rule is flagged');
   assert.ok(!codes(run(0.8)).includes('continuous-factor'));
+});
+
+test('cord gauge and voltage drop are checked on the cord actually bought, not the length needed', () => {
+  // 60 ft needed → a 100 ft cord. 1,400 W = 11.7 A: 14 AWG over 100 ft drops 4.9%, so 14 AWG is not enough.
+  const a = power.sizeCord(60, 1400, lib.config.power);
+  assert.deepEqual(a.pieces, [100]);
+  assert.equal(a.awg, 12);
+  close(a.voltageDropPct, 3.09, 0.01);
+  assert.equal(a.dropOk, false, '12 AWG over 100 ft is still above 3%');
+  // 625 W of C7 incandescent, 82.8 ft needed → 100 ft cord: 16 AWG would drop 3.49%, so 14 AWG.
+  const b = power.sizeCord(82.8, 625, lib.config.power);
+  assert.deepEqual(b.pieces, [100]);
+  assert.equal(b.awg, 14);
+  close(b.voltageDropPct, 2.19, 0.01);
+  assert.equal(b.dropOk, true);
+  assert.equal(b.lengthFt, 82.8, 'lengthFt stays the length needed');
+  assert.equal(b.boughtFt, 100);
 });

@@ -20,7 +20,8 @@
  *  - Feeds only consider outlets on the same photo (unless forced with params.outletId); feeds with no
  *    outlet on their photo stay unassigned and get the 'unassigned' warning.
  *  - Feed objects carry an extra `cordUnknown: bool`; cord is null when there is no outlet or the length
- *    cannot be measured.
+ *    cannot be measured. cord.boughtFt is the total length of the standard pieces bought; the gauge and
+ *    voltageDropPct are worked out on it (the whole cord carries the current), lengthFt is the length needed.
  *  - config.power.continuousFactor is bounded to (0, 1]: a value above 1 and up to 100 is read as a percent
  *    (80 → 0.8), anything else falls back to 0.8; both cases, and any share above 0.8, add a
  *    'continuous-factor' warning.
@@ -129,14 +130,20 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     return pieces;
   }
 
-  /** Cord for a feed: {lengthFt, awg, pieces, voltageDropPct, ok, ampacityOk, dropOk}. */
+  /**
+   * Cord for a feed: {lengthFt, boughtFt, awg, pieces, voltageDropPct, ok, ampacityOk, dropOk}.
+   * lengthFt is the length needed; the whole purchased cord (boughtFt = sum of the standard pieces) carries
+   * the current, so the gauge and the voltage drop are worked out on boughtFt.
+   */
   function sizeCord(lengthFt, watts, cfg, voltage) {
     const c = Object.assign({}, catalog.DEFAULT_CONFIG.power, cfg || {});
     const V = pos(voltage) || pos(c.voltage) || 120;
     const L = round(Math.max(0, Number.isFinite(lengthFt) ? lengthFt : 0), 1);
     const I = Math.max(0, Number.isFinite(watts) ? watts : 0) / V;
-    const g = chooseCordGauge(L, I, Object.assign({}, c, { voltage: V }));
-    return { lengthFt: L, awg: g.awg, pieces: cordPieces(L), voltageDropPct: g.voltageDropPct,
+    const pieces = cordPieces(L);
+    const bought = pieces.reduce((s, x) => s + x, 0);
+    const g = chooseCordGauge(bought, I, Object.assign({}, c, { voltage: V }));
+    return { lengthFt: L, boughtFt: bought, awg: g.awg, pieces, voltageDropPct: g.voltageDropPct,
       ok: g.ok, ampacityOk: g.ampacityOk, dropOk: g.dropOk };
   }
 
@@ -736,7 +743,8 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       if (!f.cord.ampacityOk) {
         warn('danger', 'cord-ampacity', `The feed at the ${f.start.label} draws ${fmt1(f.watts / outletVoltage(outletById.get(f.outletId)))} A, more than a 12 AWG cord can carry. Split it across more outlets.`, { featureId: fid, outletId: f.outletId });
       } else if (!f.cord.dropOk) {
-        warn('warn', 'voltage-drop', `The ${fmtInt(f.cord.lengthFt)} ft cord to the ${f.start.label} would lose ${fmt1(f.cord.voltageDropPct)}% of its voltage even with 12 AWG cord (limit ${fmt1(cfg.maxVoltageDropPct)}%). Use a closer outlet or split the run.`, { featureId: fid, outletId: f.outletId });
+        const need = f.cord.boughtFt > f.cord.lengthFt + 0.5 ? ` (about ${fmtInt(f.cord.lengthFt)} ft needed)` : '';
+        warn('warn', 'voltage-drop', `The ${fmtInt(f.cord.boughtFt)} ft cord to the ${f.start.label}${need} would lose ${fmt1(f.cord.voltageDropPct)}% of its voltage even with 12 AWG cord (limit ${fmt1(cfg.maxVoltageDropPct)}%). Use a closer outlet or split the run.`, { featureId: fid, outletId: f.outletId });
       }
       if (f.cord.lengthFt > 100) {
         warn('warn', 'long-cord', `The cord to the ${f.start.label} needs about ${fmtInt(f.cord.lengthFt)} ft (${f.cord.pieces.map((p) => p + ' ft').join(' + ')}). Look for a closer outlet.`, { featureId: fid, outletId: f.outletId });
