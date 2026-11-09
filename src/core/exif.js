@@ -10,7 +10,9 @@
  *   FocalLength (0x920A, rational), FocalLengthIn35mmFilm (0xA405), DateTimeOriginal (0x9003) and the pixel
  *   dimensions (0xA002 / 0xA003).
  *
- * parseExif(buffer) never throws: anything malformed or truncated returns null. Non-JPEG input returns null.
+ * parseExif(buffer) never throws: a malformed or truncated structure (TIFF header, IFD entry table) returns null.
+ * A single entry whose value lies outside the EXIF block is skipped (that field reads null) instead of
+ * discarding the whole block. Non-JPEG input returns null.
  * Accepts an ArrayBuffer, a typed array (Uint8Array, Node Buffer) or a DataView.
  */
 LP.define('exif', [], function () {
@@ -101,7 +103,9 @@ LP.define('exif', [], function () {
       const size = (TYPE_SIZE[type] || 0) * count;
       if (!size) continue; // unknown type or empty value: skip
       const valueOff = size <= 4 ? e + 8 : tiff.start + r.u32(e + 8, le);
-      if (valueOff + size > tiff.end) throw new Truncated();
+      // A value outside the EXIF block (a broken MakerNote or description, say) only loses that one tag;
+      // the structure itself (header, entry table) is what decides whether the block is readable.
+      if (!(size <= tiff.end - tiff.start) || valueOff + size > tiff.end) continue;
       entries[tag] = { type, count, valueOff };
     }
     return entries;

@@ -129,3 +129,20 @@ test('non-JPEG and garbage input return null and never throw', () => {
     assert.doesNotThrow(() => exif.parseExif(buf));
   }
 });
+
+test('one entry whose value lies outside the EXIF block is skipped, not fatal (focal length survives)', () => {
+  const tiffStart = 2 + 18 + 4 + 6;
+  for (const le of [true, false]) {
+    const bytes = buildJpeg({ le });
+    // IFD0: count (2 bytes), Make entry (12), Model entry: tag(2) type(2) count(4) value offset(4).
+    const modelValueOff = tiffStart + 8 + 2 + 12 + 8;
+    const v = new DataView(bytes.buffer);
+    v.setUint32(modelValueOff, 5000, le); // far beyond the APP1 segment
+    const r = exif.parseExif(bytes);
+    assert.ok(r, 'EXIF is still read (le=' + le + ')');
+    assert.equal(r.focal35, 26);
+    assert.equal(r.focalMm, 5.96);
+    assert.equal(r.make, 'Apple');
+    assert.equal(r.model, null, 'the broken tag alone is dropped');
+  }
+});
