@@ -452,3 +452,20 @@ test('checklist: several power stakes are chained, each into a socket of the one
   const stake = steps.find((s) => /power stake/.test(s));
   assert.equal(stake, 'Plug an outdoor power stake (3 outlets) into the timer, then plug each of the other 3 stakes into a free socket of the stake before it. The 4 stakes give 9 sockets for the 8 cords.');
 });
+
+test('config clipPackSize and stakes.packSize override the accessory pack sizes when set; unused config keys are gone', () => {
+  const runs = [run('eave', { clips: { type: 'allInOne', count: 41 } }), run('win', { clips: { type: 'adhesive', count: 30 } }),
+    run('path', { featureType: 'stakes', lightStakes: 30 })];
+  const def = bom.buildBom(project(), runs, power(), lib);
+  assert.equal(lineBy(def, 'clip-allinone').qty, 1, '46 clips in packs of 100');
+  assert.equal(lineBy(def, 'clip-adhesive').qty, 1, '33 clips in packs of 50');
+  assert.equal(lineBy(def, 'light-stakes').qty, 2, '30 stakes in packs of 25');
+  const cfg = { clipPackSize: 25, stakes: { packSize: 10 } };
+  const p = project({ library: { products: null, config: cfg } });
+  const custom = bom.buildBom(p, runs, power(), catalog.getLibrary(p));
+  assert.equal(lineBy(custom, 'clip-allinone').qty, 2, '46 clips in packs of 25');
+  assert.match(lineBy(custom, 'clip-allinone').notes, /in packs of 25\./);
+  assert.equal(lineBy(custom, 'clip-adhesive').qty, 2, '33 clips in packs of 25');
+  assert.equal(lineBy(custom, 'light-stakes').qty, 3, '30 stakes in packs of 10');
+  assert.equal('outletHeightFt' in catalog.DEFAULT_CONFIG.power, false, 'a key nothing reads is not offered for editing');
+});

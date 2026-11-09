@@ -12,6 +12,7 @@
  *    palettes become two lines ("... - Custom (#ff3b30, #34c759)"). Line names use " - <Color>" suffixes.
  *  - Clip packs add the project waste % to the clip count (as SPEC says); light stakes are bought as
  *    counted (the count already includes one spare per run) in packs of the accessory packSize.
+ *    config.clipPackSize / config.stakes.packSize (null by default) override the accessory pack sizes when set.
  *  - Quote lines omit Takedown and Storage when the fee is 0 and Tax when the rate is 0. Labor hours are
  *    rounded to the nearest 0.25 h; installed feet to the nearest foot; setup hours apply only when
  *    there is something to install.
@@ -171,7 +172,7 @@ LP.define('bom', ['catalog'], function (catalog) {
       if (!count) continue;
       const info = CLIP_TYPES[type];
       const acc = accessory(info.sku);
-      const packSize = pos(acc && acc.packSize) || pos(config.clipPackSize) || 100;
+      const packSize = pos(config.clipPackSize) || pos(acc && acc.packSize) || 100;
       const withWaste = Math.ceil(count * (1 + wastePct / 100) - EPS);
       const packs = Math.ceil(withWaste / packSize - EPS);
       const noun = type === 'zipTie' ? 'zip ties' : 'clips';
@@ -226,7 +227,7 @@ LP.define('bom', ['catalog'], function (catalog) {
     const stakeCount = runList.reduce((s, r) => s + Math.max(0, Math.ceil(fin(r.lightStakes, 0))), 0);
     if (stakeCount > 0) {
       const acc = accessory('light-stakes');
-      const packSize = pos(acc && acc.packSize) || pos(config.stakes && config.stakes.packSize) || 25;
+      const packSize = pos(config.stakes && config.stakes.packSize) || pos(acc && acc.packSize) || 25;
       const packs = Math.ceil(stakeCount / packSize - EPS);
       const where = runList.filter((r) => fin(r.lightStakes, 0) > 0).map((r) => r.label || 'a run');
       addLine('hardware', 'light-stakes', (acc && acc.name) || 'Light stakes', packs, (acc && acc.unit) || 'pack', acc ? acc.price : 0,

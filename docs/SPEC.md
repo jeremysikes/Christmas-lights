@@ -289,7 +289,7 @@ parseExif(arrayBuffer) → null | {focal35, focalMm, make, model, orientation, w
 Also exports: `LINEAR_TYPES` (types where waste applies), `CORD_PRICES`, `cordSku(awg, lengthFt)` → 'cord-16-25',
 `getAccessory(accessories, sku)`, `resolveColors(featureColor, settings)` → {mode, colors}, `deepMerge`, `deepClone`, `isPlainObject`.
 Accessory shape: `{sku, name, category: 'clips'|'cords'|'power'|'hardware', unit: 'pack'|'each', packSize, price, awg?, lengthFt?}`.
-Clip pack size comes from each accessory's `packSize` (adhesive clips = 50), not only `config.clipPackSize`.
+Clip pack size comes from each accessory's `packSize` (adhesive clips = 50) unless `config.clipPackSize` is set (null by default).
 
 ```
 FEATURE_TYPES: { [id]: {id, label, short, geometry, color, offPlane, defaultProduct, defaultMount, closedDefault, minPoints, maxPoints} }
@@ -344,13 +344,14 @@ Required default products (typical values, editable):
   typeDefaults: { roofline:'c9-led', rake:'c9-led', gutter:'c9-led', ridge:'c9-led', window:'mini-led-100',
                   door:'mini-led-100', column:'treewrap-led', railing:'mini-led-100', walkway:'path-stakes',
                   bush:'mini-led-100', tree:'treewrap-led', stakes:'c9-led' },
-  clipSpacingIn: 12, clipPackSize: 100,
+  clipSpacingIn: 12, clipPackSize: null,          // null = each clip accessory's packSize; a number overrides
   bush: { lightsPerUnit: 100, heightUnitFt: 1.5, widthUnitFt: 1, netCoverFactor: 1.5 },
   tree: { defaultDiameterIn: 10, spiralSpacingIn: 4, canopyLightsPerFtHeight: 100 },
   column: { defaultDiameterIn: 8, spiralSpacingIn: 6 },
-  stakes: { spacingIn: 12, packSize: 25 },
-  power: { voltage: 120, continuousFactor: 0.8, maxVoltageDropPct: 3, cordSlackFt: 4, routingFactor: 1.15,
-           chainGapFt: 3, outletHeightFt: 1.5, timerPerOutlet: true, splitterOutlets: 3 },
+  stakes: { spacingIn: 12, packSize: null },      // null = the light-stakes accessory packSize (25)
+  power: { voltage: 120, continuousFactor: 0.8 /* (0, 1]; 80 reads as 80% */, maxVoltageDropPct: 3, cordSlackFt: 4,
+           routingFactor: 1.15, chainGapFt: 3, timerPerOutlet: true, splitterOutlets: 3,
+           plugAmps: 15 /* plug-in cords, timers, stakes, outlets */, timerTungstenW: 1250 /* incandescent through a timer */ },
   labor: { ftPerHour: 40, setupHours: 1, hoursPerTree: 0.75, hoursPerBush: 0.25 },
   refDisagreementWarnPct: 5,
   confidence: { highMin: 75, mediumMin: 50 },
@@ -543,7 +544,8 @@ Rules:
 ```
 buildBom(project, runs, power, library) → { lines: [BomLine], subtotal, byCategory: {lights, clips, cords, power, hardware} }
 BomLine = { sku, category, name, qty, unit, unitPrice, defaultPrice, overridden, lineTotal, notes }
-  // lights grouped by productId + color mode label; clips → packs of clipPackSize (ceil(count·(1+waste)/pack));
+  // lights grouped by productId + color mode label; clips → packs (ceil(count·(1+waste)/pack)) of config.clipPackSize
+  // when set, else the accessory packSize;
   // light stakes → packs; cords by awg+length; timers; splitters; cord covers; gfci adapters.
   // unitPrice = project.pricing.overrides[sku] ?? defaultPrice. Money rounded to cents.
 buildQuote(project, bom, measured, runs, library) → Quote
