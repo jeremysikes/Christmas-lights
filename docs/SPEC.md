@@ -255,10 +255,15 @@ estimateFocalFromQuad(quad /*[TL,TR,BR,BL]*/, cx, cy) → {ok, f, relStd, reason
     // ok only if f² > 0, f within [0.25, 6]·max(w,h) (pass w,h via cx*2, cy*2), and a ±2px corner
     // perturbation study gives relStd ≤ 0.15. Otherwise ok:false with a plain reason
     // ("photo is nearly straight-on, so focal length can't be measured from the rectangle").
-resolveCamera(image, planes) → {f, cx, cy, source, label, relStd}
+resolveCamera(image, planes, opts?) → {f, cx, cy, source, label, relStd, rectEstimate, focalQuad, exifIgnored}
     // image.camera.mode: 'manual' (focalPx) | 'preset' (presetId) | 'exif' | 'auto'.
     // auto: EXIF focal35 → else best ok estimateFocalFromQuad over the image's wall rects (lowest relStd)
     //       → else preset 'phone1x'. source ∈ 'manual'|'preset'|'exif'|'rectangle'|'default'.
+    // EXIF focal35 is ignored (exifIgnored: plain reason) when EXIF PixelX/YDimension do not fit the stored photo
+    // (different aspect ratio, or a different size while the photo is below opts.maxImageSide = 2048): a crop.
+    // rectEstimate {f, relStd, planeId, planeName, what, refId} | null: best rectangle estimate whatever the source
+    // (for the lens-mismatch check); focalQuad {planeId, refId} when source is 'rectangle'.
+focalFromQuadQuick(quad /*ordered*/, cx, cy) → f | null       // orthogonality estimate without the stability study
 rectAspectFromQuad(quad, K) → W/H ratio    // ||K⁻¹h1|| / ||K⁻¹h2|| with H from unit square
 poseFromHomography(Hplane2img, K) → {ok, R /*3x3 flat, cols r1 r2 r3*/, t /*[3]*/, C /*camera center in wall frame*/}
     // M = K⁻¹H; λ = 2/(|m1|+|m2|); r1=λm1, r2=λm2, t=λm3; if t[2]<0 negate; r3=r1×r2;
@@ -281,7 +286,8 @@ orthoPitchLength(du, dv, rise, run) → sqrt(du² + (dv/sinθ)²)    // fallback
 parseExif(arrayBuffer) → null | {focal35, focalMm, make, model, orientation, width, height, dateTime}
     // JPEG APP1 "Exif\0\0", TIFF II/MM, IFD0 → ExifIFD (0x8769): FocalLengthIn35mmFilm 0xA405,
     // FocalLength 0x920A (rational), Orientation 0x0112, Make 0x010F, Model 0x0110, DateTimeOriginal 0x9003.
-    // Never throws (returns null on anything malformed). Also handles non-JPEG (returns null).
+    // Never throws (returns null on a malformed TIFF header or IFD entry table). One entry whose value lies outside
+    // the EXIF block is skipped (that field reads null). Also handles non-JPEG (returns null).
 ```
 
 ### 5.4 catalog (data only + tiny lookups) — ALREADY IMPLEMENTED in src/core/catalog.js (read it)
@@ -395,7 +401,10 @@ PlaneSolution = {
   viewAngleDeg, pose, K,         // pose/K null when unavailable
   pitch: {rise, run, source} | null,   // roof planes
   extent: {minU,minV,maxU,maxV} | null, // plane-space bbox of the rect (for extrapolation checks)
-  warnings: [string], notes: [string]
+  warnings: [string], notes: [string],
+  // also: disagreementZ, poseConsistencyPct, poseTolerancePct, focalMismatchPct, pitchInfo {onEave, spread, samples},
+  //       uncertaintyPct (typical item on the plane), confidence (plane-level rating), calib {..., rectProblem,
+  //       refsBothDirections, anisotropic}, groundScale, frontSign (see the header of src/core/measure.js)
 }
 ```
 Wall plane algorithm:
@@ -408,12 +417,18 @@ Wall plane algorithm:
 3. Scale fit from refs (rect refs contribute width and height as two line constraints):
    - rect-known: no fit; every ref is a check → `errorPct`.
    - otherwise isotropic weighted mean `s = Σ wᵢ(Lᵢ/|dᵢ|) / Σ wᵢ`, `wᵢ = |dᵢ|·q(quality)`
-     (q: high 1, medium 0.6, low 0.3); if ≥ 2 refs with orientation diversity (one with
-     |du| > 2|dv| and one with |dv| > 2|du|) and mode is rect-refs, solve least squares for
-     (sx², sy²) from `Lᵢ² = sx²duᵢ² + sy²dvᵢ²`; use it if both positive (`anisotropic:true`).
+     (q: high 1, medium 0.6, low 0.3); every further ref is a cross-check (`checks = used − 1`).
+     If ≥ 2 refs with orientation diversity (one with |du| > 2|dv| and one with |dv| > 2|du|) and mode is
+     rect-refs, the least-squares (sx², sy²) from `Lᵢ² = sx²duᵢ² + sy²dvᵢ²` is used (`anisotropic:true`) only
+     when the refs pin the proportions better than K (σ_refs = 2.5·√2·sqrt(1/Σ_h|d|² + 1/Σ_v|d|²) px-relative
+     < σ_K = aspect sensitivity × focal σ: EXIF 3%, preset 12%, manual/default 25%, rectangle 3.5·relStd), or when
+     they disagree with K by z > 2; in the latter case K's proportions count as the cross-check
+     (`checks = used − 1`) and `disagreementPct` = |sx/sy − 1|·100. Otherwise `checks = used − 2`.
    - `errorPct = 100·(measured − expected)/expected`; `disagreementPct = max |errorPct|`
      when `checks ≥ 1`, else null.
 4. Pose: `poseFromHomography(Hplane2img, K)` when mode is rect-*; `viewAngleDeg` at the rect center.
+   - `disagreementZ` = max pairwise |ln(rᵢ/rⱼ)| / hypot(σᵢ, σⱼ) with σ = 2.5·√2 px / ref length on screen
+     (rect side: 2.5 px / side length): how much of a disagreement tap noise alone explains.
 5. Warnings: disagreement > config.refDisagreementWarnPct → "References on 'Front wall' disagree by 7.2%.
    Check that each one sits on this wall and that its size is right."; non-convex quad; refs-only
    ("No perspective rectangle: assumes the photo was taken straight on.").
@@ -424,6 +439,11 @@ invert. mode `roof-3d`. Without parent pose → mode `roof-ortho`: use parent H,
 are corrected per segment with `orthoPitchLength`. Pitch resolution: `derived.pitch` →
 `settings.roofPitch` → estimated pitch → default 6/12 (`source:'default'`).
 
+Derived planes do NOT inherit the wall's `checks` / `disagreementPct`. Roof refs are checks. Ground refs re-fit the
+ground scale about the camera foot (`groundScale`; one ref sets it, further refs are checks). Points of a roof or
+ground item at or above that surface's horizon (w ≤ 0 under Hplane2img) make the item `!ok` with a plain reason.
+Roof pitch is estimated per roof: rakes on the parent wall whose low end is on the eave line (±1.5 ft, within its
+span) first, else all gable rakes (`pitchInfo.onEave:false`); samples spreading > 2/12 → 'pitch-spread' warning.
 Ground plane (`kind:'ground'`): same with `groundFrame` → mode `ground-3d`; without pose → `!ok`
 ("Ground plane needs a perspective rectangle on its wall").
 
@@ -444,7 +464,8 @@ FeatureMeasurement = {
   lights,              // bush rule-of-thumb light count, else null
   pitchEstimate,       // for in-plane rakes: {rise, run:12, angleDeg}
   overridden: bool,
-  confidence: { level: 'high'|'medium'|'low', score: 0..100, reasons: [string] }
+  confidence: { level: 'high'|'medium'|'low', score: 0..100, reasons: [string] },
+  uncertaintyPct       // expected error (2σ, %) from tap precision; null outside measureProject
 }
 // Spiral: turns = H_in / s ; wrapFt = turns · hypot(π·D_in, s) / 12   (D, s from params or config)
 // Tree wrapMode 'canopy': lights = canopyLightsPerFtHeight · heightFt, wrapFt = null, lengthFt = heightFt.
@@ -453,6 +474,7 @@ FeatureMeasurement = {
 //   lengthFt = null for bushes (they are planned by lights, not feet).
 // totals: byType[t].lengthFt sums lengthFt (bush contributes 0 and its lights); totalFt/totalWithWasteFt exclude bushes.
 scoreConfidence(factors) → {level, score, reasons}   // start 100, subtract; override → 100 'Tape-measured'
+    // (a tape-measured tree height with an assumed trunk diameter → Medium)
     // plane mode: rect-known 0, rect-refs −5, refs-only −20, roof-3d −10, roof-ortho −20, ground-3d −10, uncalibrated → 0
     // no cross-check reference −5; disagreement 3–6% −10, 6–10% −20, >10% −35
     // only medium/low quality refs −10; courses ref spanning < 8 courses −10
@@ -461,12 +483,25 @@ scoreConfidence(factors) → {level, score, reasons}   // start 100, subtract; o
     // off-plane type on a wall plane −15 (tree, bush, ridge)
     // extrapolation: feature bbox reaches > 1.5× rect size outside the rect extent −10
     // tap precision: 2 px / pixelLength > 3% −10
+    // disagreement deductions apply only when significant (disagreementZ > 2 or unknown): a correct short
+    // reference never lowers a rating; focal from 'rectangle' with relStd > 5% on rect-refs/roof/ground −10
     // level: ≥ highMin high, ≥ mediumMin medium, else low. Every deduction adds a plain-language reason.
+    // Then level CAPS (score clamped into the capped band; limiting reasons listed first):
+    //   tap precision uncertaintyPct u (2σ of the item's size with every calibration tap and every item point
+    //     nudged ±2.5 px; measureProject fills it): u > 3% → ≤ Medium, u > 6% (or Infinity) → Low
+    //   refs-only → Low (Medium when horizontal and vertical refs agree within 3%); a broken rectangle → Low
+    //   roof-ortho → Low; focal 'default': roof/ground → Low, rect-refs (isotropic) → Medium
+    //   focalMismatchPct (lens vs rectangle estimate beyond max(15%, 3·relStd)): roof/ground → Low, rect-refs → Medium
+    //   roof/ground when the wall rectangle misfits the lens (poseConsistencyPct > poseTolerancePct) → Low
+    //   pitch 'estimated' or 'default' → Low (the gable on the wall may not be this roof's slope)
+    //   off-plane on a wall: tree, column, ridge → Low; bush → Medium (reason gives the expected bias)
+    //   scale from one unchecked reference (checks 0, scaleFrom 'refs') → Medium; tree with assumed diameter → Low
 measureProject(project, config) → {
   cameras, planes, pitch,
   features: { [featureId]: FeatureMeasurement },
   totals: { byType: { [type]: {count, lengthFt, withWasteFt, lights} }, totalFt, totalWithWasteFt },
-  warnings: [{level:'warn'|'info', code, message, planeId?, featureId?}]
+  warnings: [{level:'warn'|'info', code, message, planeId?, featureId?, imageId?}]
+  // codes include 'focal-mismatch' (warn, with suggestedFocalPx), 'exif-ignored' (info), 'pitch-spread' (warn)
 }
 imageToPlane(planeSol, p) → [u,v] | null ; planeToImage(planeSol, uv) → [x,y] | null
 planeGridLines(planeSol, stepFt, extent) → [[p1,p2], ...]   // image-space segments for an overlay grid
