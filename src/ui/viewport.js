@@ -216,6 +216,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     let lastPointerType = 'mouse';
     let altKey = false;
     let frame = 0;
+    let zoomAnim = 0;
     let destroyed = false;
     let docVisible = typeof document.hidden === 'boolean' ? !document.hidden : true;
     let onScreen = true;
@@ -332,7 +333,21 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       const mode = modeOf(ui);
       const op = isObj(mode.opts) ? mode.opts : {};
       if (mode.name === 'rect' && op.purpose === 'planeRect') return null;   // that rectangle defines the plane
-      return op.planeId || ui.activePlaneId || null;
+      return draftPlaneId(ui);
+    }
+    /**
+     * The plane a draft is drawn on. A roof/ground plane's own line (purpose 'planeLine') lies on its parent wall,
+     * like the eave or wall base that creates one ('roofEave' / 'groundBase' already pass the wall).
+     */
+    function draftPlaneId(ui) {
+      const mode = modeOf(ui);
+      const op = isObj(mode.opts) ? mode.opts : {};
+      let id = op.planeId || ui.activePlaneId || null;
+      if (op.purpose === 'planeLine') {
+        const pl = byId(arr(project() && project().planes), id);
+        if (pl && pl.derived && pl.derived.parentPlaneId) id = pl.derived.parentPlaneId;
+      }
+      return id;
     }
 
     /**
@@ -396,11 +411,21 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       if (pts.length) anchors.push(pts[pts.length - 1]);
       if (mode.name === 'rect' && pts.length === 3) anchors.push(pts[0]);
       let closeFirst = null;
+      let planeId = snapPlaneForDraft(ui);
       if (mode.name === 'trace') {
         const t = FT[(isObj(mode.opts) && mode.opts.type) || ui.traceType];
         if (t && (t.geometry === 'polygon' || t.geometry === 'area') && pts.length >= 3) closeFirst = pts[0];
+        if (t && t.geometry === 'vertical') planeId = verticalSnapPlane(planeId);
       }
-      return { anchors, planeId: snapPlaneForDraft(ui), closeFirst };
+      return { anchors, planeId, closeFirst };
+    }
+    /**
+     * Trees and columns stand upright. On a wall, "vertical" in the wall's coordinates is upright; on a roof or the
+     * ground the plane's v axis runs up the slope or toward the street, so align them on image axes instead.
+     */
+    function verticalSnapPlane(planeId) {
+      const pl = byId(arr(project() && project().planes), planeId);
+      return pl && pl.kind === 'wall' ? planeId : null;
     }
 
     /** Snap options while dragging handle h: exclude itself; align to its neighbors. */
@@ -419,7 +444,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
           const next = h.index < n - 1 ? h.index + 1 : (closed ? 0 : -1);
           if (prev >= 0 && okPt(pts[prev])) anchors.push(pts[prev]);
           if (next >= 0 && next !== prev && okPt(pts[next])) anchors.push(pts[next]);
-          planeId = f.planeId;
+          planeId = FT[f.type] && FT[f.type].geometry === 'vertical' ? verticalSnapPlane(f.planeId) : f.planeId;
         }
       } else if (t.kind === 'ref') {
         const pl = byId(prj.planes, t.planeId);
@@ -588,8 +613,13 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       requestRedraw();
     }
 
+    function stopZoomAnimation() {
+      if (zoomAnim) { cancelAnimationFrame(zoomAnim); zoomAnim = 0; }
+    }
+
     function onPointerDown(e) {
       if (destroyed) return;
+      stopZoomAnimation();   // a new touch takes over from a running double-tap zoom
       const sp = eventPoint(e);
       const type = pointerKind(e);
       lastPointerType = type;
@@ -709,7 +739,8 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       try { canvas.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
       if (!had || !drag) return;
       if (drag.type === 'pinch') {
-        if (pointers.size === 1) {
+        if (pointers.size >= 2) startPinch();   // a third finger lifted: re-anchor on the two still down
+        else if (pointers.size === 1) {
           // Keep panning with the finger that stays down; it can no longer become a tap.
           const [id, p] = Array.from(pointers.entries())[0];
           drag = { type: 'pan', id, start: [p.x, p.y], tx0: view.tx, ty0: view.ty };
@@ -774,9 +805,8 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       }
     }
 
-    let zoomAnim = 0;
     function animateZoom(factor, sp) {
-      if (zoomAnim) cancelAnimationFrame(zoomAnim);
+      stopZoomAnimation();
       const reduce = typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       if (reduce) { zoomBy(factor, sp); return; }
       const ip = screenToImage(sp);
@@ -801,6 +831,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     function onWheel(e) {
       if (destroyed) return;
       e.preventDefault();
+      stopZoomAnimation();
       const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 100 : 1;
       const dy = e.deltaY * unit;
       if (!dy) return;
@@ -874,9 +905,11 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     function onKeyUp(e) { if (e.key === 'Alt') altKey = false; }
 
     // ================================================================ drawing
+    /** Canvas background around the photo: the theme's --canvas-bg, else --stage, else a dark slate. */
     function readBackground() {
       try {
-        const v = getComputedStyle(host).getPropertyValue('--canvas-bg').trim();
+        const st = getComputedStyle(host);
+        const v = st.getPropertyValue('--canvas-bg').trim() || st.getPropertyValue('--stage').trim();
         if (v) bgColor = v;
       } catch (e) { /* keep the default */ }
     }
@@ -1373,7 +1406,8 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       }
       // Live length while placing.
       if (!flags.labels || !h || !pts.length) return;
-      const planeId = op.planeId || ui.activePlaneId;
+      if (mode.name === 'rect' && op.purpose === 'planeRect') return;   // this rectangle sets the scale itself
+      const planeId = draftPlaneId(ui);
       const sol = planeSolution(plan, planeId);
       if (!sol) return;
       const plane = byId(prj.planes, planeId);

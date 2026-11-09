@@ -19,17 +19,24 @@
  *  - Features without a run (the design stage failed) still get the type's default product and the project colors.
  *
  * drawBase / drawBulbs / renderSnapshot draw on a 2D canvas context. Bulbs are cached glow sprites (one per
- * color, size bucket, kind and day/night) drawn with 'lighter' compositing: a white-hot core, the bulb color, and a
- * long soft halo (bloom) that is wide at night and subtle by day.
+ * color, size bucket, halo reach, kind and day/night) drawn with 'lighter' compositing: a white-hot core, the bulb
+ * color, and a long soft halo (bloom) that is wide at night and subtle by day. When zoomed out, bulbs closer than
+ * ~2 px on screen are thinned, halos are capped to a few bulb gaps and inflated bulbs are dimmed, so a far
+ * roofline reads as a warm band and a bush as sparkles rather than a white blob.
  *
  * Deviations from SPEC §6.4 (documented signatures unchanged; all additive):
- *  - Bulb also has `a` (0..1 brightness; far-side trunk bulbs and bulbs deep in a bush are dimmer) and `run`
- *    (index in plan.runs, -1 when the feature had no run).
+ *  - Bulb also has `a` (0..1 brightness; far-side trunk bulbs and bulbs deep in a bush are dimmer), `run`
+ *    (index in plan.runs, -1 when the feature had no run), `s` (typical gap to its neighbours, image px) and `dim`
+ *    (1 along a line, 2 in a filled area). drawBulbs uses s/dim for level of detail when zoomed out.
  *  - The array computeBulbs returns also carries `strands` ([{pts, color, width, kind:'glow'|'stake', alpha}]: soft
  *    lines for dense or continuous lights, and stake lines) and `imageId`. drawBulbs draws the strands.
  *  - drawBase also takes opts.width / opts.height (draw size in image px; default the image's own size).
- *  - drawBulbs also takes opts.dpr (device px per CSS px, default 1) so minimum bulb sizes stay constant on screen.
- *    pxPerImagePx is DEVICE px per image px (the full canvas transform scale).
+ *  - drawBulbs also takes opts.dpr (device px per CSS px, default 1) so minimum bulb sizes stay constant on screen,
+ *    and opts.cache (default true). pxPerImagePx is DEVICE px per image px (the full canvas transform scale).
+ *    With the cache on, the lights are rendered into a layer per target canvas and reused until the bulbs, the
+ *    scale or day/night change (a pan by whole pixels only shifts it). Twinkle then composites 6 group layers
+ *    (2 for big bulbs, 4 for minis; a bulb's group comes from its phase) with per-group brightness, so a twinkle
+ *    frame costs the same for 300 or 6,000 bulbs. cache:false twinkles every bulb on its own phase.
  *  - renderSnapshot also takes opts.imageId (default: the project's active image).
  *  - Extra exports: clearCaches(), twinkleFactor(bulb, timeSec), BULB_RADIUS_IN, MAX_BUSH_BULBS, MIN_SPACING_PX.
  */
