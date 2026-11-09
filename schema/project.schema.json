@@ -1,0 +1,1559 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:lightplan:schema:project:1",
+  "title": "LightPlan project",
+  "description": "A persisted LightPlan project, format version 1. Lengths are feet, image points are pixels of the stored (downscaled) image with the origin at the top-left and y down, and angles are degrees. Ids are strings with a type prefix (prj_, img_, pl_, ref_, ft_, out_, cir_). null means \"not set, use the default\". Derived results are never stored here; exports carry them under a separate \"derived\" key (see #/$defs/exportFile).",
+  "type": "object",
+  "required": [
+    "schema",
+    "version",
+    "id",
+    "name",
+    "createdAt",
+    "updatedAt",
+    "customer",
+    "settings",
+    "images",
+    "activeImageId",
+    "planes",
+    "features",
+    "outlets",
+    "circuits",
+    "library",
+    "pricing",
+    "quote"
+  ],
+  "properties": {
+    "schema": {
+      "const": "lightplan/project",
+      "description": "Format marker. Always \"lightplan/project\"."
+    },
+    "version": {
+      "const": 1,
+      "description": "Format version. Older versions are upgraded by migrateProject; newer ones are refused."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Project id, e.g. \"prj_ab12cd34\"."
+    },
+    "name": {
+      "type": "string",
+      "description": "Project name shown in the app and on reports, usually the street address."
+    },
+    "createdAt": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "When the project was created (ISO 8601), or null if unknown."
+    },
+    "updatedAt": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "When the project was last changed (ISO 8601), or null if unknown."
+    },
+    "customer": {
+      "$ref": "#/$defs/customer"
+    },
+    "settings": {
+      "$ref": "#/$defs/settings"
+    },
+    "images": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/image"
+      },
+      "description": "Photos of the house. Pixels are stored separately under each image's storageKey."
+    },
+    "activeImageId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Id of the photo shown in the editor, or null when there are no photos."
+    },
+    "planes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/plane"
+      },
+      "description": "Measurement planes: walls calibrated from a perspective rectangle and references, and roof or ground planes derived from a wall."
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/feature"
+      },
+      "description": "Traced parts of the house that get lights (rooflines, windows, bushes, trees and so on)."
+    },
+    "outlets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/outlet"
+      },
+      "description": "Power outlets marked on the photos."
+    },
+    "circuits": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/circuit"
+      },
+      "description": "Breaker circuits the outlets belong to."
+    },
+    "library": {
+      "$ref": "#/$defs/library"
+    },
+    "pricing": {
+      "$ref": "#/$defs/pricing"
+    },
+    "quote": {
+      "$ref": "#/$defs/quote"
+    }
+  },
+  "$defs": {
+    "point": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "number"
+      },
+      "description": "Image point [x, y] in pixels of the stored image; origin top-left, y down."
+    },
+    "pointList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/point"
+      },
+      "description": "Image points in tap order."
+    },
+    "quad": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "$ref": "#/$defs/point"
+      },
+      "description": "Four image points as tapped. Order them with geometry.orderQuad to get [TL, TR, BR, BL]."
+    },
+    "hexColor": {
+      "type": "string",
+      "pattern": "^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$",
+      "description": "CSS hex color, e.g. \"#ffc46b\"."
+    },
+    "pitch": {
+      "type": "object",
+      "required": [
+        "rise",
+        "run"
+      ],
+      "description": "Roof pitch as rise over run, e.g. 6/12.",
+      "properties": {
+        "rise": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Rise in inches per run."
+        },
+        "run": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Run in inches, normally 12."
+        }
+      }
+    },
+    "customer": {
+      "type": "object",
+      "required": [
+        "name",
+        "address",
+        "phone",
+        "email"
+      ],
+      "description": "Customer details printed on the quote.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Customer name."
+        },
+        "address": {
+          "type": "string",
+          "description": "Street address of the job."
+        },
+        "phone": {
+          "type": "string",
+          "description": "Phone number as typed."
+        },
+        "email": {
+          "type": "string",
+          "description": "Email address as typed."
+        }
+      }
+    },
+    "settings": {
+      "type": "object",
+      "required": [
+        "wastePct",
+        "roofPitch",
+        "colorMode",
+        "customColors",
+        "lengthFormat"
+      ],
+      "description": "Project-wide planning settings.",
+      "properties": {
+        "wastePct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Percent added to every linear run (and to clip counts) for waste, corners and drops. Default 10."
+        },
+        "roofPitch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/pitch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Project default roof pitch. null = unknown: estimated from gable rakes traced on a wall, else 6/12 is assumed."
+        },
+        "colorMode": {
+          "enum": [
+            "warmWhite",
+            "coolWhite",
+            "multicolor",
+            "custom"
+          ],
+          "description": "Default light color for every run: warmWhite, coolWhite, multicolor or custom."
+        },
+        "customColors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hexColor"
+          },
+          "description": "Colors used when colorMode is \"custom\" (cycled along each run)."
+        },
+        "lengthFormat": {
+          "enum": [
+            "ft-in",
+            "ft-decimal"
+          ],
+          "description": "How lengths are shown: \"ft-in\" (32′ 4″) or \"ft-decimal\" (32.3 ft)."
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "width",
+        "height",
+        "source",
+        "exif",
+        "camera",
+        "storageKey"
+      ],
+      "description": "One photo. Pixels live in browser storage (Phase 2: object storage) under storageKey.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Image id, e.g. \"img_1\"."
+        },
+        "name": {
+          "type": "string",
+          "description": "Original file name, e.g. \"front.jpg\"."
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Width of the stored image in pixels (long side at most config.maxImageSide)."
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Height of the stored image in pixels."
+        },
+        "source": {
+          "$ref": "#/$defs/imageSource"
+        },
+        "exif": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/exif"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Camera data read from the JPEG, or null when the file had none."
+        },
+        "camera": {
+          "$ref": "#/$defs/cameraSettings"
+        },
+        "storageKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Key of the stored pixels (IndexedDB/localStorage in Phase 1). Exports carry the pixels as data URLs under this key."
+        }
+      }
+    },
+    "imageSource": {
+      "type": "object",
+      "required": [
+        "kind",
+        "capturedAt",
+        "attribution"
+      ],
+      "description": "Where the photo came from.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "upload",
+            "camera",
+            "sample",
+            "streetview",
+            "aerial"
+          ],
+          "description": "upload, camera (phone camera through the file picker), sample, streetview or aerial."
+        },
+        "capturedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When the photo was taken (from EXIF), or null."
+        },
+        "attribution": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Credit line required by the image source, or null."
+        }
+      }
+    },
+    "exif": {
+      "type": "object",
+      "required": [
+        "focal35",
+        "focalMm",
+        "make",
+        "model"
+      ],
+      "description": "Subset of JPEG EXIF used for the camera model.",
+      "properties": {
+        "focal35": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "35 mm-equivalent focal length (EXIF 0xA405)."
+        },
+        "focalMm": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Actual focal length in millimetres (EXIF 0x920A)."
+        },
+        "make": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Camera maker, e.g. \"Apple\"."
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Camera model, e.g. \"iPhone 15\"."
+        },
+        "orientation": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "EXIF orientation tag (1-8), when present."
+        },
+        "width": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Pixel width recorded in EXIF, when present."
+        },
+        "height": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Pixel height recorded in EXIF, when present."
+        },
+        "dateTime": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "DateTimeOriginal as written by the camera, when present."
+        }
+      }
+    },
+    "cameraSettings": {
+      "type": "object",
+      "required": [
+        "mode",
+        "presetId",
+        "focalPx"
+      ],
+      "description": "How the focal length is chosen for this photo.",
+      "properties": {
+        "mode": {
+          "enum": [
+            "auto",
+            "exif",
+            "preset",
+            "manual"
+          ],
+          "description": "auto (EXIF, else estimated from a wall rectangle, else phone 1x), exif, preset or manual."
+        },
+        "presetId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Camera preset id (camera.CAMERA_PRESETS) used in preset mode, e.g. \"phone1x\"."
+        },
+        "focalPx": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Focal length in pixels of the stored image, used in manual mode."
+        }
+      }
+    },
+    "plane": {
+      "type": "object",
+      "required": [
+        "id",
+        "imageId",
+        "name",
+        "kind",
+        "color",
+        "rect",
+        "refs",
+        "derived"
+      ],
+      "description": "A flat surface of the house used for measuring. Walls: plane coordinates [u, v] in feet, u right, v up, origin at the rectangle's bottom-left corner. Roof and ground: [a, b] feet, a along the defining line, b across it (up-slope or toward the street).",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Plane id, e.g. \"pl_front\"."
+        },
+        "imageId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Photo this plane is traced on."
+        },
+        "name": {
+          "type": "string",
+          "description": "Plane name, e.g. \"Front wall\"."
+        },
+        "kind": {
+          "enum": [
+            "wall",
+            "roof",
+            "ground"
+          ],
+          "description": "wall (vertical), roof (sloped, derived from a wall eave) or ground (horizontal, derived from a wall base)."
+        },
+        "color": {
+          "$ref": "#/$defs/hexColor"
+        },
+        "rect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/planeRect"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Perspective rectangle on this wall (e.g. a garage door or the facade corners), or null."
+        },
+        "refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ref"
+          },
+          "description": "Calibration references (known lengths or rectangles) lying on this plane."
+        },
+        "derived": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/planeDerived"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "For roof and ground planes: how the plane hangs off its parent wall. null for walls."
+        }
+      }
+    },
+    "planeRect": {
+      "type": "object",
+      "required": [
+        "corners",
+        "widthFt",
+        "heightFt",
+        "presetId"
+      ],
+      "description": "A real rectangle on the wall seen in perspective. Gives the perspective correction (homography).",
+      "properties": {
+        "corners": {
+          "$ref": "#/$defs/quad"
+        },
+        "widthFt": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "True width in feet; null with heightFt null = size unknown (scale then comes from refs)."
+        },
+        "heightFt": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "True height in feet; null = size unknown."
+        },
+        "presetId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Rectangle preset (measure.WALL_RECT_PRESETS), e.g. \"garage-double\"."
+        }
+      }
+    },
+    "planeDerived": {
+      "type": "object",
+      "required": [
+        "parentPlaneId",
+        "line",
+        "pitch"
+      ],
+      "description": "Roof: line is the eave on the parent wall and the plane slopes up and away at pitch. Ground: line is the wall base and the plane is horizontal toward the camera (pitch ignored).",
+      "properties": {
+        "parentPlaneId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Id of the wall this plane is built from."
+        },
+        "line": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "$ref": "#/$defs/point"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Two image points on the parent wall: the eave (roof) or the wall base (ground)."
+        },
+        "pitch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/pitch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Roof pitch for this plane; null = project roofPitch, else estimated, else 6/12."
+        }
+      }
+    },
+    "ref": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "points",
+        "presetId",
+        "quality"
+      ],
+      "description": "A calibration reference: a line of known length (or N siding/brick courses) or a rectangle of known size.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference id, e.g. \"ref_1\"."
+        },
+        "kind": {
+          "enum": [
+            "line",
+            "rect"
+          ],
+          "description": "line (2 points) or rect (4 points)."
+        },
+        "points": {
+          "$ref": "#/$defs/pointList"
+        },
+        "lengthFt": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Line refs: true length in feet (courses refs: courses × course height)."
+        },
+        "courses": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Line refs from a siding or brick preset: number of courses spanned; null otherwise."
+        },
+        "widthFt": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Rect refs: true width in feet."
+        },
+        "heightFt": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Rect refs: true height in feet."
+        },
+        "presetId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Reference preset (measure.REF_PRESETS), e.g. \"door-height\"."
+        },
+        "quality": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "description": "How much to trust it: high (door, garage door), medium (siding, brick), low."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "line"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "points": {
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "rect"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "points": {
+                "minItems": 4,
+                "maxItems": 4
+              }
+            }
+          }
+        }
+      ]
+    },
+    "feature": {
+      "type": "object",
+      "required": [
+        "id",
+        "imageId",
+        "planeId",
+        "type",
+        "label",
+        "points",
+        "closed",
+        "overrideFt",
+        "productId",
+        "color",
+        "params"
+      ],
+      "description": "A traced part of the house that gets lights.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Feature id, e.g. \"ft_1\". Its light run is \"run_\" + id."
+        },
+        "imageId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Photo the points are traced on."
+        },
+        "planeId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Plane used to measure it; null = not measurable yet."
+        },
+        "type": {
+          "enum": [
+            "roofline",
+            "rake",
+            "gutter",
+            "ridge",
+            "window",
+            "door",
+            "column",
+            "railing",
+            "walkway",
+            "bush",
+            "tree",
+            "stakes"
+          ],
+          "description": "Feature type (catalog.FEATURE_TYPES). Geometry: polyline, polygon, vertical (2 points, base then top) or area."
+        },
+        "label": {
+          "type": "string",
+          "description": "Name shown in lists and the checklist, e.g. \"Front eave\"."
+        },
+        "points": {
+          "$ref": "#/$defs/pointList"
+        },
+        "closed": {
+          "type": "boolean",
+          "description": "True when the outline loops back to its first point (windows, bushes)."
+        },
+        "overrideFt": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Tape-measured length in feet that replaces the measured one. Polyline/polygon: length or perimeter; tree/column: height (wrap length is recomputed); bush: ignored."
+        },
+        "productId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Product to use; null = the type default from the library config."
+        },
+        "color": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/featureColor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Color for this run; null = project colorMode."
+        },
+        "params": {
+          "$ref": "#/$defs/featureParams"
+        }
+      }
+    },
+    "featureColor": {
+      "type": "object",
+      "required": [
+        "mode"
+      ],
+      "description": "Per-feature color override.",
+      "properties": {
+        "mode": {
+          "enum": [
+            "warmWhite",
+            "coolWhite",
+            "multicolor",
+            "custom"
+          ],
+          "description": "Color mode for this run."
+        },
+        "colors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/hexColor"
+          },
+          "description": "Colors for mode \"custom\"."
+        }
+      }
+    },
+    "featureParams": {
+      "type": "object",
+      "required": [
+        "mount",
+        "diameterIn",
+        "spiralSpacingIn",
+        "wrapMode",
+        "outletId",
+        "reverse",
+        "overrideWidthFt",
+        "overrideHeightFt"
+      ],
+      "description": "Type-specific options. null = the type default.",
+      "properties": {
+        "mount": {
+          "anyOf": [
+            {
+              "enum": [
+                "gutter",
+                "shingle",
+                "allInOne",
+                "ridge",
+                "adhesive",
+                "zipTie",
+                "stake",
+                "none"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How the lights attach (sets the clip type): gutter, shingle, allInOne, ridge, adhesive, zipTie, stake or none."
+        },
+        "diameterIn": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Tree trunk or column diameter in inches."
+        },
+        "spiralSpacingIn": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Vertical gap between wraps in inches (tree, column)."
+        },
+        "wrapMode": {
+          "anyOf": [
+            {
+              "enum": [
+                "trunk",
+                "canopy"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Trees: trunk (spiral wrap) or canopy (planned by light count)."
+        },
+        "outletId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Force this run to be powered from this outlet."
+        },
+        "reverse": {
+          "type": "boolean",
+          "description": "Start the run at its last point instead of letting the planner choose."
+        },
+        "overrideWidthFt": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bushes: tape-measured width in feet."
+        },
+        "overrideHeightFt": {
+          "anyOf": [
+            {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bushes: tape-measured height in feet."
+        }
+      }
+    },
+    "outlet": {
+      "type": "object",
+      "required": [
+        "id",
+        "imageId",
+        "planeId",
+        "point",
+        "label",
+        "type",
+        "gfci",
+        "circuitId",
+        "receptacles"
+      ],
+      "description": "A power outlet marked on a photo.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Outlet id, e.g. \"out_1\"."
+        },
+        "imageId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Photo the outlet is marked on."
+        },
+        "planeId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Plane the outlet sits on (used to measure cord length)."
+        },
+        "point": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/point"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Image point of the outlet."
+        },
+        "label": {
+          "type": "string",
+          "description": "Name, e.g. \"Porch outlet\"."
+        },
+        "type": {
+          "enum": [
+            "exteriorGfci",
+            "garage",
+            "interior",
+            "other"
+          ],
+          "description": "exteriorGfci, garage, interior or other."
+        },
+        "gfci": {
+          "type": "boolean",
+          "description": "True when the outlet is GFCI protected. Unprotected outlets get a portable GFCI adapter in the BOM."
+        },
+        "circuitId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Breaker circuit this outlet is on; null = unknown (assumed alone on a 15 A breaker)."
+        },
+        "receptacles": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of sockets on the outlet."
+        }
+      }
+    },
+    "circuit": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "breakerAmps",
+        "voltage",
+        "existingLoadW"
+      ],
+      "description": "A breaker circuit. Safe continuous limit = breakerAmps × voltage × 0.8.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Circuit id, e.g. \"cir_1\"."
+        },
+        "name": {
+          "type": "string",
+          "description": "Name, e.g. \"Porch circuit\"."
+        },
+        "breakerAmps": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Breaker rating in amps (15 or 20 in most homes)."
+        },
+        "voltage": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Circuit voltage (120 in North America)."
+        },
+        "existingLoadW": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Watts already used on this circuit by other things while the lights are on."
+        }
+      }
+    },
+    "library": {
+      "type": "object",
+      "required": [
+        "products",
+        "config"
+      ],
+      "description": "Project overrides of the product library and rules of thumb.",
+      "properties": {
+        "products": {
+          "anyOf": [
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/product"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Full replacement product list; null = catalog defaults."
+        },
+        "config": {
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Overrides deep-merged into catalog.DEFAULT_CONFIG (clip spacing, labor rates, power limits and so on); null = defaults."
+        }
+      }
+    },
+    "product": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "description": "A light product (catalog Product). Only id is required here; the planner ignores products with missing data and says so.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Product id, e.g. \"c9-led\"."
+        },
+        "sku": {
+          "type": "string",
+          "description": "Price key: pricing.overrides and BOM lines use it."
+        },
+        "name": {
+          "type": "string",
+          "description": "Name shown in the BOM."
+        },
+        "category": {
+          "enum": [
+            "c9",
+            "c7",
+            "mini",
+            "icicle",
+            "net",
+            "rope",
+            "track",
+            "path",
+            "treewrap"
+          ],
+          "description": "Product family."
+        },
+        "tech": {
+          "enum": [
+            "LED",
+            "incandescent"
+          ],
+          "description": "Bulb technology."
+        },
+        "unit": {
+          "enum": [
+            "string",
+            "net",
+            "set",
+            "foot"
+          ],
+          "description": "What one purchasable unit is."
+        },
+        "bulbSpacingIn": {
+          "type": "number",
+          "description": "Inches between bulbs."
+        },
+        "stringLengthFt": {
+          "type": "number",
+          "description": "Lit length per unit in feet."
+        },
+        "leadFt": {
+          "type": "number",
+          "description": "Unlit lead length in feet."
+        },
+        "bulbsPerUnit": {
+          "type": "number",
+          "description": "Bulbs per unit."
+        },
+        "wattsPerUnit": {
+          "type": "number",
+          "description": "Watts per string/net/set, or per foot when unit is \"foot\"."
+        },
+        "maxEndToEnd": {
+          "type": "number",
+          "description": "Most units that may be connected end to end on one feed."
+        },
+        "coverageSqFt": {
+          "type": "number",
+          "description": "Net lights only: area one net covers."
+        },
+        "stakesPerSet": {
+          "type": "number",
+          "description": "Path lights only: stakes per set."
+        },
+        "stakeSpacingIn": {
+          "type": "number",
+          "description": "Path lights only: inches between stakes."
+        },
+        "dropLengthsIn": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "Icicle lights: drop lengths used by the preview."
+        },
+        "price": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Default unit price in USD."
+        },
+        "colors": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "warmWhite",
+              "coolWhite",
+              "multicolor",
+              "custom"
+            ]
+          },
+          "description": "Color modes the product is sold in."
+        },
+        "clipEligible": {
+          "type": "boolean",
+          "description": "True when the product hangs with roofline clips."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "False hides the product from auto-planning."
+        },
+        "suitableFor": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Feature types the planner may pick it for."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Free text shown in the library editor."
+        }
+      }
+    },
+    "pricing": {
+      "type": "object",
+      "required": [
+        "overrides"
+      ],
+      "description": "Price overrides.",
+      "properties": {
+        "overrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          },
+          "description": "SKU → unit price in USD, replacing the library price in the BOM."
+        }
+      }
+    },
+    "quote": {
+      "type": "object",
+      "required": [
+        "enabled",
+        "company",
+        "laborMethod",
+        "ratePerFt",
+        "ratePerHour",
+        "markupPct",
+        "takedownFee",
+        "storageFee",
+        "taxPct",
+        "validDays",
+        "notes"
+      ],
+      "description": "Installer mode: settings for the customer quote.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "True when installer mode (quote) is on."
+        },
+        "company": {
+          "type": "string",
+          "description": "Installer company name printed on the quote."
+        },
+        "laborMethod": {
+          "enum": [
+            "perFt",
+            "perHour"
+          ],
+          "description": "perFt (charge per installed foot plus hourly trees and bushes) or perHour (charge the estimated hours)."
+        },
+        "ratePerFt": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Labor price per installed foot (USD)."
+        },
+        "ratePerHour": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Labor price per hour (USD)."
+        },
+        "markupPct": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Percent added to the materials cost."
+        },
+        "takedownFee": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Flat fee for taking the lights down after the season (USD)."
+        },
+        "storageFee": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Flat fee for storing the lights until next season (USD)."
+        },
+        "taxPct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Sales tax percent applied to the marked-up materials."
+        },
+        "validDays": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Days the quote stays valid."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Free text printed at the bottom of the quote."
+        }
+      }
+    },
+    "exportFile": {
+      "type": "object",
+      "required": [
+        "schema",
+        "version",
+        "exportedAt",
+        "project",
+        "images",
+        "derived"
+      ],
+      "description": "JSON export wrapper written by schema.exportProject and read by schema.importProject.",
+      "properties": {
+        "schema": {
+          "const": "lightplan/export",
+          "description": "Always \"lightplan/export\"."
+        },
+        "version": {
+          "const": 1,
+          "description": "Export wrapper version."
+        },
+        "exportedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "When the file was written (ISO 8601)."
+        },
+        "project": {
+          "$ref": "#",
+          "description": "The persisted project."
+        },
+        "images": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "storageKey → image data URL (\"data:image/jpeg;base64,...\"). Empty when exported without photos."
+        },
+        "derived": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/derivedPlan"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Recomputed plan at export time, for Phase 2 consumers. Never read back on import."
+        }
+      }
+    },
+    "derivedPlan": {
+      "type": "object",
+      "description": "Output of plan.computePlan (loosely typed; recomputed from the project, so it is informative only).",
+      "properties": {
+        "library": {
+          "type": "object",
+          "description": "Effective products, config and accessories."
+        },
+        "measured": {
+          "type": "object",
+          "description": "measure.measureProject result: cameras, plane solutions, pitch, per-feature measurements, totals, warnings."
+        },
+        "runs": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Light runs with products, quantities, watts, clips and power assignment."
+        },
+        "power": {
+          "type": "object",
+          "description": "Chains, feeds, outlets, circuits, cords, counts, totals and warnings."
+        },
+        "bom": {
+          "type": "object",
+          "description": "Bill of materials lines, subtotal and totals by category."
+        },
+        "quote": {
+          "type": "object",
+          "description": "Customer quote lines and totals."
+        },
+        "checklist": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "Install checklist groups."
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "All warnings, most severe first."
+        },
+        "summary": {
+          "type": "object",
+          "description": "Headline numbers: feet, strings, clips, cords, timers, watts, cost."
+        }
+      }
+    }
+  }
+}
