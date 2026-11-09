@@ -456,6 +456,14 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         else warn('warn', 'outlet-missing', `${run.label} is set to an outlet that no longer exists, so the nearest outlet is used instead.`, { featureId: feature.id });
       }
       const product = catalog.getProduct(lib.products, run.productId);
+      // Strings laid along a measured length: only the strings that cover the length are hung (and loaded);
+      // the rest of what is bought (waste rounding) are spares. Other products (bush counts, nets, path sets,
+      // per-foot track) hang every unit.
+      const len = pos(product && product.stringLengthFt);
+      const L = Number.isFinite(run.lengthFt) ? run.lengthFt : 0;
+      const LW = Number.isFinite(run.withWasteFt) ? run.withWasteFt : L;
+      const lengthBased = run.unit === 'string' && !!len && L > 0 && LW >= L - 1e-9 &&
+        (run.method === 'linear' || run.method === 'spiral') && Math.ceil(LW / len - 1e-9) === run.quantity;
       items.push({
         idx, run, feature, shape, product,
         planeId: feature.planeId || run.planeId || null,
@@ -464,6 +472,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         forcedOutlet,
         wattsPerUnit: Math.max(0, Number.isFinite(run.watts) ? run.watts : 0) / run.quantity,
         incandescent: (run.tech || (product && product.tech)) === 'incandescent',
+        len: lengthBased ? len : null, L, LW,
       });
     }
 
@@ -511,7 +520,11 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       nbr[L.j][L.b] = { j: L.i, b: L.a };
     }
 
-    /** The two possible walks of a component (start from each free end). */
+    /**
+     * The two possible walks of a component (start from each free end). A step is {k, reversed, from, to}:
+     * the run is entered at its first point (or its last when reversed) and covers [from, to] feet along that
+     * traversal (the whole run here; split walks cover part of one run).
+     */
     function walks(memberIdx) {
       const sorted = memberIdx.slice().sort((x, y) => x - y);
       const free = [];
@@ -520,7 +533,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         const steps = [];
         let cur = f.m, entry = f.port;
         while (cur !== null && steps.length <= sorted.length) {
-          steps.push({ k: cur, reversed: entry === 1 });
+          steps.push({ k: cur, reversed: entry === 1, from: 0, to: items[cur].L });
           const next = nbr[cur][1 - entry];
           if (!next) break;
           cur = next.j; entry = next.b;
@@ -529,51 +542,115 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       });
     }
 
-    // ---- 2. feeds for one walk: fill each feed up to maxEndToEnd units, splitting between runs, and
-    // splitting a run along its length only when that run alone is longer than the limit.
-    function buildFeeds(steps) {
+    /**
+     * Where the strings go along a walk. Strings on a length-based run are laid end to end from where the
+     * walk enters it: `hung` strings start inside the step (the first `firstFt` feet in), `bought` is the
+     * step's share of what is bought (with waste). Other runs hang all their units. Returns new step objects.
+     */
+    function layout(steps) {
+      const out = steps.map((st) => Object.assign({}, st));
+      for (let i = 0; i < out.length;) {
+        const it = items[out[i].k];
+        if (!it.len) {
+          Object.assign(out[i], { hung: it.run.quantity, bought: it.run.quantity, firstFt: 0 });
+          i += 1;
+          continue;
+        }
+        const j = poolEnd(out, i);
+        placeStrings(out, i, j, it.len);
+        i = j;
+      }
+      return out;
+    }
+    /** End (exclusive) of the group of steps whose strings run on continuously from step i. */
+    function poolEnd(out, i) {
+      return i + 1;
+    }
+    /** Lay strings of length len end to end over steps [i, j): hung over the true length, bought over the length with waste. */
+    function placeStrings(out, i, j, len) {
+      const segs = [];
+      let T = 0, S = 0;
+      for (let m = i; m < j; m++) {
+        const it = items[out[m].k];
+        const Lp = Math.max(0, out[m].to - out[m].from);
+        const LWp = it.L > 0 ? it.LW * (Lp / it.L) : 0;
+        segs.push({ m, T, S, Lp, LWp });
+        T += Lp; S += LWp;
+      }
+      const hungT = T > 1e-9 ? Math.ceil(T / len - 1e-9) : 0;
+      const boughtT = Math.max(hungT, S > 1e-9 ? Math.ceil(S / len - 1e-9) : 0);
+      const count = (start, length, total, last) => {
+        let n = 0, first = null;
+        for (let q = 0; q < total; q++) {
+          const x = q * len;
+          if (x >= start - 1e-6 && (last || x < start + length - 1e-6)) { n += 1; if (first === null) first = x - start; }
+        }
+        return { n, first };
+      };
+      segs.forEach((g, gi) => {
+        const last = gi === segs.length - 1;
+        const h = count(g.T, g.Lp, hungT, last), b = count(g.S, g.LWp, boughtT, last);
+        Object.assign(out[g.m], { hung: h.n, bought: b.n, firstFt: h.first === null ? null : Math.max(0, h.first) });
+      });
+    }
+
+    // ---- 2. feeds for one walk: fill each feed up to maxEndToEnd hung units, splitting between runs, and
+    // splitting a run along its length only when that run alone is longer than the limit. A mid-run feed
+    // starts where the strings already hung end (string length along the run, not a share of the count).
+    function buildFeeds(placed) {
       const feeds = [];
       let cur = null;
-      const product = items[steps[0].k].product;
+      const product = items[placed[0].k].product;
       const maxE = pos(product && product.maxEndToEnd) || Infinity;
-      const open = (step, offset) => {
-        const it = items[step.k];
-        const path = traversal(it.shape, step.reversed);
-        const q = it.run.quantity;
-        let point, label;
-        if (offset <= 0) {
+      const open = (ps, offset) => {
+        const it = items[ps.k];
+        const path = traversal(it.shape, ps.reversed);
+        const Lr = it.L;
+        let frac;
+        if (it.len && Lr > 0) frac = Math.min(ps.to, ps.from + (ps.firstFt || 0) + offset * it.len) / Lr;
+        else frac = it.run.quantity > 0 ? offset / it.run.quantity : 0;
+        let point, label, toward = null;
+        if (frac <= 1e-9) {
           point = path[0].slice();
           label = portLabel(it.shape, path, it.run.label);
         } else {
-          point = pointAlong(path, offset / q, space.sol(it.planeId), space);
+          point = pointAlong(path, frac, space.sol(it.planeId), space);
           // Mid-run feed start: say how far along the run it is, from the end the run starts at.
-          const pct = Math.round((offset / q) * 100);
+          const pct = Math.round(frac * 100);
           if (it.shape.kind === 'vertical') label = `point ${pct}% of the way up ${it.run.label}`;
-          else if (it.run.lengthFt > 0) label = `point ${fmtInt((offset / q) * it.run.lengthFt)} ft from the ${portLabel(it.shape, path, it.run.label)}`;
+          else if (Lr > 0) label = `point ${fmtInt(frac * Lr)} ft from the ${portLabel(it.shape, path, it.run.label)}`;
           else label = `point ${pct}% of the way along ${it.run.label}`;
+          if (it.shape.kind === 'open' && path.length >= 2) toward = portLabel(it.shape, path.slice().reverse(), it.run.label);
         }
         cur = { portions: [], units: 0, watts: 0, start: { point, imageId: it.imageId, planeId: it.planeId, label } };
+        if (toward) cur.start.toward = toward;
         feeds.push(cur);
       };
-      const add = (step, units) => {
-        const it = items[step.k];
-        cur.portions.push({ k: step.k, units });
+      const add = (ps, units) => {
+        const it = items[ps.k];
+        cur.portions.push({ k: ps.k, units });
         cur.units += units;
         cur.watts += units * it.wattsPerUnit;
       };
-      for (const step of steps) {
-        const q = items[step.k].run.quantity;
-        if (q <= maxE) {
-          if (!cur || cur.units + q > maxE) open(step, 0);
-          add(step, q);
+      for (const ps of placed) {
+        const u = ps.hung;
+        if (!(u > 0)) {
+          // Covered by the string that runs on from the previous run.
+          if (!cur) open(ps, 0);
+          add(ps, 0);
+          continue;
+        }
+        if (u <= maxE) {
+          if (!cur || cur.units + u > maxE) open(ps, 0);
+          add(ps, u);
           continue;
         }
         // This run alone exceeds the limit: top up the current feed, then start new feeds along it.
         let offset = 0;
-        while (q - offset > 1e-9) {
-          if (!cur || cur.units >= maxE - 1e-9) open(step, offset);
-          const take = Math.min(maxE - cur.units, q - offset);
-          add(step, take);
+        while (u - offset > 1e-9) {
+          if (!cur || cur.units >= maxE - 1e-9) open(ps, offset);
+          const take = Math.min(maxE - cur.units, u - offset);
+          add(ps, take);
           offset += take;
         }
       }
@@ -638,19 +715,26 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       cmpStr(items[comps[x][0]].run.id, items[comps[y][0]].run.id));
     const tentative = new Map(baseLoads);
     const chosen = new Array(comps.length);
+    /** Feeds and cord totals for an option made of one or more walks (each walk is fed from its first step). */
+    function evaluate(opt) {
+      opt.placed = opt.walks.map(layout);
+      opt.feeds = [];
+      for (const pl of opt.placed) {
+        const built = buildFeeds(pl);
+        opt.maxE = built.maxE;
+        for (const f of built.feeds) opt.feeds.push(f);
+      }
+      const first = opt.feeds[0];
+      opt.firstCord = cordLen(pickOutlet(first, tentative), first);
+      opt.totalCord = opt.feeds.reduce((s, f) => { const L = cordLen(pickOutlet(f, tentative), f); return s + (L === Infinity ? 1e6 : L); }, 0);
+      return opt;
+    }
     for (const n of order) {
       const m = comps[n];
-      let options = walks(m).map((steps, w) => ({ steps, w }));
-      const allowed = options.filter((o) => o.steps.every((s) => !items[s.k].forcedReverse || s.reversed));
+      let options = walks(m).map((steps, w) => ({ walks: [steps], w }));
+      const allowed = options.filter((o) => o.walks[0].every((s) => !items[s.k].forcedReverse || s.reversed));
       if (allowed.length) options = allowed;
-      for (const opt of options) {
-        const built = buildFeeds(opt.steps);
-        opt.feeds = built.feeds;
-        opt.maxE = built.maxE;
-        const first = opt.feeds[0];
-        opt.firstCord = cordLen(pickOutlet(first, tentative), first);
-        opt.totalCord = opt.feeds.reduce((s, f) => { const L = cordLen(pickOutlet(f, tentative), f); return s + (L === Infinity ? 1e6 : L); }, 0);
-      }
+      for (const opt of options) evaluate(opt);
       options.sort((x, y) => x.firstCord - y.firstCord || x.totalCord - y.totalCord || x.w - y.w);
       const best = options[0];
       chosen[n] = best;
@@ -670,31 +754,63 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       const opt = chosen[n];
       const key = items[m[0]].run.id.replace(/^run_/, '');
       const chainId = 'chain_' + key;
+      const allSteps = [].concat(...opt.placed);
+      // Per run: hung and bought strings over the whole option (a split run appears in two walks).
+      const perRun = new Map();
+      for (const ps of allSteps) {
+        const e = perRun.get(ps.k) || { hung: 0, bought: 0, steps: [] };
+        e.hung += ps.hung; e.bought += ps.bought; e.steps.push(ps);
+        perRun.set(ps.k, e);
+      }
+      const runOrder = [];
+      for (const ps of opt.walks.length > 1 ? opt.walks[1].concat(opt.walks[0].slice().reverse()) : opt.walks[0]) {
+        if (!runOrder.includes(ps.k)) runOrder.push(ps.k);
+      }
+      if (opt.walks.length > 1) runOrder.sort((a, b) => opt.order.indexOf(a) - opt.order.indexOf(b));
       const reversed = {};
-      for (const s of opt.steps) reversed[items[s.k].run.id] = items[s.k].shape.kind === 'vertical' ? false : s.reversed;
+      for (const k of runOrder) {
+        const st = perRun.get(k).steps[perRun.get(k).steps.length - 1];
+        reversed[items[k].run.id] = items[k].shape.kind === 'vertical' ? false : st.reversed;
+      }
+      // Feed portions in feed order, with which portion starts and ends each run (for the checklist).
+      const seen = new Map();
       const feedIds = [];
       opt.feeds.forEach((f, fi) => {
         const id = 'feed_' + key + '_' + (fi + 1);
         feedIds.push(id);
+        const portions = f.portions.map((p) => {
+          const before = seen.get(p.k) || 0;
+          seen.set(p.k, before + 1);
+          return { runId: items[p.k].run.id, units: p.units, total: perRun.get(p.k).hung, startsRun: before === 0, endsRun: false };
+        });
         feedsOut.push({
           id, chainId, runIds: f.runIds.slice(), strings: f.units, watts: f.watts, amps: round(f.watts / V, 4),
           start: f.start, outletId: null, circuitId: null, cord: null, cordPath: [], crossesWalkway: false, cordUnknown: false,
+          portions,
           _forced: f.forcedOutlet, _incandescent: f.incandescent,
         });
       });
-      const runIds = opt.steps.map((s) => items[s.k].run.id);
-      const units = opt.steps.reduce((s, st) => s + items[st.k].run.quantity, 0);
-      chainsOut.push({ id: chainId, productId: items[m[0]].run.productId, runIds, reversed, strings: units,
-        watts: round(chainWatts(m), 2), feedIds });
-      const labels = opt.steps.map((s) => items[s.k].run.label);
+      // Mark the last portion of each run.
+      const lastSeen = new Map();
+      for (const f of feedsOut.filter((x) => x.chainId === chainId)) for (const p of f.portions) lastSeen.set(p.runId, p);
+      for (const p of lastSeen.values()) p.endsRun = true;
+      const runIds = runOrder.map((k) => items[k].run.id);
+      const hungUnits = allSteps.reduce((s, ps) => s + ps.hung, 0);
+      const boughtUnits = allSteps.reduce((s, ps) => s + ps.bought, 0);
+      const liveWatts = round(opt.feeds.reduce((s, f) => s + f.watts, 0), 2);
+      chainsOut.push({ id: chainId, productId: items[m[0]].run.productId, runIds, reversed, strings: round(hungUnits, 4),
+        spares: round(Math.max(0, boughtUnits - hungUnits), 4), watts: liveWatts, feedIds });
+      const labels = runOrder.map((k) => items[k].run.label);
       chainLabels.set(chainId, labels.length === 1 ? labels[0] : listText(labels.length > 3 ? labels.slice(0, 2).concat([`${labels.length - 2} more runs`]) : labels));
-      for (const s of opt.steps) {
-        const it = items[s.k];
-        const path = traversal(it.shape, s.reversed);
+      for (const k of runOrder) {
+        const it = items[k];
+        const e = perRun.get(k);
+        const path = traversal(it.shape, reversed[it.run.id] && it.shape.kind !== 'vertical');
         runInfo[it.run.id] = {
           chainId, feedIds: feedIds.filter((fid, fi) => opt.feeds[fi].runIds.includes(it.run.id)),
           outletId: null, circuitId: null,
           start: path[0].slice(), end: path[path.length - 1].slice(), reversed: reversed[it.run.id],
+          quantity: round(e.bought, 4), hung: round(e.hung, 4), watts: round(e.hung * it.wattsPerUnit, 2),
         };
       }
       if (opt.feeds.length > 1) {
@@ -703,7 +819,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         const what = runIds.length > 1 ? 'these connected runs use' : 'this run uses';
         warn('info', 'max-end-to-end',
           `${chainLabels.get(chainId)} ${runIds.length > 1 ? 'need' : 'needs'} ${opt.feeds.length} feeds: ${(product && product.name) || items[m[0]].run.productName} allows only ` +
-          `${fmtInt(opt.maxE)} ${unitWord(unit, opt.maxE)} end to end and ${what} ${fmtInt(units)}.`,
+          `${fmtInt(opt.maxE)} ${unitWord(unit, opt.maxE)} end to end and ${what} ${fmtInt(hungUnits)}.`,
           { featureId: items[m[0]].feature.id });
       }
     });
@@ -847,7 +963,8 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       const [awg, L] = k.split('|').map(Number);
       return { awg, lengthFt: L, count };
     }).sort((x, y) => y.awg - x.awg || x.lengthFt - y.lengthFt);
-    const totalWatts = round(items.reduce((s, it) => s + Math.max(0, it.run.watts || 0), 0), 2);
+    // Live load: the strings that are hung (spares bought for waste are not plugged in).
+    const totalWatts = round(chainsOut.reduce((s, c) => s + c.watts, 0), 2);
 
     // ---- warnings
     // Circuit loads (project circuits, then assumed per-outlet circuits).
@@ -914,8 +1031,9 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     }
     for (const [pid, e] of byProduct) {
       const first = e.items[0];
-      const q = e.items.reduce((s, it) => s + it.run.quantity, 0);
-      const w = e.items.reduce((s, it) => s + Math.max(0, it.run.watts || 0), 0);
+      // Live strings and watts (spares bought for waste are not plugged in).
+      const q = e.items.reduce((s, it) => s + (runInfo[it.run.id] && Number.isFinite(runInfo[it.run.id].hung) ? runInfo[it.run.id].hung : it.run.quantity), 0);
+      const w = e.items.reduce((s, it) => s + (runInfo[it.run.id] && Number.isFinite(runInfo[it.run.id].watts) ? runInfo[it.run.id].watts : Math.max(0, it.run.watts || 0)), 0);
       const name = (first.product && first.product.name) || first.run.productName || pid;
       const led = lib.products.find((p) => p && p.enabled !== false && p.tech === 'LED' && first.product && p.category === first.product.category && p.unit === first.product.unit);
       const ledText = led ? ` The LED version (${led.name}) would draw about ${fmtInt(q * (led.wattsPerUnit || 0))} W and allows more ${unitWord(led.unit, 2)} end to end.` : '';

@@ -16,6 +16,9 @@
  *  - Quote lines omit Takedown and Storage when the fee is 0 and Tax when the rate is 0. Labor hours are
  *    rounded to the nearest 0.25 h; installed feet to the nearest foot; setup hours apply only when
  *    there is something to install.
+ *  - Checklist: feed portions come from power.js (feed.portions: hung strings per run) when present, so the
+ *    hang steps count the strings actually hung; a mid-run start says which way to work (feed.start.toward);
+ *    the last feed of a chain with spares says to keep them.
  *  - Checklist: several power stakes at one outlet are chained (stake 1 into the timer, each next stake into a
  *    socket of the one before), and the step says how many sockets that gives.
  *  - Checklist: runs that are planned but sit on no feed (power plan missing) get hang steps in the
@@ -356,6 +359,8 @@ LP.define('bom', ['catalog'], function (catalog) {
     const featureById = new Map(arr(proj.features).filter(isObj).map((f) => [f.id, f]));
     const feeds = arr(pw.feeds).filter((f) => isObj(f) && typeof f.id === 'string');
     const portions = allocatePortions(feeds, arr(pw.chains), runById);
+    const chainOfFeed = new Map();
+    for (const c of arr(pw.chains)) if (isObj(c)) for (const fid of arr(c.feedIds)) chainOfFeed.set(fid, c);
     const projOutlets = arr(proj.outlets).filter((o) => isObj(o) && typeof o.id === 'string');
     const pwOutlets = new Map(arr(pw.outlets).filter(isObj).map((o) => [o.id, o]));
     const circuits = new Map(arr(proj.circuits).filter(isObj).map((c) => [c.id, c]));
@@ -387,7 +392,8 @@ LP.define('bom', ['catalog'], function (catalog) {
         const noun = run.unit === 'foot' ? 'section' : unitWord(run.unit, 1);
         if (j === 0) {
           const start = feed.start && feed.start.label ? feed.start.label : sideOf(run);
-          steps.push(`${verbPhrase(run, what, label, prepOf(run))}, starting at the ${start}. Plug the first ${noun} into the cord.`);
+          const toward = feed.start && typeof feed.start.toward === 'string' && feed.start.toward ? `, working toward the ${feed.start.toward}` : '';
+          steps.push(`${verbPhrase(run, what, label, prepOf(run))}, starting at the ${start}${toward}. Plug the first ${noun} into the cord.`);
         } else {
           const prev = list[j - 1].run;
           const prevNoun = prev.unit === 'foot' ? 'section' : unitWord(prev.unit, 1);
@@ -396,6 +402,13 @@ LP.define('bom', ['catalog'], function (catalog) {
             `then ${lowerFirst(verbPhrase(run, what, label, prepOf(run)))}, starting at the ${start}.`);
         }
       });
+      const chain = chainOfFeed.get(feed.id);
+      if (chain && chain.feedIds[chain.feedIds.length - 1] === feed.id && fin(chain.spares, 0) > 0) {
+        const first = list.length ? list[0].run : null;
+        const n = fin(chain.spares, 0);
+        const noun = first && first.unit === 'foot' ? 'ft' : unitWord(first ? first.unit : 'string', n);
+        steps.push(`Keep the ${fmtNum(n, 2)} spare ${noun} (bought for waste) to replace a dead one later.`);
+      }
       const strings = list.length && list.every((p) => p.run.unit === 'string') ? list.reduce((s, p) => s + p.units, 0) : null;
       const lights = strings === null ? 'every light on this cord works'
         : Math.abs(strings - 1) < EPS ? 'the string on this cord lights' : `all ${fmtNum(strings, 2)} strings on this cord light`;
@@ -482,6 +495,20 @@ LP.define('bom', ['catalog'], function (catalog) {
    * reproduces its portions exactly. Returns Map feedId → [{run, units, total, startsRun, endsRun}].
    */
   function allocatePortions(feeds, chains, runById) {
+    // power.js lists each feed's portions (hung strings per run, split runs, runs carried on by the previous
+    // string); use them when every feed has them.
+    const listed = feeds.length && feeds.every((f) => Array.isArray(f.portions) && f.portions.every((p) => isObj(p) && runById.has(p.runId)));
+    if (listed) {
+      const out = new Map();
+      for (const f of feeds) {
+        out.set(f.id, f.portions.map((p) => {
+          const run = runById.get(p.runId);
+          const total = Math.max(0, fin(p.total, fin(run.quantity, 0)));
+          return { run, units: roundQty(Math.max(0, fin(p.units, 0))), total, startsRun: p.startsRun === true, endsRun: p.endsRun === true };
+        }));
+      }
+      return out;
+    }
     const byId = new Map(feeds.map((f) => [f.id, f]));
     const order = [];
     const seen = new Set();

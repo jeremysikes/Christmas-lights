@@ -123,26 +123,27 @@ test('cord pieces: smallest standard length, 100 ft cords plus the remainder abo
 
 // ------------------------------------------------------------------ overloads and feeds
 test('10 incandescent C9 strings on one 15 A circuit: overload warning; a second circuit takes the excess', () => {
-  // 220 ft eave → 242 ft with waste → 10 strings × 175 W = 1,750 W, max 3 end to end → feeds 3 + 3 + 3 + 1
+  // 220 ft eave → 242 ft with waste → 10 strings bought; 9 × 25 ft cover the 220 ft (the 10th is a spare):
+  // 9 × 175 W = 1,575 W live, max 3 end to end → feeds 3 + 3 + 3
   const eave = feature('ft_eave', 'roofline', [F(10, 20), F(230, 20)], { label: 'Front eave', productId: 'c9-incan' });
   const one = plan(project({ features: [eave], outlets: [outlet('out_a', F(5, 1.5), { label: 'Porch outlet' })], circuits: [circuit('cir_1', 15, { name: 'Porch circuit' })] }));
   const pw = one.power;
   assert.equal(one.runs[0].quantity, 10);
-  assert.deepEqual(pw.feeds.map((f) => f.strings), [3, 3, 3, 1]);
-  assert.deepEqual(pw.feeds.map((f) => f.watts), [525, 525, 525, 175]);
+  assert.deepEqual(pw.feeds.map((f) => f.strings), [3, 3, 3]);
+  assert.deepEqual(pw.feeds.map((f) => f.watts), [525, 525, 525]);
   assert.ok(pw.feeds.every((f) => f.outletId === 'out_a' && f.circuitId === 'cir_1'));
-  assert.equal(pw.circuits[0].loadW, 1750);
+  assert.equal(pw.circuits[0].loadW, 1575);
   assert.equal(pw.circuits[0].overloaded, true);
-  close(pw.circuits[0].utilizationPct, 121.5, 0.05);
+  close(pw.circuits[0].utilizationPct, 109.4, 0.05);
   const over = byCode(pw, 'circuit-overload');
   assert.equal(over.length, 1);
   assert.equal(over[0].level, 'danger');
   assert.equal(over[0].circuitId, 'cir_1');
-  assert.equal(over[0].message, 'Porch circuit would carry 1,750 W, over the 1,440 W safe limit for a 15 A breaker (80%). Move a run to another circuit or switch to LED.');
+  assert.equal(over[0].message, 'Porch circuit would carry 1,575 W, over the 1,440 W safe limit for a 15 A breaker (80%). Move a run to another circuit or switch to LED.');
   assert.equal(pw.warnings[0].code, 'circuit-overload'); // danger sorts first
-  assert.match(byCode(pw, 'incandescent')[0].message, /Front eave uses incandescent lights .*10 strings draw 1,750 W\. The LED version \(C9 LED string, 25 bulbs\) would draw about 96 W/);
-  assert.match(byCode(pw, 'max-end-to-end')[0].message, /^Front eave needs 4 feeds: .* allows only 3 strings end to end and this run uses 10\.$/);
-  assert.equal(pw.counts.splitters, 2);   // 4 feeds on one outlet → 2 chained stakes (5 sockets)
+  assert.match(byCode(pw, 'incandescent')[0].message, /Front eave uses incandescent lights .*9 strings draw 1,575 W\. The LED version \(C9 LED string, 25 bulbs\) would draw about 86 W/);
+  assert.match(byCode(pw, 'max-end-to-end')[0].message, /^Front eave needs 3 feeds: .* allows only 3 strings end to end and this run uses 9\.$/);
+  assert.equal(pw.counts.splitters, 1);   // 3 feeds on one outlet → 1 stake (3 sockets)
   assert.equal(pw.counts.timers, 1);
 
   // A second outlet on another circuit, almost as close: the third 525 W feed moves there.
@@ -152,35 +153,36 @@ test('10 incandescent C9 strings on one 15 A circuit: overload warning; a second
     circuits: [circuit('cir_1', 15), circuit('cir_2', 20)],
   })).power;
   assert.deepEqual(byCode(two, 'circuit-overload'), []);
-  assert.deepEqual(two.feeds.map((f) => f.outletId), ['out_a', 'out_a', 'out_b', 'out_a']);
-  assert.deepEqual(two.circuits.map((c) => c.loadW), [1225, 525]);
+  assert.deepEqual(two.feeds.map((f) => f.outletId), ['out_a', 'out_a', 'out_b']);
+  assert.deepEqual(two.circuits.map((c) => c.loadW), [1050, 525]);
   assert.ok(two.circuits.every((c) => !c.overloaded));
 });
 
-test('7 incandescent C9 strings → 3 feeds (max 3 end to end), split along the run', () => {
-  // 150 ft → 165 ft with waste → 7 strings
+test('7 incandescent C9 strings bought, 6 hung → 2 feeds (max 3 end to end), split along the run', () => {
+  // 150 ft → 165 ft with waste → 7 strings bought; 6 × 25 ft cover the 150 ft (1 spare)
   const eave = feature('ft_eave', 'roofline', [F(10, 20), F(160, 20)], { label: 'Front eave', productId: 'c9-incan' });
   const { runs, power: pw } = plan(project({ features: [eave], outlets: [outlet('out_a', F(5, 1.5))] }));
   assert.equal(runs[0].quantity, 7);
   assert.equal(pw.chains.length, 1);
-  assert.equal(pw.chains[0].strings, 7);
-  assert.equal(pw.feeds.length, 3);
-  assert.deepEqual(pw.feeds.map((f) => f.strings), [3, 3, 1]);
+  assert.equal(pw.chains[0].strings, 6);
+  assert.equal(pw.chains[0].spares, 1);
+  assert.equal(pw.feeds.length, 2);
+  assert.deepEqual(pw.feeds.map((f) => f.strings), [3, 3]);
   assert.deepEqual(pw.chains[0].feedIds, pw.feeds.map((f) => f.id));
-  assert.deepEqual(pw.feeds.map((f) => f.id), ['feed_ft_eave_1', 'feed_ft_eave_2', 'feed_ft_eave_3']);
-  // feed starts at the left end (nearest the outlet), then 3/7 and 6/7 of the way along
+  assert.deepEqual(pw.feeds.map((f) => f.id), ['feed_ft_eave_1', 'feed_ft_eave_2']);
+  // feed starts at the left end (nearest the outlet), then where three 25 ft strings end (75 ft along)
   assert.deepEqual(pw.feeds[0].start.point, F(10, 20));
   assert.equal(pw.feeds[0].start.label, 'left end of Front eave');
-  const p2 = pw.feeds[1].start.point, p3 = pw.feeds[2].start.point;
-  close(p2[0], F(10 + 150 * 3 / 7, 20)[0], 1e-6); close(p2[1], 800, 1e-6);
-  close(p3[0], F(10 + 150 * 6 / 7, 20)[0], 1e-6);
-  assert.equal(pw.feeds[1].start.label, 'point 64 ft from the left end of Front eave');
+  const p2 = pw.feeds[1].start.point;
+  close(p2[0], F(10 + 75, 20)[0], 1e-6); close(p2[1], 800, 1e-6);
+  assert.equal(pw.feeds[1].start.label, 'point 75 ft from the left end of Front eave');
+  assert.equal(pw.feeds[1].start.toward, 'right end of Front eave');
   assert.equal(pw.feeds[1].start.planeId, 'pl_front');
   assert.equal(pw.feeds[1].start.imageId, 'img_1');
   const info = byCode(pw, 'max-end-to-end');
   assert.equal(info.length, 1);
   assert.equal(info[0].level, 'info');
-  assert.match(info[0].message, /^Front eave needs 3 feeds: C9 incandescent string, 25 bulbs \(7 W\) allows only 3 strings end to end and this run uses 7\.$/);
+  assert.match(info[0].message, /^Front eave needs 2 feeds: C9 incandescent string, 25 bulbs \(7 W\) allows only 3 strings end to end and this run uses 6\.$/);
   assert.deepEqual(pw.runInfo.run_ft_eave.feedIds, pw.chains[0].feedIds);
 });
 
@@ -188,9 +190,9 @@ test('LED runs within maxEndToEnd stay on one feed', () => {
   const eave = feature('ft_eave', 'roofline', [F(10, 20), F(160, 20)]);
   const pw = plan(project({ features: [eave], outlets: [outlet('out_a', F(5, 1.5))] })).power;
   assert.equal(pw.feeds.length, 1);
-  assert.equal(pw.feeds[0].strings, 7);
-  close(pw.feeds[0].watts, 67.2, 1e-9);
-  close(pw.feeds[0].amps, 0.56, 1e-9);
+  assert.equal(pw.feeds[0].strings, 6); // 7 bought for 150 ft + 10%, 6 × 25 ft hung
+  close(pw.feeds[0].watts, 57.6, 1e-9);
+  close(pw.feeds[0].amps, 0.48, 1e-9);
   assert.deepEqual(byCode(pw, 'max-end-to-end'), []);
   assert.deepEqual(byCode(pw, 'incandescent'), []);
 });
@@ -370,7 +372,7 @@ test('outlet without a circuit is assumed to be alone on a 15 A breaker', () => 
   assert.match(byCode(pw, 'outlet-no-circuit')[0].message, /Porch outlet is not assigned to a circuit/);
   const over = byCode(pw, 'circuit-overload')[0];
   assert.equal(over.outletId, 'out_a');
-  assert.match(over.message, /^The circuit for Porch outlet would carry 1,750 W, over the 1,440 W safe limit for a 15 A breaker \(80%\)\./);
+  assert.match(over.message, /^The circuit for Porch outlet would carry 1,575 W, over the 1,440 W safe limit for a 15 A breaker \(80%\)\./); // 9 hung strings
 });
 
 test('circuit above 90% of its limit gets a circuit-high warning', () => {
@@ -420,8 +422,8 @@ test('1,500 W feed with a ~95 ft cord: 12 AWG and a voltage-drop warning; long c
   custom.products.push({ id: 'big-c9', sku: 'big-c9', name: 'Big C9 string', category: 'c9', tech: 'LED', unit: 'string',
     bulbSpacingIn: 12, stringLengthFt: 10, leadFt: 1, bulbsPerUnit: 10, wattsPerUnit: 150, maxEndToEnd: 20, price: 10,
     colors: ['warmWhite'], clipEligible: true, enabled: true, suitableFor: ['roofline'] });
-  // 90 ft → 99 ft with waste → 10 strings × 150 W = 1,500 W. Outlet 70 ft across and 9 ft below the left end.
-  const eave = feature('ft_e', 'roofline', [F(100, 20), F(190, 20)], { label: 'Front eave', productId: 'big-c9' });
+  // 100 ft → 10 strings of 10 ft hung (11 bought with waste) × 150 W = 1,500 W. Outlet 70 ft across and 9 ft below the left end.
+  const eave = feature('ft_e', 'roofline', [F(100, 20), F(200, 20)], { label: 'Front eave', productId: 'big-c9' });
   const pw = plan(project({ features: [eave], outlets: [outlet('out_a', F(30, 11))], circuits: [circuit('cir_1', 20)] }), custom).power;
   const f = pw.feeds[0];
   assert.equal(f.watts, 1500);
@@ -523,7 +525,9 @@ test('unpowered runs, bad data and missing pieces never throw; inputs are not mu
   assert.deepEqual(pw.runInfo.run_ft_lost.start, F(10, 30));
   assert.equal(feedOf(pw, 'run_ft_t').start.label, 'base of Oak');
   assert.equal(pw.runInfo.run_ft_t.reversed, false);
-  close(pw.totals.watts, runs.reduce((s, r) => s + r.watts, 0), 1e-9);
+  // Live load: the 50 ft eave hangs 2 of its 3 strings (the third is a spare), the oak hangs both of its 2.
+  close(pw.totals.watts, 2 * 9.6 + 2 * 7.2, 1e-9);
+  close(pw.totals.watts, pw.chains.reduce((s, c) => s + c.watts, 0), 1e-9);
   close(pw.totals.amps, pw.totals.watts / 120, 1e-3);
 
   for (const args of [[], [null, null, null, null], [{}, {}, [{}], {}], [p, null, runs, null], [p, measured, [{ id: 'run_x', featureId: 'nope', quantity: 3 }], lib]]) {
@@ -655,8 +659,8 @@ test('plug-in cords, timers, power stakes and outlets are 15 A devices: cords ca
   assert.equal(a.ok, false);
   assert.equal(power.sizeCord(30, 1900, lib.config.power).ampacityOk, false, '15.8 A is over a 15 A plug');
   assert.equal(power.sizeCord(10, 1800, lib.config.power).ampacityOk, true, '15 A is within a 15 A plug');
-  // 200 ft of incandescent C9 on a 20 A circuit, one outlet: 9 hung strings = 1,575 W through one timer and stake.
-  const eave = feature('ft_eave', 'roofline', [F(10, 20), F(210, 20)], { label: 'Front eave', productId: 'c9-incan' });
+  // 220 ft of incandescent C9 on a 20 A circuit, one outlet: 9 hung strings = 1,575 W through one timer and stake.
+  const eave = feature('ft_eave', 'roofline', [F(10, 20), F(230, 20)], { label: 'Front eave', productId: 'c9-incan' });
   const one = plan(project({ features: [eave], outlets: [outlet('out_a', F(110, 1.5), { label: 'Porch outlet' })], circuits: [circuit('cir_1', 20)] })).power;
   assert.equal(one.circuits[0].overloaded, false, 'the 20 A circuit itself is fine');
   const over = byCode(one, 'outlet-overload');
@@ -752,4 +756,40 @@ test('sample house: the cord to Bush 2 runs past the front door and across the w
   assert.equal(feedOf(pw, 'run_ft_door').crossesWalkway, true);
   const steps = out.checklist.find((gr) => gr.outletId === 'out_porch').steps;
   assert.ok(steps.some((s) => /cord cover/.test(s) && /Front door/.test(s)), 'the checklist says where the cover goes');
+});
+
+test('mid-run feeds start where the hung strings end (string length, not string count); spare strings are not live load', () => {
+  // 100 ft incandescent C9 eave: 110 ft with waste → 5 strings bought, but 4 × 25 ft cover the 100 ft.
+  const eave = feature('ft_eave', 'roofline', [F(0, 20), F(100, 20)], { label: 'Eave', productId: 'c9-incan' });
+  const { runs, power: pw } = plan(project({ features: [eave], outlets: [outlet('out_a', F(0, 1.5))] }));
+  assert.equal(runs[0].quantity, 5, 'the shopping list still buys 5 (one spare)');
+  assert.deepEqual(pw.feeds.map((f) => f.strings), [3, 1], '4 hung strings: 3 + 1');
+  assert.deepEqual(pw.feeds.map((f) => f.watts), [525, 175]);
+  assert.equal(pw.feeds[1].start.label, 'point 75 ft from the left end of Eave', 'three 25 ft strings end at 75 ft');
+  close(pw.feeds[1].start.point[0], F(75, 20)[0], 1e-6);
+  close(pw.feeds[1].cord.lengthFt, (75 + 18.5) * 1.15 + 4, 0.06);
+  assert.deepEqual(pw.feeds[1].cord.pieces, [100, 15], 'the cord bought is long enough for the real feed point (about 112 ft)');
+  assert.equal(pw.totals.watts, 700, 'live load is the 4 hung strings');
+  assert.equal(pw.chains[0].strings, 4);
+  assert.equal(pw.chains[0].spares, 1);
+  // 300 ft eave: 14 strings bought, 12 cover the run → 4 feeds of 3, none for the 2 spares.
+  const long = feature('ft_long', 'roofline', [F(0, 20), F(300, 20)], { label: 'Long eave', productId: 'c9-incan' });
+  const p2 = plan(project({ features: [long], outlets: [outlet('out_a', F(0, 1.5))], circuits: [circuit('cir_1', 20)] }));
+  assert.equal(p2.runs[0].quantity, 14);
+  assert.deepEqual(p2.power.feeds.map((f) => f.strings), [3, 3, 3, 3]);
+  assert.deepEqual(p2.power.feeds.map((f) => f.start.label), ['left end of Long eave', 'point 75 ft from the left end of Long eave',
+    'point 150 ft from the left end of Long eave', 'point 225 ft from the left end of Long eave']);
+});
+
+test('checklist follows the power plan: the second cord goes to 75 ft, hangs the last hung string, and the spare is kept', () => {
+  const bomMod = LP.require('bom');
+  const planMod = LP.require('plan');
+  const eave = feature('ft_eave', 'roofline', [F(0, 20), F(100, 20)], { label: 'Eave', productId: 'c9-incan' });
+  const p = project({ features: [eave], outlets: [outlet('out_a', F(0, 1.5), { label: 'Outlet 1' })] });
+  const { runs, power: pw } = plan(p);
+  const steps = bomMod.buildChecklist(p, planMod.mergeRunInfo(runs, pw), pw, null)[0].steps;
+  assert.ok(steps.includes('Cord 2 of 2: Run 115 ft of 16 AWG outdoor extension cord (100 ft + 15 ft, joined end to end) from Outlet 1 to the point 75 ft from the left end of Eave (about 112 ft needed). Keep the joints off the ground.'), steps.join('\n'));
+  assert.ok(steps.some((s) => /^Hang the first 3 of the 4 × warm white C9 incandescent string/.test(s)), steps.join('\n'));
+  assert.ok(steps.some((s) => /^Hang the last 1 of the 4 × warm white C9 incandescent string.*starting at the point 75 ft from the left end of Eave, working toward the right end of Eave\./.test(s)), steps.join('\n'));
+  assert.ok(steps.some((s) => /Keep the 1 spare string/.test(s)), steps.join('\n'));
 });
