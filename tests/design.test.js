@@ -372,3 +372,34 @@ test('bulbs always equal quantity × bulbs per unit', () => {
     close(r.amps, r.watts / 120, 1e-4, r.featureId);
   }
 });
+
+test('a turned-off default product falls back to an LED product before any incandescent one, and says so', () => {
+  const custom = catalog.deepClone(lib);
+  custom.products.find((p) => p.id === 'c9-led').enabled = false;
+  custom.products.find((p) => p.id === 'mini-led-100').enabled = false;
+  const p = project([
+    feature('eave', 'roofline', { label: 'Front eave' }),
+    feature('gut', 'gutter', { label: 'Garage gutter' }),
+    feature('win', 'window', { label: 'Window left', closed: true, points: [[0, 0], [10, 0], [10, 10], [0, 10]] }),
+    feature('door', 'door', { label: 'Front door' }),
+    feature('bush', 'bush', { label: 'Bush 1' }),
+  ]);
+  const m = measured([linearFm('eave', 'roofline', 34), linearFm('gut', 'gutter', 22), linearFm('win', 'window', 18),
+    linearFm('door', 'door', 16), bushFm('bush', 4, 3)]);
+  const runs = design.planRuns(p, m, custom);
+  for (const r of runs) assert.equal(r.tech, 'LED', `${r.label} uses ${r.productId}`);
+  assert.equal(runOf(runs, 'eave').productId, 'c7-led', 'C9 LED off → C7 LED (same unit, LED), not C9 incandescent');
+  assert.equal(runOf(runs, 'gut').productId, 'c7-led');
+  assert.equal(runOf(runs, 'bush').productId, 'treewrap-led', 'mini LED off → the LED string made for bushes, not mini incandescent');
+  assert.ok(['c7-led', 'rope-led-18'].includes(runOf(runs, 'win').productId), runOf(runs, 'win').productId);
+  assert.match(runOf(runs, 'eave').warnings.join(' '), /C9 LED string, 25 bulbs is turned off in the product library, so C7 LED string, 25 bulbs is used/);
+  assert.match(runOf(runs, 'bush').warnings.join(' '), /5 mm mini LED string, 100 bulbs is turned off in the product library, so LED tree-wrap string/);
+  // Only incandescent left for a type: it is used, with the same notice.
+  const incan = catalog.deepClone(lib);
+  for (const pr of incan.products) if (pr.tech === 'LED' && pr.suitableFor.includes('roofline')) pr.enabled = false;
+  const r2 = design.planRuns(project([feature('eave', 'roofline')]), measured([linearFm('eave', 'roofline', 34)]), incan);
+  assert.equal(r2[0].productId, 'c9-incan');
+  assert.match(r2[0].warnings.join(' '), /turned off in the product library, so C9 incandescent string/);
+  // The type default in use: no notice.
+  assert.deepEqual(design.planRuns(project([feature('eave', 'roofline')]), measured([linearFm('eave', 'roofline', 34)]), lib)[0].warnings, []);
+});

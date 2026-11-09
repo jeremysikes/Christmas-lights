@@ -14,6 +14,10 @@
  *    method 'bush-rule' (the method enum has no separate canopy value).
  *  - lengthFt / withWasteFt are always numbers on a LightRun (0 for bushes planned by light count and
  *    for features that are not measured yet) so downstream sums never see null.
+ *  - Product fallback. When the type default is off or missing, the stand-in is the enabled suitable product
+ *    closest to it: LED before incandescent, then the same category, then the same unit, then library order
+ *    (not simply the first suitable product, which put C9 incandescent on windows). The run gets a warning
+ *    naming the default that is unavailable and the product used instead.
  *  - Extra exports: resolveProduct(feature, library) and clipsFor(feature, product, lengthFt, config).
  */
 LP.define('design', ['catalog'], function (catalog) {
@@ -23,6 +27,9 @@ LP.define('design', ['catalog'], function (catalog) {
   /** Mount values that map straight onto a clip type for clip-eligible products. */
   const CLIP_MOUNTS = ['allInOne', 'gutter', 'shingle', 'ridge', 'adhesive'];
   const UNIT_WORDS = { string: ['string', 'strings'], net: ['net', 'nets'], set: ['set', 'sets'], foot: ['ft', 'ft'] };
+  /** Plural nouns for product-substitution notices ("... is used for eaves instead"). */
+  const PLURAL = { roofline: 'eaves', rake: 'rakes', gutter: 'gutters', ridge: 'ridges', window: 'windows', door: 'doors',
+    column: 'columns', railing: 'railings', walkway: 'walkways', bush: 'bushes', tree: 'trees', stakes: 'ground stakes' };
   /** Net lights on a line-type feature are estimated as a band this wide. */
   const NET_BAND_FT = 4;
 
@@ -62,9 +69,29 @@ LP.define('design', ['catalog'], function (catalog) {
   }
 
   /**
-   * Product for a feature: feature.productId → config.typeDefaults[type] → first enabled suitable product.
-   * A product the user picked explicitly does not have to be "suitable" (nets on a roofline are allowed),
-   * it only has to exist and be enabled. Returns {product|null, source, warnings}.
+   * Best stand-in among the enabled products suitable for `type`, closest to `ref` (the product that is
+   * unavailable): LED before incandescent, then the same category, then the same unit, then library order.
+   * Turning off an LED product therefore never silently switches to its 12× hungrier incandescent twin.
+   */
+  function fallbackProduct(type, lib, ref) {
+    const list = suitableProducts(type, lib);
+    if (!list.length) return null;
+    const rank = (p) => {
+      const tech = p.tech === 'incandescent' ? 3 : 0;
+      let near = 2;
+      if (ref && p.category && p.category === ref.category) near = 0;
+      else if (ref && p.unit && p.unit === ref.unit) near = 1;
+      return tech + near;
+    };
+    return list.map((p, i) => ({ p, i, r: rank(p) })).sort((a, b) => a.r - b.r || a.i - b.i)[0].p;
+  }
+
+  /**
+   * Product for a feature: feature.productId → config.typeDefaults[type] → the best enabled suitable product
+   * (fallbackProduct: LED first, then the same category or unit as the default). A product the user picked
+   * explicitly does not have to be "suitable" (nets on a roofline are allowed), it only has to exist and be
+   * enabled. Whenever the type default is unavailable and another product stands in, a warning says which.
+   * Returns {product|null, source, warnings}.
    */
   function resolveProduct(feature, library) {
     const lib = library && Array.isArray(library.products) ? library : catalog.getLibrary(null);
@@ -72,21 +99,30 @@ LP.define('design', ['catalog'], function (catalog) {
     const label = (feature && feature.label) || (FEATURE_TYPES[type] && FEATURE_TYPES[type].label) || 'This feature';
     const warnings = [];
     const wanted = feature && typeof feature.productId === 'string' && feature.productId ? feature.productId : null;
+    let wantedProduct = null;
     if (wanted) {
       const p = catalog.getProduct(lib.products, wanted);
       if (isEnabled(p)) return { product: p, source: 'feature', warnings };
+      wantedProduct = p;
       warnings.push(p
         ? `${label}: ${p.name || wanted} is turned off in the product library, so the default product is used instead.`
         : `${label}: the chosen product (${wanted}) is no longer in the product library, so the default product is used instead.`);
     }
     const defaults = (lib.config && lib.config.typeDefaults) || {};
-    const defId = defaults[type];
-    if (defId) {
-      const p = catalog.getProduct(lib.products, defId);
-      if (isEnabled(p)) return { product: p, source: 'typeDefault', warnings };
+    const defId = typeof defaults[type] === 'string' && defaults[type] ? defaults[type] : null;
+    const defProduct = defId ? catalog.getProduct(lib.products, defId) : null;
+    if (isEnabled(defProduct)) return { product: defProduct, source: 'typeDefault', warnings };
+    // The type default is off or missing: the stand-in should resemble it (or the catalog's default for the type).
+    const ref = defProduct || (defId && catalog.getProduct(catalog.DEFAULT_PRODUCTS, defId)) || wantedProduct ||
+      (FEATURE_TYPES[type] && catalog.getProduct(catalog.DEFAULT_PRODUCTS, FEATURE_TYPES[type].defaultProduct)) || null;
+    const fallback = fallbackProduct(type, lib, ref);
+    if (fallback) {
+      const what = PLURAL[type] || 'this feature';
+      const name = fallback.name || fallback.id;
+      if (defProduct) warnings.push(`${defProduct.name || defId} is turned off in the product library, so ${name} is used for ${what} instead.`);
+      else if (defId) warnings.push(`The default product for ${what} (${defId}) is not in the product library, so ${name} is used instead.`);
+      return { product: fallback, source: 'suitable', warnings };
     }
-    const fallback = suitableProducts(type, lib)[0] || null;
-    if (fallback) return { product: fallback, source: 'suitable', warnings };
     const typeLabel = (FEATURE_TYPES[type] && FEATURE_TYPES[type].label.toLowerCase()) || 'this feature';
     warnings.push(`${label}: no enabled product suits a ${typeLabel}. Turn one on in the product library.`);
     return { product: null, source: null, warnings };

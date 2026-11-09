@@ -498,7 +498,8 @@ LightRun = {
 //  net products on bush: ceil(widthFt*heightFt*netCoverFactor / coverageSqFt); on linear: ceil(withWasteFt*... ) treat as 4ft-wide coverage
 //  set products (path): stakes = floor(lengthFt*12/stakeSpacingIn)+1 ; sets = ceil(stakes / stakesPerSet)
 //  foot products: ceil(withWasteFt)
-//  disabled or missing product → fall back to typeDefaults, then first enabled product suitable for the type
+//  disabled or missing product → fall back to typeDefaults, then the enabled suitable product closest to the default
+//  (LED before incandescent, then same category, then same unit, then library order), with a run warning
 suitableProducts(type, library) → product[]   // enabled products whose suitableFor includes type
 ```
 
