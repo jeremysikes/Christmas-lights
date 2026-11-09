@@ -286,7 +286,7 @@ test('clip type follows the mount and the product', () => {
   assert.equal(clip('ridge').type, 'ridge');
   assert.equal(clip('doorc9').type, 'adhesive');                       // clip-eligible + adhesive mount
   assert.equal(clip('colc9').type, 'allInOne');                        // clip-eligible, mount 'none' by default
-  assert.equal(clip('mini-eave'), null);                               // mini lights are not clip eligible
+  assert.deepEqual(clip('mini-eave'), { type: 'allInOne', count: 21 }); // not clip eligible, but an eave still needs clips
   assert.equal(clip('none'), null);                                    // explicit "no clips"
   assert.equal(clip('shingle').type, 'shingle');                       // explicit mount wins
   assert.equal(clip('icicle').type, 'gutter');
@@ -402,4 +402,32 @@ test('a turned-off default product falls back to an LED product before any incan
   assert.match(r2[0].warnings.join(' '), /turned off in the product library, so C9 incandescent string/);
   // The type default in use: no notice.
   assert.deepEqual(design.planRuns(project([feature('eave', 'roofline')]), measured([linearFm('eave', 'roofline', 34)]), lib)[0].warnings, []);
+});
+
+test('mini and rope lights on eaves, gutters, rakes and ridges still get clips; string lights on stake mounts get light stakes', () => {
+  const p = project([
+    feature('mini-eave', 'roofline', { productId: 'mini-led-100' }),
+    feature('mini-gut', 'gutter', { productId: 'mini-led-100' }),
+    feature('mini-rake', 'rake', { productId: 'mini-led-100' }),
+    feature('rope-eave', 'roofline', { productId: 'rope-led-18' }),
+    feature('mini-ridge', 'ridge', { productId: 'mini-led-100' }),
+    feature('c9-walk', 'walkway', { productId: 'c9-led' }),
+    feature('c7-walk', 'walkway', { productId: 'c7-led' }),
+    feature('rope-walk', 'walkway', { productId: 'rope-led-18' }),
+    feature('path-walk', 'walkway'),
+    feature('net-eave', 'roofline', { productId: 'net-led-4x6' }),
+  ]);
+  const types = { 'mini-eave': 'roofline', 'mini-gut': 'gutter', 'mini-rake': 'rake', 'rope-eave': 'roofline', 'mini-ridge': 'ridge',
+    'c9-walk': 'walkway', 'c7-walk': 'walkway', 'rope-walk': 'walkway', 'path-walk': 'walkway', 'net-eave': 'roofline' };
+  const runs = design.planRuns(p, measured(Object.keys(types).map((id) => linearFm(id, types[id], 34))), lib);
+  const r = (id) => runOf(runs, id);
+  // 34 ft at 12 in spacing → 35 clips: all-in-one clips take mini wire; rope uses rope clips (counted as adhesive clips).
+  for (const id of ['mini-eave', 'mini-gut', 'mini-rake', 'mini-ridge']) assert.deepEqual(r(id).clips, { type: 'allInOne', count: 35 }, id);
+  assert.deepEqual(r('rope-eave').clips, { type: 'adhesive', count: 35 });
+  for (const id of ['c9-walk', 'c7-walk', 'rope-walk']) {
+    assert.equal(r(id).clips, null, id + ': the stakes hold the line');
+    assert.equal(r(id).lightStakes, 35, id + ': one light stake every 12 in plus one');
+  }
+  assert.equal(r('path-walk').lightStakes, 0, 'path-light sets bring their own stakes');
+  assert.equal(r('net-eave').clips, null, 'a net is not clipped like a string');
 });

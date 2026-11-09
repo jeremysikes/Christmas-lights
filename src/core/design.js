@@ -7,9 +7,13 @@
  * Deviations from SPEC §5.6 (documented signature is unchanged; these are refinements):
  *  - Clip rule. clipEligible products: mount (params.mount ?? type default) when it is allInOne,
  *    gutter, shingle, ridge or adhesive, otherwise all-in-one clips. Products that are not clip
- *    eligible get clips only for adhesive or zipTie mounts. Three practical exceptions:
+ *    eligible get adhesive clips on adhesive mounts, and string products (mini, rope, tree-wrap) on the
+ *    roof-edge mounts allInOne, gutter, shingle and ridge get all-in-one clips (rope: adhesive clips, which
+ *    stand for rope clips). Three practical exceptions:
  *    mount 'zipTie' always gives zip ties (C9 on a railing is zip-tied too), mount 'stake' never gives
  *    clips (the light stakes hold the line), and an explicit params.mount 'none' means "no clips".
+ *  - Light stakes: any run whose mount is 'stake' (ground stakes, walkways) with a string or per-foot
+ *    product gets ceil(lengthFt·12/stakes.spacingIn)+1 light stakes, not only type 'stakes'.
  *  - Tree canopies (wrapMode 'canopy') are planned by light count like bushes, so they use
  *    method 'bush-rule' (the method enum has no separate canopy value).
  *  - lengthFt / withWasteFt are always numbers on a LightRun (0 for bushes planned by light count and
@@ -26,6 +30,8 @@ LP.define('design', ['catalog'], function (catalog) {
   const { FEATURE_TYPES, LINEAR_TYPES } = catalog;
   /** Mount values that map straight onto a clip type for clip-eligible products. */
   const CLIP_MOUNTS = ['allInOne', 'gutter', 'shingle', 'ridge', 'adhesive'];
+  /** Roof-edge mounts: string lights there always need clips, clip-eligible or not. */
+  const ROOF_MOUNTS = ['allInOne', 'gutter', 'shingle', 'ridge'];
   const UNIT_WORDS = { string: ['string', 'strings'], net: ['net', 'nets'], set: ['set', 'sets'], foot: ['ft', 'ft'] };
   /** Plural nouns for product-substitution notices ("... is used for eaves instead"). */
   const PLURAL = { roofline: 'eaves', rake: 'rakes', gutter: 'gutters', ridge: 'ridges', window: 'windows', door: 'doors',
@@ -129,18 +135,29 @@ LP.define('design', ['catalog'], function (catalog) {
   }
 
   // ---------------------------------------------------------------- clips
-  /** Clip type and count for a run, or null when the run needs no clips (see deviations in the header). */
-  function clipsFor(feature, product, lengthFt, config) {
-    if (!product || !(lengthFt > 0)) return null;
+  /** The feature's mount: params.mount, else the type's default mount. */
+  function mountOf(feature) {
     const ft = FEATURE_TYPES[feature && feature.type];
     const params = (feature && isObj(feature.params)) ? feature.params : {};
     const explicit = typeof params.mount === 'string' && params.mount ? params.mount : null;
-    const mount = explicit || (ft ? ft.defaultMount : null);
+    return explicit || (ft ? ft.defaultMount : null);
+  }
+  /** Clip type and count for a run, or null when the run needs no clips (see deviations in the header). */
+  function clipsFor(feature, product, lengthFt, config) {
+    if (!product || !(lengthFt > 0)) return null;
+    const params = (feature && isObj(feature.params)) ? feature.params : {};
+    const explicit = typeof params.mount === 'string' && params.mount ? params.mount : null;
+    const mount = mountOf(feature);
     let type = null;
     if (explicit === 'none' || mount === 'stake') type = null;
     else if (mount === 'zipTie') type = 'zipTie';
     else if (product.clipEligible) type = CLIP_MOUNTS.includes(mount) ? mount : 'allInOne';
     else if (mount === 'adhesive') type = 'adhesive';
+    else if (ROOF_MOUNTS.includes(mount) && product.unit === 'string') {
+      // Mini or rope lights on an eave, gutter, rake or ridge still need clips: all-in-one clips take mini
+      // wire; rope lights use rope clips, which the library counts as adhesive clips.
+      type = product.category === 'rope' ? 'adhesive' : 'allInOne';
+    }
     if (!type) return null;
     const spacing = pos(config && config.clipSpacingIn) || 12;
     // One clip every `spacing` inches plus one to finish the run.
@@ -347,8 +364,10 @@ LP.define('design', ['catalog'], function (catalog) {
       run.detail = q.detail;
       run.warnings.push(...q.warnings);
       run.clips = clipsFor(feat, product, run.lengthFt, config);
-      // C9-on-stakes runs (type 'stakes' with a string product) need one light stake per bulb spacing.
-      if (feature.type === 'stakes' && product.unit !== 'set' && run.lengthFt > 0) {
+      // String lights on a stake mount (ground stakes, or C9 / C7 / rope along a walkway) need one light stake
+      // per stake spacing. Path-light sets bring their own stakes; nets are not staked.
+      const mount = mountOf(feat);
+      if (mount === 'stake' && (product.unit === 'string' || product.unit === 'foot') && run.lengthFt > 0) {
         const spacing = pos(config.stakes && config.stakes.spacingIn) || 12;
         run.lightStakes = Math.ceil((run.lengthFt * 12) / spacing) + 1;
       }
