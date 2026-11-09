@@ -17,6 +17,7 @@
  *    (() => ISO string, for tests).
  *  - commit() returns true when the project changed. A mutator may return false to cancel the commit.
  *  - Listener payloads may also carry historyChanged / imageChanged flags.
+ *  - setImage accepts a 4th argument {persist:false} to skip the storage write.
  *  - Extra methods: undoLabel(), redoLabel(), getImageData(imageId) → data URL | null, inGesture(),
  *    clearImages(). Extra exports: defaultUI(), sanitizeUI(project, ui).
  */
@@ -254,12 +255,16 @@ LP.define('ui.store', ['catalog', 'plan', 'ui.persist'], function (catalog, plan
         const rec = images.get(imageId);
         return rec && typeof rec.dataUrl === 'string' ? rec.dataUrl : null;
       },
-      /** Cache decoded pixels for an image and store its data URL (never for the regenerated sample photo). */
-      setImage(imageId, element, dataUrl) {
+      /**
+       * Cache decoded pixels for an image and store its data URL (never for the regenerated sample photo).
+       * options.persist:false skips the storage write (the photo was just read from storage).
+       */
+      setImage(imageId, element, dataUrl, options) {
         images.set(imageId, { el: element || null, dataUrl: typeof dataUrl === 'string' ? dataUrl : null });
         const im = byId(project && project.images, imageId);
         const key = im && typeof im.storageKey === 'string' ? im.storageKey : null;
-        if (key && key !== SAMPLE_KEY && typeof dataUrl === 'string' && persist && typeof persist.saveImage === 'function') {
+        const write = !(options && options.persist === false);
+        if (write && key && key !== SAMPLE_KEY && typeof dataUrl === 'string' && persist && typeof persist.saveImage === 'function') {
           try { persist.saveImage(key, dataUrl); } catch (e) { /* ignore */ }
         }
         emit({ projectChanged: false, uiChanged: true, imageChanged: true });

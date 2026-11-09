@@ -94,7 +94,7 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
       if (firstRun) {
         if (sampleCanvas) store.setImage(project.images[0].id, sampleCanvas, null);
       } else {
-        actions.hydrateImages(project, saved.images || {}).then((r) => {
+        actions.hydrateImages(project, saved.images || {}, { persist: false }).then((r) => {
           if (r.missing.length) {
             actions.toast('Your plan was restored, but its photo was not saved in this browser. The measurements are kept; choose the photo again to see it.', 'warn');
           }

@@ -705,9 +705,11 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       // ------------------------------------------------------------ photos and whole projects
       /**
        * Decode photos for a project into the store: stored data URLs for real photos, a fresh render for the
-       * sample. Resolves {missing: [image names]} (photos that were not saved with the project).
+       * sample. Resolves {missing: [image names]} (photos that were not saved with the project). hopts.persist:false
+       * skips writing the photos back to storage (use it when they were just read from storage).
        */
-      actions.hydrateImages = (project, imagesByKey) => {
+      actions.hydrateImages = (project, imagesByKey, hopts) => {
+        const write = !(hopts && hopts.persist === false);
         const tasks = arr(project && project.images).map((im) => {
           if (!im) return Promise.resolve(null);
           const key = im.storageKey;
@@ -722,7 +724,7 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           }
           const url = imagesByKey && key ? imagesByKey[key] : null;
           if (!url) return Promise.resolve(im.name || 'photo');
-          return imagesource.loadElement(url).then((el) => { store.setImage(im.id, el, url); return null; }, () => im.name || 'photo');
+          return imagesource.loadElement(url).then((el) => { store.setImage(im.id, el, url, { persist: write }); return null; }, () => im.name || 'photo');
         });
         return Promise.all(tasks).then((r) => ({ missing: r.filter(Boolean) }));
       };
