@@ -774,6 +774,13 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       return ctx.fmt(m.lengthFt);
     }
 
+    /** "Front yard · ground", but just "Front wall" when the name already says what it is. */
+    function planeOptionLabel(p) {
+      const kind = p.kind === 'roof' ? 'roof' : p.kind === 'ground' ? 'ground' : 'wall';
+      const name = p.name || PLANE_KIND[p.kind] || 'Surface';
+      return name.toLowerCase().indexOf(kind) >= 0 ? name : name + ' · ' + kind;
+    }
+
     function stepTrace(ctx) {
       const { ui, planes, features, plan, image } = ctx;
       const kids = [head(3, 'Pick what to light, then tap along it on the photo.')];
@@ -802,7 +809,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
             swatch(ft.color), h('span', null, ft.short));
         })),
         h('div', { class: 'row-auto' },
-          field('Surface to trace on', selectInput({ act: 'active-plane', value: ctx.activePlane ? ctx.activePlane.id : '', options: planes.map((p) => [p.id, p.name + ' · ' + (PLANE_KIND[p.kind] || '').toLowerCase()]) })),
+          field('Surface to trace on', selectInput({ act: 'active-plane', value: ctx.activePlane ? ctx.activePlane.id : '', options: planes.map((p) => [p.id, planeOptionLabel(p)]) })),
           toggle('Snap', { act: 'view-toggle', data: { key: 'snap' }, checked: ui.view.snap })),
         h('p', { class: 'hint' }, 'Lines: tap each corner, then Finish or double-tap. Windows and bushes: tap around and tap the first point to close. Trees and columns: tap the base, then the top.'),
       ], { key: 'types' }));
@@ -1250,7 +1257,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           h('div', { class: 'disclosure-body' }, h('ol', { class: 'check-list' }, items)));
       });
       return section('Install checklist', [
-        groups.length ? h('p', { class: 'hint num' }, done + ' of ' + total + ' steps done. Ticks are saved in this browser.') : null,
+        groups.length ? h('p', { class: 'hint' }, h('span', { class: 'num' }, done + ' of ' + total), ' steps done. Ticks are saved in this browser.') : null,
         groups.length ? blocks : h('p', { class: 'hint' }, 'The checklist appears once there are lights and outlets.'),
         done ? h('div', { class: 'btn-row' }, button('Clear ticks', { act: 'check-clear', cls: 'small ghost' })) : null,
       ], { key: 'checklist' });

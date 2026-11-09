@@ -33,7 +33,7 @@
   --font-body: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
   --font-display: "Big Shoulders Display", "Arial Narrow", "Roboto Condensed", Impact, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-  --sheet-min: 132px;
+  --sheet-min: 148px;
   --sheet-half: 46%;
   --sheet-full: calc(100% - 56px);
   color-scheme: light;
@@ -154,7 +154,7 @@ body {
 .project-name { flex: 1; min-width: 0; }
 .project-name input {
   width: 100%;
-  min-height: 40px;
+  min-height: var(--tap);
   padding: 0 10px;
   border: 1px solid transparent;
   border-radius: 10px;
@@ -524,8 +524,8 @@ body {
   align-items: center;
   justify-content: center;
   width: 100%;
-  height: 24px;
-  padding: 0;
+  height: var(--tap);
+  padding: 0 0 14px;
   border: 0;
   background: transparent;
   cursor: grab;
