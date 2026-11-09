@@ -778,7 +778,11 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           proj.planes = [wall];
           store.replaceProject(proj, { resetHistory: true });
           store.setImage(imageId, el, img.dataUrl);
-          store.setUI(Object.assign(SELECT(), { busy: null, step: 1, activePlaneId: wall.id, selection: null, bannerDismissed: false }));
+          // Day view: a new photo has no lights yet, and calibrating needs the photo at full brightness.
+          store.setUI(Object.assign(SELECT(), {
+            busy: null, step: 1, activePlaneId: wall.id, selection: null, bannerDismissed: false,
+            view: Object.assign({}, U().view, { night: false, twinkle: false }),
+          }));
           const lens = img.exif && img.exif.focal35 ? 'The lens was read from the photo.' : 'The photo has no lens data, so LightPlan will work it out.';
           actions.toast('Photo added. ' + lens + ' Tap Next to calibrate.', 'ok');
           return true;
