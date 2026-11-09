@@ -417,7 +417,8 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     if (v === undefined) return undefined;
     try { return JSON.parse(JSON.stringify(v)); } catch (e) { return undefined; }
   }
-  /** Copy keys of `raw` that the normalizer does not know about (deep-cloned) onto `out`. */
+  /** Copy keys of `raw` that the normalizer does not know about (deep-cloned) onto `out`. Values that are
+   *  not JSON (functions such as a factory's opts.rng) are skipped. */
   function keepExtras(out, raw, known) {
     if (!isObj(raw)) return out;
     for (const k of Object.keys(raw)) {
@@ -708,15 +709,13 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
   }
   function createImage(opts) {
     const o = isObj(opts) ? opts : {};
-    const im = normImage(o, freshId(o, 'image'));
-    delete im.rng;
-    return im;
+    return normImage(o, freshId(o, 'image'));
   }
   function createRef(opts) {
     const o = isObj(opts) ? opts : {};
     const id = freshId(o, 'ref');
     const r = normRef(o, id);
-    if (r) { delete r.rng; return r; }
+    if (r) return r;
     // Not enough points yet: still return a complete object of the requested kind.
     const kind = oneOf(o.kind, ENUMS.refKind, 'line');
     const base = { id, kind, points: toPoints(o.points) };
@@ -732,21 +731,16 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     if (!has(o, 'name')) pl.name = pl.kind === 'wall' ? 'Wall' : pl.kind === 'roof' ? 'Roof' : 'Ground';
     // Roof and ground planes always carry a derived block, filled from opts.derived when given.
     if (pl.kind !== 'wall' && !pl.derived) pl.derived = { parentPlaneId: null, line: null, pitch: null };
-    delete pl.rng;
     return pl;
   }
   function createFeature(type, opts) {
     if (!catalog.FEATURE_TYPES[type]) throw new Error('Unknown feature type "' + type + '".');
     const o = isObj(opts) ? opts : {};
-    const f = normFeature(Object.assign({}, o, { type }), freshId(o, 'feature'));
-    delete f.rng;
-    return f;
+    return normFeature(Object.assign({}, o, { type }), freshId(o, 'feature'));
   }
   function createOutlet(opts) {
     const o = isObj(opts) ? opts : {};
-    const out = normOutlet(o, freshId(o, 'outlet'));
-    delete out.rng;
-    return out;
+    return normOutlet(o, freshId(o, 'outlet'));
   }
   /**
    * New empty project: no images, planes, features or outlets, one 15 A circuit. opts may set name,
