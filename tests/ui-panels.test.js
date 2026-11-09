@@ -47,9 +47,10 @@ test('warnings are routed to the step that can fix them', () => {
   const samplePlan = plan.computePlan(s.project);
   const counts = panels.stepWarnings(samplePlan);
   const step5 = samplePlan.warnings.filter((w) => (w.level === 'warn' || w.level === 'danger') && panels.warningStep(w) === 5).map((w) => w.code);
-  // The sample's porch outlet feeds 8 cords (more than 6 → many-cords). The walkway cords feed the walkway ends
-  // nearest the house, so none crosses a walkway on the ground.
-  assert.deepEqual(step5.slice().sort(), ['many-cords'], 'the sample has a many-cords warning');
+  // The sample's porch outlet feeds 8 cords (more than 6 → many-cords). Along the front wall, the cord to Bush 2
+  // passes the front door and the walkway in front of it, and the cord to the door lights ends just inside the walkway.
+  assert.deepEqual(step5.slice().sort(), ['cord-doorway', 'cord-walkway', 'cord-walkway', 'many-cords'],
+    'the sample has doorway, walkway and many-cords warnings');
   assert.equal(counts[5].count, step5.length);
   assert.equal(counts[5].level, 'warn');
   assert.equal(counts[1].count, 0, 'info and the disclaimer are not counted');

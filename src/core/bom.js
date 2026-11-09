@@ -233,7 +233,7 @@ LP.define('bom', ['catalog'], function (catalog) {
       addLine('hardware', 'light-stakes', (acc && acc.name) || 'Light stakes', packs, (acc && acc.unit) || 'pack', acc ? acc.price : 0,
         `${fmtNum(stakeCount, 0)} stakes for ${listText(shortList(where, 3))}, in packs of ${fmtNum(packSize, 0)}.`);
     }
-    accLine('hardware', 'cord-cover', counts.cordCovers, 'Where a cord crosses a walkway.');
+    accLine('hardware', 'cord-cover', counts.cordCovers, 'Where a cord crosses a walkway or passes a doorway.');
 
     // ---- totals
     lines.sort((a, b) => CATEGORIES.indexOf(a.category) - CATEGORIES.indexOf(b.category)); // stable within a category
@@ -372,7 +372,9 @@ LP.define('bom', ['catalog'], function (catalog) {
     /** Steps for one feed: cord, then each run portion (clips, stakes, hang), then a test. */
     function feedSteps(feed, cordText, timer, prefix) {
       const steps = [prefix + cordText];
-      if (feed.crossesWalkway) steps.push('Lay a cord cover over the cord where it crosses the walkway.');
+      if (feed.crossesDoorway) {
+        steps.push(`Keep the cord along the bottom of the wall where it passes ${feed.doorway || 'the door'} and lay a cord cover over it there${feed.crossesWalkway ? ' and across the walkway' : ''}.`);
+      } else if (feed.crossesWalkway) steps.push('Lay a cord cover over the cord where it crosses the walkway.');
       const list = portions.get(feed.id) || [];
       list.forEach((p, j) => {
         const run = p.run;

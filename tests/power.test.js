@@ -716,3 +716,40 @@ test('sample house: cords and chain gaps between planes are measured in 3D, not 
   // Eave right end (34, 10, 0) and garage gutter start (34, 9, -4) are 4.1 ft apart: more than chainGapFt (3), not chained.
   assert.notEqual(out.runs.find((r) => r.id === 'run_ft_garage_gutter').chainId, out.runs.find((r) => r.id === 'run_ft_eave').chainId);
 });
+
+test('a cord run across a wall is flagged where it passes a traced door or a walkway that meets the wall', () => {
+  // Synthetic wall: outlet at u = 5, door from u = 20 to 23, a window to the right of the door.
+  const door = feature('ft_door', 'door', [F(20, 0), F(20, 6.7), F(23, 6.7), F(23, 0)], { label: 'Front door' });
+  const win = feature('ft_win', 'window', [F(30, 8), F(34, 8), F(34, 4), F(30, 4)], { label: 'Window right' });
+  const left = feature('ft_wl', 'window', [F(8, 8), F(12, 8), F(12, 4), F(8, 4)], { label: 'Window left' });
+  const pw = plan(project({ features: [door, win, left], outlets: [outlet('out_a', F(5, 1.5))] })).power;
+  const winFeed = feedOf(pw, 'run_ft_win');
+  assert.equal(winFeed.crossesDoorway, true, 'the cord to the right window passes the doorway at outlet height');
+  assert.equal(feedOf(pw, 'run_ft_wl').crossesDoorway, false);
+  assert.equal(feedOf(pw, 'run_ft_door').crossesDoorway, false, 'the door lights themselves start at the door');
+  const dw = byCode(pw, 'cord-doorway');
+  assert.equal(dw.length, 1);
+  assert.match(dw[0].message, /^The cord to the top-left corner of Window right passes Front door\. Run it along the bottom of the wall under a cord cover/);
+  assert.equal(pw.counts.cordCovers, 1);
+});
+
+test('sample house: the cord to Bush 2 runs past the front door and across the walkway in front of it', { skip: !LP.has('sample') || !LP.has('measure') }, () => {
+  const out = LP.require('plan').computePlan(LP.require('sample').createSample().project);
+  const pw = out.power;
+  const bush2 = feedOf(pw, 'run_ft_bush_2');
+  assert.equal(bush2.outletId, 'out_porch');
+  assert.equal(bush2.crossesDoorway, true);
+  assert.equal(bush2.crossesWalkway, true);
+  assert.ok(byCode(pw, 'cord-walkway').some((w) => /Bush 2/.test(w.message)));
+  assert.ok(byCode(pw, 'cord-doorway').some((w) => /Bush 2/.test(w.message) && /Front door/.test(w.message)));
+  for (const id of ['run_ft_gable_left', 'run_ft_window_left', 'run_ft_bush_1']) {
+    const f = feedOf(pw, id);
+    assert.equal(f.crossesWalkway || f.crossesDoorway, false, id);
+  }
+  // The door lights start at the door's bottom-left corner (u 15.5), just inside the walkway (u 15 to 19):
+  // that cord crosses the walkway's left edge but not its own doorway.
+  assert.equal(feedOf(pw, 'run_ft_door').crossesDoorway, false);
+  assert.equal(feedOf(pw, 'run_ft_door').crossesWalkway, true);
+  const steps = out.checklist.find((gr) => gr.outletId === 'out_porch').steps;
+  assert.ok(steps.some((s) => /cord cover/.test(s) && /Front door/.test(s)), 'the checklist says where the cover goes');
+});

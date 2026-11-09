@@ -23,6 +23,10 @@
  *    one receptacle, timer and power stake, all 15 A gear, so an outlet carries at most plugAmps × V ×
  *    continuous factor = 1,440 W), timer-tungsten (more incandescent watts through one timer than
  *    config.power.timerTungstenW, 1,250 W by default).
+ *  - Same-wall cords run across the wall at outlet height, so a feed whose route passes a traced door on
+ *    that wall gets crossesDoorway: true (extra feed fields crossesDoorway and doorway = the door's label),
+ *    a cord cover and a 'cord-doorway' warning; one whose route passes where a walkway meets the wall
+ *    (within 3 ft of its base) gets crossesWalkway: true, like a cord that crosses a walkway in the photo.
  *  - Splitters: the power stakes at an outlet are chained from its one timer socket (each extra stake uses
  *    a socket of the one before), so an outlet with n > 1 cords needs ceil((n − 1) / (splitterOutlets − 1))
  *    stakes, not ceil(n / splitterOutlets). More than 6 cords at one outlet adds a 'many-cords' warning.
@@ -48,6 +52,8 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
   const DEFAULT_PLUG_AMPS = 15;       // plug-in cords, timers, power stakes and duplex outlets are 15 A devices
   const DEFAULT_TIMER_TUNGSTEN_W = 1250; // typical outdoor timer rating for incandescent (tungsten) loads
   const MANY_CORDS = 6;               // more cords than this at one outlet gets a 'many-cords' warning
+  const WALKWAY_NEAR_WALL_FT = 3;     // a walkway edge within this distance of the wall base meets the wall
+  const SPAN_TOL_FT = 0.25;           // spans that only touch at their ends do not cross
   const DISCLAIMER = 'This is a planning estimate, not an electrical inspection. Check your breaker sizes ' +
     'and what else shares each circuit, use outdoor-rated cords and GFCI protection, and ask a licensed ' +
     'electrician before adding outlets or circuits.';
@@ -274,7 +280,56 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       if (straight === null) return { routedFt: null, path: straightPath, samePlane: false };
       return { routedFt: straight * CROSS_PLANE_FACTOR, path: straightPath, samePlane: false };
     }
-    return { sol, toPlane, toImage, scaleAt, feetAlong, toCamera, planeName, feetBetween, cordRoute };
+    /**
+     * The across-the-wall leg of a same-wall cord route (outlet → across at outlet height → up/down to the
+     * feed start): {planeId, uMin, uMax, v} in wall feet, or null when the route is not along one wall.
+     */
+    function wallLeg(outlet, start) {
+      if (!outlet.planeId || outlet.planeId !== start.planeId) return null;
+      const s = sol(start.planeId);
+      if (!s || s.kind !== 'wall') return null;
+      const uo = toPlane(s, outlet.point), us = toPlane(s, start.point);
+      if (!uo || !us) return null;
+      return { planeId: start.planeId, uMin: Math.min(uo[0], us[0]), uMax: Math.max(uo[0], us[0]), v: uo[1] };
+    }
+    /**
+     * Wall-frame position (u along the wall, v up, w out from the wall) of image point p on plane `planeId`,
+     * for the wall `wallId`. Same plane: (u, v, 0). Other planes: through the shared camera frame, which
+     * needs a pose on both. null when unknown.
+     */
+    function toWallFrame(wallId, planeId, p) {
+      const w = sol(wallId);
+      if (!w) return null;
+      if (planeId === wallId) { const uv = toPlane(w, p); return uv ? [uv[0], uv[1], 0] : null; }
+      if (!w.pose || !isM3(w.pose.R) || !isV3(w.pose.t)) return null;
+      const Xc = toCamera(sol(planeId), p);
+      if (!Xc) return null;
+      return geometry.m3mulv(geometry.m3transpose(w.pose.R), geometry.v3sub(Xc, w.pose.t));
+    }
+    /**
+     * Span [uMin, uMax] (wall feet) where a walkway traced on the ground comes within nearFt of the wall's
+     * base, or null when it does not reach the wall (a sidewalk out by the street) or cannot be placed.
+     */
+    function walkwaySpanAtWall(wallId, feature, nearFt) {
+      const pts = (Array.isArray(feature.points) ? feature.points : []).filter(isPt)
+        .map((p) => toWallFrame(wallId, feature.planeId, p));
+      if (pts.length < 2 || pts.some((x) => !x)) return null;
+      // Distance from the wall: w for a walkway on a ground plane; on the wall plane itself the ground
+      // shows below the base, so how far below v = 0 a point maps stands in for it.
+      const off = (x) => (feature.planeId === wallId ? Math.max(0, -x[1]) : Math.abs(x[2]));
+      const us = [];
+      const segs = [];
+      for (let i = 1; i < pts.length; i++) segs.push([pts[i - 1], pts[i]]);
+      if (feature.closed === true && pts.length > 2) segs.push([pts[pts.length - 1], pts[0]]);
+      for (const [a, b] of segs) {
+        const da = off(a), db = off(b);
+        if (da <= nearFt) us.push(a[0]);
+        if (db <= nearFt) us.push(b[0]);
+        if ((da - nearFt) * (db - nearFt) < 0) us.push(a[0] + (b[0] - a[0]) * ((nearFt - da) / (db - da)));
+      }
+      return us.length ? [Math.min.apply(null, us), Math.max.apply(null, us)] : null;
+    }
+    return { sol, toPlane, toImage, scaleAt, feetAlong, toCamera, planeName, feetBetween, cordRoute, wallLeg, toWallFrame, walkwaySpanAtWall };
   }
 
   // ---------------------------------------------------------------- run geometry
@@ -703,6 +758,37 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         return false;
       });
     }
+    // ---- same-wall routes: the cord runs across the wall at outlet height, so it passes in front of any
+    // traced door on that wall and across any walkway that meets the wall within its span.
+    const doors = features.filter((f) => f.type === 'door' && Array.isArray(f.points) && f.points.filter(isPt).length >= 2);
+    const overlaps = (a0, a1, b0, b1) => a1 > b0 + SPAN_TOL_FT && a0 < b1 - SPAN_TOL_FT;
+    for (const feed of feedsOut) {
+      feed.crossesDoorway = false;
+      const o = feed.outletId ? outletById.get(feed.outletId) : null;
+      if (!o || !isPt(o.point)) continue;
+      const leg = space.wallLeg(o, feed.start);
+      if (!leg || leg.uMax - leg.uMin < 2 * SPAN_TOL_FT) continue;
+      const own = new Set(feed.runIds.map((id) => (allRuns.find((r) => r.id === id) || {}).featureId));
+      for (const d of doors) {
+        if (own.has(d.id) || d.planeId !== leg.planeId) continue;
+        const pts = d.points.filter(isPt).map((p) => space.toPlane(space.sol(d.planeId), p));
+        if (pts.some((x) => !x)) continue;
+        const us = pts.map((x) => x[0]), vs = pts.map((x) => x[1]);
+        const top = Math.max.apply(null, vs), bottom = Math.min.apply(null, vs);
+        if (leg.v < top && leg.v > bottom - 1 && overlaps(leg.uMin, leg.uMax, Math.min.apply(null, us), Math.max.apply(null, us))) {
+          feed.crossesDoorway = true;
+          feed._doorLabel = d.label || 'the door';
+          break;
+        }
+      }
+      if (!feed.crossesWalkway) {
+        feed.crossesWalkway = walkways.some((w) => {
+          if (own.has(w.id) || (w.imageId && feed.start.imageId && w.imageId !== feed.start.imageId)) return false;
+          const span = space.walkwaySpanAtWall(leg.planeId, w, WALKWAY_NEAR_WALL_FT);
+          return !!span && overlaps(leg.uMin, leg.uMax, span[0], span[1]);
+        });
+      }
+    }
     function runFeature(feed) {
       const r = allRuns.find((x) => x.id === feed.runIds[0]);
       return r ? r.featureId : undefined;
@@ -746,7 +832,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     const counts = {
       timers: outletsOut.filter((o) => o.timer).length,
       splitters: outletsOut.reduce((s, o) => s + o.splitters, 0),
-      cordCovers: feedsOut.filter((f) => f.crossesWalkway).length,
+      cordCovers: feedsOut.filter((f) => f.crossesWalkway || f.crossesDoorway).length,
       gfciAdapters: usedOutlets.filter((o) => !hasGfci(o)).length,
     };
     const cordMap = new Map();
@@ -843,6 +929,10 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       if (f.crossesWalkway) {
         warn('warn', 'cord-walkway', `The cord to the ${f.start.label} crosses a walkway. Put a cord cover over it so nobody trips.`, { featureId: fid, outletId: f.outletId });
       }
+      if (f.crossesDoorway) {
+        warn('warn', 'cord-doorway', `The cord to the ${f.start.label} passes ${f._doorLabel}. Run it along the bottom of the wall under a cord cover, ` +
+          'never across the doorway, or use an outlet on the other side.', { featureId: fid, outletId: f.outletId });
+      }
       if (!f.cord) continue;
       if (!f.cord.ampacityOk) {
         warn('danger', 'cord-ampacity', `The feed at the ${f.start.label} draws ${fmt1(f.watts / outletVoltage(outletById.get(f.outletId)))} A, more than a plug-in extension cord can carry (${fmtInt(plugAmps)} A plug). Split it into more feeds.`, { featureId: fid, outletId: f.outletId });
@@ -876,7 +966,10 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     warnings.sort((x, y) => LEVEL_ORDER[x.level] - LEVEL_ORDER[y.level]); // stable: keeps insertion order within a level
 
     // Strip internal fields.
-    for (const f of feedsOut) { delete f._forced; delete f._incandescent; }
+    for (const f of feedsOut) {
+      if (f.crossesDoorway) f.doorway = f._doorLabel;
+      delete f._forced; delete f._incandescent; delete f._doorLabel;
+    }
 
     return {
       chains: chainsOut,
