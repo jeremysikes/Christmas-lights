@@ -10,6 +10,7 @@
 //                                                inputs = safe share, tax, file version, damaged photo;
 //                                                review = UI review findings on a phone; landscape = 844x390)
 //   LP_APP=/path/to/lightplan.html node tests/e2e/smoke.mjs   run against another build
+//   LP_SECTIONS='UX-0[45]' node tests/e2e/smoke.mjs --only=review   run only the matching review sections
 //
 // It opens dist/lightplan.html over file://, drives the real app the way a person would
 // (step bar, tracing taps on the canvas, typed overrides, undo/redo, outlet placement,
@@ -588,7 +589,9 @@ async function runReview(browser) {
   let rect = null;
   let wallId = null;
   /** One finding's checks: a failure is recorded and the next section still runs (from a clean tool state). */
+  const only = process.env.LP_SECTIONS ? new RegExp(process.env.LP_SECTIONS) : null;   // run some sections only
   const sec = async (name, fn) => {
+    if (only && !only.test(name)) return;
     try {
       await page.evaluate(() => { const a = window.LightPlanApp.actions; a.cancelDraft(); a.select(null); window.LightPlanApp.store.setUI({ dialog: null }); }).catch(() => {});
       await fn();
@@ -759,17 +762,27 @@ async function runReview(browser) {
       await act(() => window.LightPlanApp.actions.setCalib({ rectPresetId: 'unknown' }));
       await act((id) => window.LightPlanApp.actions.startPlaneRect(id), wallId);
       await sleep(300);
-      const scale0 = await page.evaluate(() => window.LightPlanApp.viewport.getView().scale);
+      // Taps at a calm pace (no double taps): the edges are within 4° of the image axes and must stay as tapped.
       const base = (await toPage(page, [[1250, 420]]))[0];
       const corners = [[base[0], base[1]], [base[0] + 40, base[1] + 2], [base[0] + 42, base[1] + 30], [base[0] + 1, base[1] + 31]];
       const want = await toImage(page, corners);
-      await quickTaps(page, corners, 220);
+      await quickTaps(page, corners, 450);
       rect = await page.evaluate((id) => { const pl = window.LightPlanApp.store.project().planes.find((x) => x.id === id); return pl.rect ? pl.rect.corners : null; }, wallId);
-      const scale1 = await page.evaluate(() => window.LightPlanApp.viewport.getView().scale);
-      t.ok(rect && rect.length === 4, 'four quick corner taps mark the rectangle (' + (rect ? rect.length : 0) + ' corners)');
-      t.ok(Math.abs(scale1 - scale0) < 1e-6, 'quick corner taps do not zoom the view');
       const maxErr = rect ? Math.max(...rect.map((c, i) => Math.hypot(c[0] - want[i][0], c[1] - want[i][1]))) : Infinity;
       t.ok(maxErr < 1, 'the stored corners are where they were tapped, not flattened to image axes (max ' + maxErr.toFixed(1) + ' image px off)');
+      // Quick taps (220 ms, 28-40 px apart) each place a corner and never zoom.
+      await act((id) => window.LightPlanApp.actions.startPlaneRect(id), wallId);
+      await sleep(300);
+      const scale0 = await page.evaluate(() => window.LightPlanApp.viewport.getView().scale);
+      const quick = corners.map((c) => [c[0] + 10, c[1] + 50]);
+      const wantQ = await toImage(page, quick);
+      await quickTaps(page, quick, 220);
+      const rq = await page.evaluate((id) => window.LightPlanApp.store.project().planes.find((x) => x.id === id).rect.corners, wallId);
+      const scale1 = await page.evaluate(() => window.LightPlanApp.viewport.getView().scale);
+      const qErr = Math.max(...rq.map((c, i) => Math.hypot(c[0] - wantQ[i][0], c[1] - wantQ[i][1])));
+      t.ok(qErr < 1, 'four quick corner taps mark the rectangle where tapped (max ' + qErr.toFixed(1) + ' image px off)');
+      t.ok(Math.abs(scale1 - scale0) < 1e-6, 'quick corner taps do not zoom the view');
+      rect = rq;
     });
 
     await sec('mobile-ux:UX-05: zoomed in, "Mark corners again" a few px of', async () => {
