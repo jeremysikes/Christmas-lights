@@ -881,7 +881,9 @@ LP.define('sample', ['geometry'], function (g) {
     project.planes = [
       wallPlane('pl_front', 'Front wall', '#4f9dff', {
         corners: [P(cam, onFront(M.u0, M.wallH)), P(cam, onFront(M.u1, M.wallH)), P(cam, onFront(M.u1, 0)), P(cam, onFront(M.u0, 0))],
-        widthFt: null, heightFt: null, presetId: 'unknown',
+        // Tape-measured along the foundation (34 x 10 ft): a realistic installer calibration that rates High.
+        // The door-height and window-width refs stay as cross-checks.
+        widthFt: M.u1 - M.u0, heightFt: M.wallH, presetId: 'custom-rect',
       }, [
         { id: 'ref_door_height', kind: 'line', points: [P(cam, onFront(D.u0, 0)), P(cam, onFront(D.u0, D.h))], lengthFt: 80 / 12, courses: null, presetId: 'door-height', quality: 'high' },
         { id: 'ref_window_width', kind: 'line', points: [P(cam, onFront(W0.u0, MODEL.windowHead)), P(cam, onFront(W0.u1, MODEL.windowHead))], lengthFt: 4, courses: null, presetId: 'custom-line', quality: 'high', label: 'Window width (tape)' },
@@ -894,7 +896,9 @@ LP.define('sample', ['geometry'], function (g) {
       ]),
       {
         id: 'pl_roof', imageId: 'img_sample', name: 'Main roof', kind: 'roof', color: '#ff8a3d', rect: null, refs: [],
-        derived: { parentPlaneId: 'pl_front', line: [P(cam, onFront(M.u0, M.wallH)), P(cam, onFront(M.u1, M.wallH))], pitch: null },
+        // Pitch entered (6/12, e.g. a phone level on a rake board). The project default stays unknown, so the
+        // pitch is still estimated from the in-plane entry gable and shown as a cross-check.
+        derived: { parentPlaneId: 'pl_front', line: [P(cam, onFront(M.u0, M.wallH)), P(cam, onFront(M.u1, M.wallH))], pitch: { rise: 6, run: 12 } },
       },
       {
         id: 'pl_yard', imageId: 'img_sample', name: 'Front yard', kind: 'ground', color: '#4cc38a', rect: null, refs: [],

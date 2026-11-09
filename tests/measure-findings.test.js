@@ -196,6 +196,7 @@ test('M4: a roof on a wall without a perspective rectangle (roof-ortho) is Low',
 test('F1: on a wall whose rectangle size is unknown, two references are compared and a 15% error is flagged', () => {
   const p = freshSample();
   const front = p.planes.find((pl) => pl.id === 'pl_front');
+  unknownSize(front);
   front.refs.find((r) => r.id === 'ref_window_width').lengthFt = 4.6;
   const { r, out } = sampleErrors(p);
   const sol = r.planes.pl_front;
@@ -208,8 +209,18 @@ test('F1: on a wall whose rectangle size is unknown, two references are compared
   assert.notEqual(out.ft_eave.m.confidence.level, 'high');
 });
 
+// The sample now tapes its front wall (34 x 10 ft); these F1 checks need the size-unknown calibration with two refs.
+function unknownSize(plane) {
+  plane.rect.widthFt = null;
+  plane.rect.heightFt = null;
+  plane.rect.presetId = 'unknown';
+  return plane;
+}
+
 test('F1: the sample front wall (two references) is not described as having no second reference', () => {
-  const r = measure.measureProject(S0.project);
+  const p = freshSample();
+  unknownSize(p.planes.find((pl) => pl.id === 'pl_front'));
+  const r = measure.measureProject(p);
   assert.equal(r.planes.pl_front.checks, 1);
   assert.ok(!r.features.ft_eave.confidence.reasons.some((s) => /no second reference/.test(s)), r.features.ft_eave.confidence.reasons.join(' | '));
 });

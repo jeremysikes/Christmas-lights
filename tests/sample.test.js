@@ -160,12 +160,13 @@ test('project follows the SPEC §4 data model', () => {
   }
 });
 
-test('planes: front wall (unknown size + 2 refs), garage door rectangle, roof and yard', () => {
+test('planes: front wall (tape-measured 34 x 10 ft + 2 check refs), garage door rectangle, roof and yard', () => {
   const front = plane('pl_front');
   assert.equal(front.name, 'Front wall');
   assert.equal(front.kind, 'wall');
-  assert.equal(front.rect.widthFt, null);
-  assert.equal(front.rect.heightFt, null);
+  assert.equal(front.rect.presetId, 'custom-rect');
+  assert.equal(front.rect.widthFt, 34);
+  assert.equal(front.rect.heightFt, 10);
   assert.deepEqual(g.orderQuad(front.rect.corners), front.rect.corners, 'stored as [TL, TR, BR, BL]');
   const doorRef = front.refs.find((r) => r.presetId === 'door-height');
   assert.ok(doorRef);
@@ -195,7 +196,7 @@ test('planes: front wall (unknown size + 2 refs), garage door rectangle, roof an
   assert.equal(roof.kind, 'roof');
   assert.equal(roof.rect, null);
   assert.equal(roof.derived.parentPlaneId, 'pl_front');
-  assert.equal(roof.derived.pitch, null);
+  assert.deepEqual(roof.derived.pitch, { rise: 6, run: 12 }, 'pitch entered by the user');
   assert.deepEqual(roof.derived.line, [front.rect.corners[0], front.rect.corners[1]], 'front eave line');
 
   const yard = plane('pl_yard');

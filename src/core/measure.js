@@ -1464,7 +1464,14 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     const u = fx.uncertaintyPct;
     if (u === Infinity) cap('low', 'A small tap error changes this measurement a lot. Re-tap the rectangle and references, zoomed in.');
     else if (isNum(u)) {
-      const why = 'Expected error about ±' + (u < 10 ? u.toFixed(1) : Math.round(u)) + '% from tap precision; zoom in or use a larger rectangle.';
+      // The fix depends on the surface: ground and roof lengths hinge on the camera pose worked out from the wall,
+      // so zooming in on taps helps far less than a tape-measured length or a better vantage point.
+      const fix = mode === 'ground-3d'
+        ? 'from street level the ground is seen almost edge-on. Add a tape-measured reference on this ground surface, or take the photo from closer or higher.'
+        : (mode === 'roof-3d' || mode === 'roof-ortho')
+          ? 'roof lengths depend on the camera angle worked out from the wall. Type a tape-measured length if you can, or rely on the 10% waste.'
+          : 'zoom in or use a larger rectangle.';
+      const why = 'Expected error about ±' + (u < 10 ? u.toFixed(1) : Math.round(u)) + '% from tap precision; ' + fix;
       if (u > U_MEDIUM_PCT) cap('low', why);
       else if (u > U_HIGH_PCT) cap('medium', why);
     }

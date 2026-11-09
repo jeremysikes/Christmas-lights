@@ -3707,7 +3707,14 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     const u = fx.uncertaintyPct;
     if (u === Infinity) cap('low', 'A small tap error changes this measurement a lot. Re-tap the rectangle and references, zoomed in.');
     else if (isNum(u)) {
-      const why = 'Expected error about ±' + (u < 10 ? u.toFixed(1) : Math.round(u)) + '% from tap precision; zoom in or use a larger rectangle.';
+      // The fix depends on the surface: ground and roof lengths hinge on the camera pose worked out from the wall,
+      // so zooming in on taps helps far less than a tape-measured length or a better vantage point.
+      const fix = mode === 'ground-3d'
+        ? 'from street level the ground is seen almost edge-on. Add a tape-measured reference on this ground surface, or take the photo from closer or higher.'
+        : (mode === 'roof-3d' || mode === 'roof-ortho')
+          ? 'roof lengths depend on the camera angle worked out from the wall. Type a tape-measured length if you can, or rely on the 10% waste.'
+          : 'zoom in or use a larger rectangle.';
+      const why = 'Expected error about ±' + (u < 10 ? u.toFixed(1) : Math.round(u)) + '% from tap precision; ' + fix;
       if (u > U_MEDIUM_PCT) cap('low', why);
       else if (u > U_HIGH_PCT) cap('medium', why);
     }
@@ -8679,7 +8686,9 @@ LP.define('sample', ['geometry'], function (g) {
     project.planes = [
       wallPlane('pl_front', 'Front wall', '#4f9dff', {
         corners: [P(cam, onFront(M.u0, M.wallH)), P(cam, onFront(M.u1, M.wallH)), P(cam, onFront(M.u1, 0)), P(cam, onFront(M.u0, 0))],
-        widthFt: null, heightFt: null, presetId: 'unknown',
+        // Tape-measured along the foundation (34 x 10 ft): a realistic installer calibration that rates High.
+        // The door-height and window-width refs stay as cross-checks.
+        widthFt: M.u1 - M.u0, heightFt: M.wallH, presetId: 'custom-rect',
       }, [
         { id: 'ref_door_height', kind: 'line', points: [P(cam, onFront(D.u0, 0)), P(cam, onFront(D.u0, D.h))], lengthFt: 80 / 12, courses: null, presetId: 'door-height', quality: 'high' },
         { id: 'ref_window_width', kind: 'line', points: [P(cam, onFront(W0.u0, MODEL.windowHead)), P(cam, onFront(W0.u1, MODEL.windowHead))], lengthFt: 4, courses: null, presetId: 'custom-line', quality: 'high', label: 'Window width (tape)' },
@@ -8692,7 +8701,9 @@ LP.define('sample', ['geometry'], function (g) {
       ]),
       {
         id: 'pl_roof', imageId: 'img_sample', name: 'Main roof', kind: 'roof', color: '#ff8a3d', rect: null, refs: [],
-        derived: { parentPlaneId: 'pl_front', line: [P(cam, onFront(M.u0, M.wallH)), P(cam, onFront(M.u1, M.wallH))], pitch: null },
+        // Pitch entered (6/12, e.g. a phone level on a rake board). The project default stays unknown, so the
+        // pitch is still estimated from the in-plane entry gable and shown as a cross-check.
+        derived: { parentPlaneId: 'pl_front', line: [P(cam, onFront(M.u0, M.wallH)), P(cam, onFront(M.u1, M.wallH))], pitch: { rise: 6, run: 12 } },
       },
       {
         id: 'pl_yard', imageId: 'img_sample', name: 'Front yard', kind: 'ground', color: '#4cc38a', rect: null, refs: [],

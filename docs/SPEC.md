@@ -654,9 +654,11 @@ createSample({traced = true} = {}) → { width, height, primitives, project, gro
   // A 3D house rendered through a pinhole camera (yaw 15–25° off the facade normal, tilt ≥ 8° up,
   // f from 26 mm-equivalent) so the perspective is visible and focal length is estimable.
   // project: one image (source.kind 'sample', storageKey 'sample'), planes: 'Front wall' (rect = facade corners,
-  // size unknown + door-height ref + one horizontal ref), 'Garage wall' (set back, rect = double garage door
-  // 16×7 known + one cross-check ref), 'Main roof' (roof, from front eave, pitch null → estimated from the
-  // in-plane front gable), 'Front yard' (ground, from front wall base).
+  // tape-measured 34 × 10 ft, preset custom-rect, + door-height ref + one horizontal ref as cross-checks), 'Garage
+  // wall' (set back, rect = double garage door 16×7 known + one cross-check ref), 'Main roof' (roof, from front
+  // eave, pitch entered 6/12; settings.roofPitch stays null so the project pitch is still estimated from the
+  // in-plane front gable as a cross-check), 'Front yard' (ground, from front wall base).
+  // (Changed after review: the size-unknown front wall rated every wall item Low on the first screen.)
   // features (traced:true): eaves, front-gable rakes (in wall plane), side rake + ridge on roof plane, gutter,
   // 2 windows, door outline, 3 bushes, 1 tree, 2 walkway edges on ground plane; outlets: porch GFCI (15 A
   // circuit), garage exterior GFCI (20 A circuit).
