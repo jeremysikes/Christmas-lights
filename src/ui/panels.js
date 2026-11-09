@@ -252,6 +252,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         input.click();
       });
     }
+    /** Set once the viewer says saving files is unavailable: the export buttons are then disabled with a note. */
+    let savingUnavailable = false;
     const EXPORT_DONE = {
       pdf: 'Report saved as a PDF.', quote: 'Customer quote saved as a PDF.', csv: 'Shopping list saved as a CSV file.', json: 'Project saved. Open it again with Open project.',
     };
@@ -267,8 +269,13 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       }[kind];
       if (!run) return Promise.resolve('failed');
       return Promise.resolve().then(run).then((res) => {
-        if (res === 'failed') actions.toast('The file could not be saved. Try again.', 'error');
-        else if (res !== 'declined') actions.toast(EXPORT_DONE[kind], 'ok');
+        if (res === 'saved') actions.toast(EXPORT_DONE[kind], 'ok');
+        else if (res === 'busy') actions.toast('A save is already open. Finish or close it first.', 'info');
+        else if (res === 'unavailable') {
+          savingUnavailable = true;
+          actions.toast('Saving files is not available in this view, so nothing was saved.', 'error');
+        } else if (res === 'too_large') actions.toast('This file is too large to save here.', 'error');
+        else if (res !== 'declined') actions.toast('The file could not be saved. Try again.', 'error');
         return res;
       }, (e) => {
         actions.toast(e && e.message ? e.message : 'The file could not be made. Try again.', 'error');
@@ -366,6 +373,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
     };
     const OUTLET_TYPES = [['exteriorGfci', 'Outdoor GFCI'], ['garage', 'Garage'], ['interior', 'Indoor'], ['other', 'Other']];
     const LEVEL_LABEL = { high: 'High', medium: 'Medium', low: 'Low' };
+    const MOUNT_OPTIONS = [['gutter', 'Gutter clips'], ['shingle', 'Shingle tabs'], ['allInOne', 'All-in-one clips'], ['ridge', 'Ridge clips'],
+      ['adhesive', 'Adhesive clips'], ['zipTie', 'Zip ties'], ['stake', 'Light stakes'], ['none', 'No clips']];
+    const MOUNT_LABEL = MOUNT_OPTIONS.reduce((o, m) => { o[m[0]] = m[1]; return o; }, {});
     const CALIBRATE_SENTENCE = 'Tap the four corners of something rectangular on this wall, like the garage door, and LightPlan ' +
       'will un-tilt the photo so measurements come out as if you stood straight in front of it.';
     const WASTE_NOTE = 'Add 10% for waste, corners and drops to the outlet';
@@ -428,7 +438,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
     }
     function toggle(label, o) {
       return h('label', { class: 'switch' + (o.cls ? ' ' + o.cls : '') },
-        h('input', { type: 'checkbox', role: 'switch', checked: !!o.checked, data: Object.assign({ act: o.act }, o.data || {}) }),
+        h('input', { type: 'checkbox', role: 'switch', checked: !!o.checked, data: Object.assign({ act: o.act }, o.data || {}), 'aria-label': o.aria || null }),
         h('span', { class: 'switch-track', 'aria-hidden': 'true' }),
         h('span', { class: 'switch-label' }, label));
     }
@@ -470,7 +480,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
     function nextButton(n) {
       if (n >= 6) {
         return h('div', { class: 'panel-next' },
-          button('Save project (JSON)', { act: 'export', data: { kind: 'json' }, cls: 'primary block', icon: 'download' }),
+          button('Save project (JSON)', { act: 'export', data: { kind: 'json' }, cls: 'primary block', icon: 'download', disabled: savingUnavailable }),
           h('p', { class: 'hint center' }, 'Saving keeps the photo, tracing and settings in one file you can open later.'));
       }
       return h('div', { class: 'panel-next' },
@@ -722,8 +732,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           field('Width', textInput({ act: 'ref-rect-size', value: c.refWidthFt ? ctx.fmt(c.refWidthFt) : '', placeholder: '3\' 0"', data: { field: 'width' } })),
           field('Height', textInput({ act: 'ref-rect-size', value: c.refHeightFt ? ctx.fmt(c.refHeightFt) : '', placeholder: '6\' 8"', data: { field: 'height' } }))));
       }
-      const needsValue = (preset.id === 'custom-line' && !c.refLengthFt) || (preset.id === 'custom-rect' && !(c.refWidthFt && c.refHeightFt));
-      kids.push(h('div', { class: 'btn-row' }, button(preset.kind === 'rect' ? 'Draw (4 corners)' : 'Draw (2 ends)', { act: 'draw-ref', data: { id: pl.id }, icon: preset.kind === 'rect' ? 'corners' : 'ruler', disabled: needsValue })));
+      // Never disabled: a tap on a disabled button is lost when it is also the tap that commits the typed length.
+      // The click handler reads the fields' live values and explains what is missing.
+      kids.push(h('div', { class: 'btn-row' }, button(preset.kind === 'rect' ? 'Draw (4 corners)' : 'Draw (2 ends)', { act: 'draw-ref', data: { id: pl.id }, icon: preset.kind === 'rect' ? 'corners' : 'ruler' })));
 
       // Existing references with expected vs measured
       const results = {};
@@ -859,6 +870,20 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         field('Label', textInput({ act: 'feature-field', value: f.label, data: { id: f.id, field: 'label' }, maxlength: 80 })),
         field('Type', selectInput({ act: 'feature-type', value: f.type, options: TYPE_ORDER.map((t) => [t, FEATURE_TYPES[t].label]), data: { id: f.id } }))));
       kids.push(field('Surface', selectInput({ act: 'feature-plane', value: f.planeId || '', options: [['', 'None']].concat(ctx.planes.map((p) => [p.id, p.name])), data: { id: f.id } })));
+      const fpl = byId(ctx.planes, f.planeId);
+      const kinds = actionsModule.KINDS_FOR_TYPE && actionsModule.KINDS_FOR_TYPE[f.type];
+      if (fpl && kinds && !kinds.includes(fpl.kind)) {
+        kids.push(callout('warn', 'This ' + (ft.short || 'item').toLowerCase() + ' is measured on \'' + fpl.name + '\' (' + (PLANE_KIND[fpl.kind] || fpl.kind).toLowerCase() +
+          '), so its length is likely wrong. Pick the ' + (kinds[0] === 'ground' ? 'ground' : kinds[0] === 'roof' ? 'roof slope' : 'wall') + ' it is on.', { key: 'fk-' + f.id }));
+      }
+      // Points: the one last pressed on the photo can be deleted; tap a + between two points on the photo to add one.
+      const av = ctx.ui.activeVertex;
+      const vi = av && av.featureId === f.id && Number.isInteger(av.index) && av.index < f.points.length ? av.index : null;
+      kids.push(h('div', { class: 'btn-row wrap point-row' },
+        button(vi != null ? 'Delete point ' + (vi + 1) : 'Delete point', { act: 'delete-vertex', data: { id: f.id, index: vi == null ? '' : vi }, icon: 'close', cls: 'small', disabled: vi == null }),
+        button('Delete ' + (f.label || 'item'), { act: 'delete-feature', data: { id: f.id }, icon: 'trash', cls: 'danger ghost small' })));
+      kids.push(h('p', { class: 'hint' }, vi != null ? 'Point ' + (vi + 1) + ' is picked. Drag the points on the photo, or tap a + between two of them to add a point.'
+        : 'Drag the points on the photo. Press one to pick it for Delete point, or tap a + between two points to add one.'));
 
       if (m && m.ok) {
         const rows = [];
@@ -899,7 +924,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           kids.push(field('How to light it', selectInput({ act: 'feature-wrap', value: f.params.wrapMode || 'trunk', options: [['trunk', 'Wrap the trunk (spiral)'], ['canopy', 'Light the canopy (by height)']], data: { id: f.id } })));
         }
       }
-      kids.push(h('div', { class: 'btn-row end' }, button('Delete', { act: 'delete-feature', data: { id: f.id }, icon: 'trash', cls: 'danger ghost small' })));
       return h('div', { class: 'feat-editor' }, kids);
     }
 
@@ -933,8 +957,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       }
       kids.push(section('Preview', [h('div', { class: 'btn-row wrap' },
         button(ui.view.preview ? 'Lights on' : 'Lights off', { act: 'view-flip', data: { key: 'preview' }, pressed: ui.view.preview, icon: 'bulb', cls: 'small' }),
-        button(ui.view.night ? 'Night' : 'Day', { act: 'view-flip', data: { key: 'night' }, pressed: ui.view.night, icon: ui.view.night ? 'moon' : 'sun', cls: 'small' }),
-        button('Twinkle', { act: 'view-flip', data: { key: 'twinkle' }, pressed: ui.view.twinkle, icon: 'sparkle', cls: 'small' }))], { key: 'preview' }));
+        // Night and twinkle only show with the lights on, so they read as pressed only then (as on the canvas).
+        button(ui.view.night && ui.view.preview ? 'Night' : 'Day', { act: 'view-flip', data: { key: 'night' }, pressed: ui.view.night && ui.view.preview, icon: ui.view.night && ui.view.preview ? 'moon' : 'sun', cls: 'small' }),
+        button('Twinkle', { act: 'view-flip', data: { key: 'twinkle' }, pressed: ui.view.twinkle && ui.view.preview, icon: 'sparkle', cls: 'small' }))], { key: 'preview' }));
 
       // Colors
       const s = project.settings;
@@ -978,6 +1003,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
             h('span', { class: 'swatches' }, arr(run.colors).slice(0, 5).map((c) => swatch(c)))),
           field('Product', selectInput({ act: 'run-product', value: f.productId || '', options, data: { id: f.id } })),
           field('Color', selectInput({ act: 'run-color', value: f.color ? f.color.mode : '', options: colorOptions, data: { id: f.id } })),
+          runControls(ctx, f, run),
           h('p', { class: 'run-qty' },
             h('strong', { class: 'num' }, fmtNum(qty, run.unit === 'foot' ? 1 : 0) + ' ' + unitWord(run.unit, qty)),
             h('span', { class: 'num' }, ' · ' + watts(run.watts)),
@@ -997,13 +1023,35 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       return kids;
     }
 
+    /** Clips (mount), forced outlet and direction for one run: the overrides design.js and power.js honour. */
+    function runControls(ctx, f, run) {
+      const ft = FEATURE_TYPES[f.type] || {};
+      const params = f.params || {};
+      const kids = [];
+      if (catalog.LINEAR_TYPES.includes(f.type)) {
+        const def = MOUNT_LABEL[ft.defaultMount] || 'type default';
+        const mountOpts = [['', 'Auto (' + def + ')']].concat(MOUNT_OPTIONS);
+        kids.push(field('Clips', selectInput({ act: 'run-mount', value: params.mount || '', options: mountOpts, data: { id: f.id } })));
+      }
+      const outlets = ctx.project.outlets.filter((o) => !ctx.image || o.imageId === ctx.image.id || o.imageId == null);
+      if (outlets.length) {
+        const opts = [['', 'Auto (nearest)']].concat(outlets.map((o) => [o.id, o.label]));
+        if (params.outletId && !opts.some((x) => x[0] === params.outletId)) opts.push([params.outletId, 'Missing outlet']);
+        kids.push(field('Outlet', selectInput({ act: 'run-outlet', value: params.outletId || '', options: opts, data: { id: f.id } })));
+      }
+      const open = !(f.closed || ft.geometry === 'polygon' || ft.geometry === 'area' || ft.geometry === 'vertical');
+      const grid = kids.length ? h('div', { class: 'row-2' }, kids) : null;
+      const rev = open ? toggle('Start from the other end', { act: 'run-reverse', data: { id: f.id }, checked: params.reverse === true }) : null;
+      return grid || rev ? h('div', { class: 'run-controls' }, grid, rev) : null;
+    }
+
     function productEditor(ctx) {
       const local = ctx.local;
       const products = ctx.plan.library.products;
       const custom = !!(ctx.project.library && ctx.project.library.products);
       const rows = products.map((p) => h('li', { class: 'prod-card' + (p.enabled === false ? ' off' : ''), 'data-key': 'p-' + p.id },
         h('div', { class: 'prod-head' },
-          toggle('', { act: 'product-enabled', data: { id: p.id }, checked: p.enabled !== false, cls: 'compact' }),
+          toggle('', { act: 'product-enabled', data: { id: p.id }, checked: p.enabled !== false, cls: 'compact', aria: 'Use ' + p.name }),
           textInput({ act: 'product-field', value: p.name, data: { id: p.id, field: 'name' }, aria: 'Name of ' + p.id, cls: 'grow' })),
         h('div', { class: 'prod-grid' },
           field('Price ($)', numInput({ act: 'product-field', value: p.price, min: 0, step: 0.01, data: { id: p.id, field: 'price' } })),
@@ -1080,6 +1128,11 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           h('div', { class: 'row-2' },
             field('Type', selectInput({ act: 'outlet-type', value: o.type, options: OUTLET_TYPES, data: { id: o.id } })),
             field('Circuit', selectInput({ act: 'outlet-circuit', value: o.circuitId || '', options: circuitOpts, data: { id: o.id } }))),
+          field('Surface', selectInput({ act: 'outlet-plane', value: o.planeId || '', options: [['', 'None']].concat(ctx.planes.map((p) => [p.id, planeOptionLabel(p)])), data: { id: o.id } })),
+          (() => {
+            const opl = byId(ctx.planes, o.planeId);
+            return opl && opl.kind !== 'wall' ? callout('warn', 'This outlet is on \'' + opl.name + '\'. Outlets are on walls: pick the wall it is on, or the cord lengths come out wrong.', { key: 'op-' + o.id }) : null;
+          })(),
           h('div', { class: 'row-2 align-center' },
             toggle('GFCI protected', { act: 'outlet-gfci', data: { id: o.id }, checked: o.gfci }),
             h('p', { class: 'outlet-info num' }, infoText)));
@@ -1124,7 +1177,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         const names = fruns.map((r) => r.label);
         const units = Array.from(new Set(fruns.map((r) => r.unit)));
         const unitText = units.length === 1 ? fmtNum(f.strings, units[0] === 'foot' ? 1 : 0) + ' ' + unitWord(units[0], f.strings) : plural(f.strings, 'unit', 'units');
-        const cord = f.cord ? arr(f.cord.pieces).map((p) => p + ' ft').join(' + ') + ' cord, ' + f.cord.awg + ' AWG (needs ' + fmtNum(f.cord.lengthFt, 0) + ' ft)'
+        const cord = f.cord ? arr(f.cord.pieces).map((p) => p + ' ft').join(' + ') + ' cord, ' + f.cord.awg + ' AWG (needs ' + fmtNum(Math.ceil(f.cord.lengthFt), 0) + ' ft)'
           : f.outletId ? 'Cord length unknown' : 'No outlet yet';
         return h('li', { class: 'feed-item', 'data-key': f.id },
           h('p', { class: 'feed-title' }, h('span', { class: 'num feed-num' }, String(i + 1)), h('span', null, names.join(', ') || 'Lights'),
@@ -1176,8 +1229,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       kids.push(quoteSection(ctx));
       kids.push(checklistSection(ctx));
 
-      const busy = local.exporting;
-      kids.push(section('Export', [h('div', { class: 'export-grid' },
+      const busy = local.exporting || (savingUnavailable ? 'off' : null);
+      kids.push(section('Export', [savingUnavailable ? callout('warn', 'Saving files is not available in this view. Open LightPlan as a standalone file to save the report, the shopping list or the project.', { key: 'save-off' }) : null,
+        h('div', { class: 'export-grid' },
         button(busy === 'pdf' ? 'Making PDF…' : 'PDF report', { act: 'export', data: { kind: 'pdf' }, icon: 'file', disabled: !!busy }),
         button(busy === 'quote' ? 'Making PDF…' : 'Customer quote PDF', { act: 'export', data: { kind: 'quote' }, icon: 'file', disabled: !!busy || !project.quote.enabled, title: project.quote.enabled ? null : 'Turn on installer mode to make a quote' }),
         button('CSV (shopping list)', { act: 'export', data: { kind: 'csv' }, icon: 'table', disabled: !!busy }),
@@ -1290,6 +1344,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       let scheduled = false;
       let destroyed = false;
       let lastStep = null;
+      let lastSel = null;
 
       function loadChecks(project) {
         if (!project || local.checksProjectId === project.id) return;
@@ -1325,6 +1380,18 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         else { root.textContent = ''; root.appendChild(next); }
         const step = store.ui().step;
         if (step !== lastStep) { root.scrollTop = 0; lastStep = step; }
+        // A newly selected item (often from a tap on the photo) is scrolled into view with its editor.
+        const sel = store.ui().selection;
+        const selKey = sel ? sel.kind + ':' + sel.id : null;
+        if (selKey !== lastSel) {
+          lastSel = selKey;
+          const row = sel ? root.querySelector('[data-key="' + (window.CSS && CSS.escape ? CSS.escape(sel.id) : sel.id) + '"]') : null;
+          if (row && sel.kind !== 'plane' && typeof row.scrollIntoView === 'function') {
+            const r = row.getBoundingClientRect();
+            const box = root.getBoundingClientRect();
+            if (r.top < box.top || r.top > box.bottom - 60) { try { row.scrollIntoView({ block: 'start' }); } catch (e) { /* ignore */ } }
+          }
+        }
         // Re-focus a field that was replaced (its structure changed) so typing is not interrupted.
         if (focusKey && (!document.activeElement || !root.contains(document.activeElement))) {
           const el = root.querySelector('[data-fk="' + (window.CSS && CSS.escape ? CSS.escape(focusKey) : focusKey) + '"]');
@@ -1419,7 +1486,20 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         'delete-plane': (el) => actions.deletePlane(el.dataset.id),
         'mark-rect': (el) => actions.startPlaneRect(el.dataset.id),
         'remove-rect': (el) => actions.removePlaneRect(el.dataset.id),
-        'draw-ref': (el) => actions.startReference(el.dataset.id),
+        'draw-ref': (el) => {
+          // Commit the reference size fields from their live values first (the change event may not have fired).
+          const live = {};
+          const len = root.querySelector('[data-act="ref-length"]');
+          if (len && len.value.trim()) { const v = parseLength(len.value.trim()); if (v == null) { badLength(len); return; } live.refLengthFt = v; }
+          for (const f of Array.from(root.querySelectorAll('[data-act="ref-rect-size"]'))) {
+            if (!f.value.trim()) continue;
+            const v = parseLength(f.value.trim());
+            if (v == null) { badLength(f); return; }
+            live[f.dataset.field === 'width' ? 'refWidthFt' : 'refHeightFt'] = v;
+          }
+          if (Object.keys(live).length) actions.setCalib(live);
+          actions.startReference(el.dataset.id);
+        },
         'select-ref': (el) => actions.select({ kind: 'ref', id: el.dataset.id, planeId: el.dataset.plane }),
         'delete-ref': (el) => actions.deleteRef(el.dataset.plane, el.dataset.id),
         'redraw-line': (el) => actions.redrawPlaneLine(el.dataset.id),
@@ -1437,7 +1517,17 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           else actions.select({ kind: 'feature', id: el.dataset.id });
         },
         'delete-feature': (el) => actions.deleteFeature(el.dataset.id),
-        'view-flip': (el) => { const k = el.dataset.key; actions.setView({ [k]: !store.ui().view[k] }); },
+        'delete-vertex': (el) => {
+          const i = Number(el.dataset.index);
+          if (el.dataset.index !== '' && Number.isInteger(i)) actions.deleteVertex(el.dataset.id, i);
+        },
+        'view-flip': (el) => {
+          const k = el.dataset.key;
+          const v = store.ui().view;
+          // With the lights off, Night and Twinkle show as off; tapping one turns it on together with the lights.
+          if ((k === 'night' || k === 'twinkle') && !v.preview) actions.setView({ [k]: true, preview: true });
+          else actions.setView({ [k]: !v[k] });
+        },
         'color-mode': (el) => actions.updateSettings({ colorMode: el.dataset.mode }),
         'custom-color-add': () => {
           const cs = P().settings.customColors.slice();
@@ -1589,6 +1679,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           if (/^#[0-9a-f]{6}$/i.test(el.value) && i >= 0 && i < cs.length) { cs[i] = el.value; actions.updateSettings({ customColors: cs }); }
         },
         'run-product': (el) => actions.updateFeature(el.dataset.id, { productId: el.value || null }),
+        'run-mount': (el) => actions.updateFeature(el.dataset.id, { params: { mount: el.value || null } }),
+        'run-outlet': (el) => actions.updateFeature(el.dataset.id, { params: { outletId: el.value || null } }),
+        'run-reverse': (el) => actions.updateFeature(el.dataset.id, { params: { reverse: !!el.checked } }),
         'run-color': (el) => {
           const v = el.value;
           actions.updateFeature(el.dataset.id, { color: !v ? null : v === 'custom' ? { mode: 'custom', colors: P().settings.customColors.slice() } : { mode: v } });
@@ -1621,6 +1714,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         'outlet-field': (el) => { const v = el.value.trim(); if (v) actions.updateOutlet(el.dataset.id, { label: v.slice(0, 60) }); else schedule(); },
         'outlet-type': (el) => actions.updateOutlet(el.dataset.id, { type: el.value }),
         'outlet-circuit': (el) => actions.updateOutlet(el.dataset.id, { circuitId: el.value || null }),
+        'outlet-plane': (el) => actions.updateOutlet(el.dataset.id, { planeId: el.value || null }),
         'outlet-gfci': (el) => actions.updateOutlet(el.dataset.id, { gfci: !!el.checked }),
         'circuit-field': (el) => { const v = el.value.trim(); if (v) actions.updateCircuit(el.dataset.id, { name: v.slice(0, 60) }); else schedule(); },
         'circuit-breaker': (el) => actions.updateCircuit(el.dataset.id, { breakerAmps: Number(el.value) || 15 }),
