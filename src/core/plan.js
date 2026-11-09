@@ -18,6 +18,8 @@
  *    unmeasured, so the same problem is not listed twice.
  *  - summary.circuits counts the circuits that power at least one feed (an outlet with no circuit counts
  *    as its own assumed circuit); summary.quoteTotal is null when installer mode is off.
+ *  - mergeRunInfo also copies power's per-run string count (quantity, hung, live watts and amps, bulbs and a
+ *    detail note), because strings are counted along each chain, not rounded up run by run.
  *  - Extra exports: mergeRunInfo, collectWarnings, summarize, emptyMeasured, emptyPower.
  */
 LP.define('plan', ['catalog', 'bom'], function (catalog, bom) {
@@ -88,7 +90,11 @@ LP.define('plan', ['catalog', 'bom'], function (catalog, bom) {
   }
 
   // ---------------------------------------------------------------- merge power info into runs
-  /** New run objects with start, end, reversed, chainId, feedIds, outletId and circuitId from power.runInfo. */
+  /**
+   * New run objects with start, end, reversed, chainId, feedIds, outletId and circuitId from power.runInfo, and,
+   * when power counted the strings along the chain, quantity (bought), hung, bulbs, watts and amps (live load)
+   * with the chain note appended to the detail.
+   */
   function mergeRunInfo(runs, power) {
     const info = isObj(power) && isObj(power.runInfo) ? power.runInfo : {};
     return arr(runs).filter(isObj).map((run) => {
@@ -103,6 +109,23 @@ LP.define('plan', ['catalog', 'bom'], function (catalog, bom) {
       out.feedIds = arr(ri.feedIds).slice();
       out.outletId = ri.outletId == null ? null : ri.outletId;
       out.circuitId = ri.circuitId == null ? null : ri.circuitId;
+      // Strings counted along the chain (power.js): the run's share of what is bought, what is hung, and the
+      // live load (hung strings only).
+      if (Number.isFinite(ri.quantity) && ri.quantity >= 0 && fin(run.quantity, 0) > 0) {
+        const q0 = run.quantity;
+        out.quantity = ri.quantity;
+        out.bulbs = Math.round((fin(run.bulbs, 0) / q0) * ri.quantity);
+        if (Number.isFinite(ri.hung)) out.hung = ri.hung;
+        if (Number.isFinite(ri.watts)) {
+          const perW = fin(run.watts, 0) > 0 ? fin(run.amps, 0) / run.watts : 1 / 120;
+          out.watts = ri.watts;
+          out.amps = Math.round(ri.watts * perW * 10000) / 10000;
+        }
+        if (typeof ri.note === 'string' && ri.note) {
+          const d = typeof run.detail === 'string' ? run.detail.trim() : '';
+          out.detail = d ? d + (/[.!?]$/.test(d) ? ' ' : '. ') + ri.note : ri.note;
+        }
+      }
       return out;
     });
   }

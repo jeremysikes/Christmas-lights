@@ -294,7 +294,8 @@ LP.define('bom', ['catalog'], function (catalog) {
     let feet = 0, trees = 0, bushes = 0;
     if (Array.isArray(runs)) {
       for (const r of runs) {
-        if (!isObj(r) || !(fin(r.quantity, 0) > 0)) continue;
+        // A run whose strings are counted with the run before it can buy none and still be installed.
+        if (!isObj(r) || !(fin(r.quantity, 0) > 0 || (r.productId && arr(r.feedIds).length > 0))) continue;
         if (r.featureType === 'tree') trees += 1;
         else if (r.featureType === 'bush') bushes += 1;
         else feet += Math.max(0, fin(r.lengthFt, 0));
@@ -381,6 +382,7 @@ LP.define('bom', ['catalog'], function (catalog) {
         steps.push(`Keep the cord along the bottom of the wall where it passes ${feed.doorway || 'the door'} and lay a cord cover over it there${feed.crossesWalkway ? ' and across the walkway' : ''}.`);
       } else if (feed.crossesWalkway) steps.push('Lay a cord cover over the cord where it crosses the walkway.');
       const list = portions.get(feed.id) || [];
+      let stringRun = null; // the run whose last string is the one in hand (a carried-on run starts none)
       list.forEach((p, j) => {
         const run = p.run;
         const label = run.label || 'this run';
@@ -394,13 +396,18 @@ LP.define('bom', ['catalog'], function (catalog) {
           const start = feed.start && feed.start.label ? feed.start.label : sideOf(run);
           const toward = feed.start && typeof feed.start.toward === 'string' && feed.start.toward ? `, working toward the ${feed.start.toward}` : '';
           steps.push(`${verbPhrase(run, what, label, prepOf(run))}, starting at the ${start}${toward}. Plug the first ${noun} into the cord.`);
+        } else if (!(p.units > EPS) && run.unit !== 'foot') {
+          // Strings counted along the chain: the last string of the previous run carries on along this one.
+          const prev = stringRun || list[j - 1].run;
+          steps.push(`Carry the last ${unitWord(prev.unit, 1)} of ${prev.label || 'the previous run'} on along ${label}; no new ${noun} starts here.`);
         } else {
-          const prev = list[j - 1].run;
+          const prev = stringRun || list[j - 1].run;
           const prevNoun = prev.unit === 'foot' ? 'section' : unitWord(prev.unit, 1);
           const start = p.startsRun ? sideOf(run) : 'point where the last one ended';
           steps.push(`Continue into ${label}: plug its first ${noun} into the last ${prevNoun} of ${prev.label || 'the previous run'}, ` +
             `then ${lowerFirst(verbPhrase(run, what, label, prepOf(run)))}, starting at the ${start}.`);
         }
+        if (p.units > EPS) stringRun = run;
       });
       const chain = chainOfFeed.get(feed.id);
       if (chain && chain.feedIds[chain.feedIds.length - 1] === feed.id && fin(chain.spares, 0) > 0) {

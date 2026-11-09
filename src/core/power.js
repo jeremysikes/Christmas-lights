@@ -27,6 +27,14 @@
  *    that wall gets crossesDoorway: true (extra feed fields crossesDoorway and doorway = the door's label),
  *    a cord cover and a 'cord-doorway' warning; one whose route passes where a walkway meets the wall
  *    (within 3 ft of its base) gets crossesWalkway: true, like a cord that crosses a walkway in the photo.
+ *  - Strings along measured lengths. For string products laid along a run's length, only the strings that
+ *    cover the true length are hung and loaded (feeds, circuit loads, totals); the rest of what is bought
+ *    (waste rounding) are spares (chain.spares). Consecutive runs in a chain with the same string and colors
+ *    are counted as one continuous line (a string carries on around the corner): runInfo[runId] carries the
+ *    run's share of the strings bought (quantity), hung (hung), live watts and a plain `note`, which
+ *    plan.mergeRunInfo copies onto the run. A mid-run feed starts where the hung strings end
+ *    (feed.start.toward names the end it works toward), and every feed lists its `portions`
+ *    [{runId, units, total, startsRun, endsRun}] for the checklist.
  *  - Splitters: the power stakes at an outlet are chained from its one timer socket (each extra stake uses
  *    a socket of the one before), so an outlet with n > 1 cords needs ceil((n − 1) / (splitterOutlets − 1))
  *    stakes, not ceil(n / splitterOutlets). More than 6 cords at one outlet adds a 'many-cords' warning.
@@ -562,9 +570,23 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       }
       return out;
     }
-    /** End (exclusive) of the group of steps whose strings run on continuously from step i. */
+    /**
+     * End (exclusive) of the group of steps whose strings run on continuously from step i: consecutive
+     * length-based runs of the same string in the same colors (a string carries on around a corner, but a
+     * warm-white string cannot become a multicolor one).
+     */
     function poolEnd(out, i) {
-      return i + 1;
+      const a = items[out[i].k];
+      let j = i + 1;
+      while (j < out.length) {
+        const b = items[out[j].k];
+        if (!b.len || b.len !== a.len || colorKey(b.run) !== colorKey(a.run)) break;
+        j += 1;
+      }
+      return j;
+    }
+    function colorKey(run) {
+      return String(run.colorMode || '') + '|' + (Array.isArray(run.colors) ? run.colors.join(',') : '');
     }
     /** Lay strings of length len end to end over steps [i, j): hung over the true length, bought over the length with waste. */
     function placeStrings(out, i, j, len) {
@@ -579,6 +601,10 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       }
       const hungT = T > 1e-9 ? Math.ceil(T / len - 1e-9) : 0;
       const boughtT = Math.max(hungT, S > 1e-9 ? Math.ceil(S / len - 1e-9) : 0);
+      if (j - i > 1) {
+        const note = { labels: segs.map((g) => items[out[g.m].k].run.label), withWasteFt: S, strings: boughtT, len };
+        for (const g of segs) out[g.m].pool = note;
+      }
       const count = (start, length, total, last) => {
         let n = 0, first = null;
         for (let q = 0; q < total; q++) {
@@ -587,11 +613,14 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         }
         return { n, first };
       };
+      // Each step buys the strings hung on it; the spares (waste rounding) go with the last step that hangs one.
+      let lastHung = null;
       segs.forEach((g, gi) => {
-        const last = gi === segs.length - 1;
-        const h = count(g.T, g.Lp, hungT, last), b = count(g.S, g.LWp, boughtT, last);
-        Object.assign(out[g.m], { hung: h.n, bought: b.n, firstFt: h.first === null ? null : Math.max(0, h.first) });
+        const h = count(g.T, g.Lp, hungT, gi === segs.length - 1);
+        Object.assign(out[g.m], { hung: h.n, bought: h.n, firstFt: h.first === null ? null : Math.max(0, h.first) });
+        if (h.n > 0) lastHung = g.m;
       });
+      if (lastHung !== null) out[lastHung].bought += boughtT - hungT;
     }
 
     // ---- 2. feeds for one walk: fill each feed up to maxEndToEnd hung units, splitting between runs, and
@@ -812,6 +841,15 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
           start: path[0].slice(), end: path[path.length - 1].slice(), reversed: reversed[it.run.id],
           quantity: round(e.bought, 4), hung: round(e.hung, 4), watts: round(e.hung * it.wattsPerUnit, 2),
         };
+        const pool = e.steps.map((ps) => ps.pool).find(Boolean);
+        if (pool) {
+          const others = pool.labels.filter((l) => l !== it.run.label);
+          const mine = round(e.bought, 4);
+          runInfo[it.run.id].note = `Counted with ${listText(others.length > 3 ? others.slice(0, 2).concat([`${others.length - 2} more runs`]) : others)} ` +
+            `as one continuous line: ${fmt1(pool.withWasteFt)} ft ÷ ${fmt1(pool.len)} ft per string = ${fmtInt(pool.strings)} ${unitWord(it.run.unit, pool.strings)}` +
+            (mine > 0 ? (mine >= pool.strings ? ', all bought for this run.' : `, ${fmtInt(mine)} of them bought for this run.`)
+              : `; the last ${unitWord(it.run.unit, 1)} of the run before carries on along this one, so none is bought for it.`);
+        }
       }
       if (opt.feeds.length > 1) {
         const product = items[m[0]].product;

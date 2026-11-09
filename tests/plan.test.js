@@ -66,7 +66,9 @@ test('computePlan runs the whole pipeline and merges power info into the runs', 
   for (const id of ['run_ft_eave', 'run_ft_gutter', 'run_ft_win', 'run_ft_rail', 'run_ft_post']) {
     const r = byId[id];
     const info = out.power.runInfo[id];
-    assert.ok(r.quantity > 0, id + ' is planned');
+    // The porch gutter continues the eave's last string (strings are counted along the chain), so it buys none.
+    if (id === 'run_ft_gutter') assert.equal(r.quantity, 0, id + ' is carried by the eave string');
+    else assert.ok(r.quantity > 0, id + ' is planned');
     assert.equal(r.outletId, 'out_1');
     assert.equal(r.circuitId, 'cir_1');
     assert.ok(r.feedIds.length > 0);
@@ -74,6 +76,9 @@ test('computePlan runs the whole pipeline and merges power info into the runs', 
     assert.notEqual(r.feedIds, info.feedIds, 'merged arrays are copies');
   }
   assert.equal(byId.run_ft_eave.chainId, byId.run_ft_gutter.chainId, 'eave and gutter are chained end to end');
+  // 18 ft + 3.8 ft with 10% waste = 24 ft: one 25 ft string for both (per-run rounding bought 2).
+  assert.equal(byId.run_ft_eave.quantity + byId.run_ft_gutter.quantity, 1);
+  assert.match(byId.run_ft_gutter.detail, /carries on along this one/);
   assert.equal(byId.run_ft_lost.quantity, 0);
   assert.equal(byId.run_ft_lost.outletId, null);
   assert.ok(out.bom.lines.length > 0 && out.bom.subtotal > 0);

@@ -208,7 +208,7 @@ test('two adjacent rooflines chain end to end and start at the end nearest the o
   assert.equal(ab.id, 'chain_ft_a');
   assert.deepEqual(ab.runIds, ['run_ft_b', 'run_ft_a']);          // walks from the right end (nearest the outlet)
   assert.deepEqual(ab.reversed, { run_ft_b: true, run_ft_a: true });
-  assert.equal(ab.strings, 4);                                     // 2 + 2 C9 LED strings
+  assert.equal(ab.strings, 3);                                     // 30 + 29 ft as one line: 3 C9 LED strings (not 2 + 2)
   assert.equal(ab.feedIds.length, 1);
   const feed = pw.feeds.find((f) => f.id === ab.feedIds[0]);
   assert.deepEqual(feed.runIds, ['run_ft_b', 'run_ft_a']);
@@ -792,4 +792,41 @@ test('checklist follows the power plan: the second cord goes to 75 ft, hangs the
   assert.ok(steps.some((s) => /^Hang the first 3 of the 4 × warm white C9 incandescent string/.test(s)), steps.join('\n'));
   assert.ok(steps.some((s) => /^Hang the last 1 of the 4 × warm white C9 incandescent string.*starting at the point 75 ft from the left end of Eave, working toward the right end of Eave\./.test(s)), steps.join('\n'));
   assert.ok(steps.some((s) => /Keep the 1 spare string/.test(s)), steps.join('\n'));
+});
+
+test('strings are counted along a chain, not rounded up run by run: a string carries on around the corner', () => {
+  const bomMod = LP.require('bom');
+  const planMod = LP.require('plan');
+  // Two 9 ft gable rakes meeting at the peak: 19.8 ft with waste → 1 string (not 1 + 1).
+  const left = feature('ft_gl', 'rake', [F(10, 10), F(17, 15.6)], { label: 'Gable left' });
+  const right = feature('ft_gr', 'rake', [F(17, 15.6), F(24, 10)], { label: 'Gable right' });
+  const p = project({ features: [left, right], outlets: [outlet('out_a', F(5, 1.5), { label: 'Outlet 1' })] });
+  const { runs, power: pw } = plan(p);
+  assert.deepEqual(runs.map((r) => r.quantity), [1, 1], 'design alone rounds each run up');
+  assert.equal(pw.chains.length, 1);
+  assert.equal(pw.runInfo.run_ft_gl.quantity + pw.runInfo.run_ft_gr.quantity, 1, 'one string covers both rakes');
+  const merged = planMod.mergeRunInfo(runs, pw);
+  assert.equal(merged.reduce((s, r) => s + r.quantity, 0), 1);
+  const b = bomMod.buildBom(p, merged, pw, lib);
+  assert.equal(b.lines.find((l) => l.sku === 'c9-led').qty, 1);
+  const carried = merged.find((r) => r.quantity === 0);
+  assert.match(carried.detail, /one continuous line/);
+  const steps = bomMod.buildChecklist(p, merged, pw, null)[0].steps;
+  assert.ok(steps.some((s) => /^Carry the last string of Gable (left|right) on along Gable (left|right)/.test(s)), steps.join('\n'));
+  // Different colors cannot share a string: each run keeps its own.
+  const red = feature('ft_gr', 'rake', [F(17, 15.6), F(24, 10)], { label: 'Gable right', color: { mode: 'multicolor' } });
+  const p2 = plan(project({ features: [left, red], outlets: [outlet('out_a', F(5, 1.5))] }));
+  assert.equal(p2.power.runInfo.run_ft_gl.quantity + p2.power.runInfo.run_ft_gr.quantity, 2);
+});
+
+test('sample house: the roofline chains buy 6 C9 LED strings, not 8', { skip: !LP.has('sample') || !LP.has('measure') }, () => {
+  const out = LP.require('plan').computePlan(LP.require('sample').createSample().project);
+  const c9 = out.runs.filter((r) => r.productId === 'c9-led');
+  const chains = new Map();
+  for (const r of c9) chains.set(r.chainId, (chains.get(r.chainId) || 0) + r.withWasteFt);
+  const want = Array.from(chains.values()).reduce((s, ft) => s + Math.ceil(ft / 25 - 1e-9), 0);
+  assert.equal(c9.reduce((s, r) => s + r.quantity, 0), want);
+  assert.equal(out.bom.lines.find((l) => l.sku === 'c9-led').qty, want);
+  assert.ok(want < 8, 'per-run rounding bought 8');
+  assert.equal(out.summary.strings, out.runs.filter((r) => r.unit === 'string').reduce((s, r) => s + r.quantity, 0));
 });
