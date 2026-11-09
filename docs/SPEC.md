@@ -525,7 +525,8 @@ LightRun = {
   method: 'linear'|'bush-rule'|'bush-net'|'spiral'|'path-sets'|'per-foot',
   detail: string,                            // human explanation, e.g. "35.2 ft + 10% = 38.7 ft ÷ 25 ft per string → 2 strings"
   warnings: [string],
-  // filled later by plan.js from power.runInfo:
+  // filled later by plan.js from power.runInfo (and, when strings are counted along the chain, quantity,
+  // hung, bulbs, watts and amps of the live load, with the chain note appended to detail):
   start: null, end: null, reversed: false, chainId: null, feedIds: [], outletId: null, circuitId: null
 }
 // Quantity rules:
@@ -543,36 +544,53 @@ suitableProducts(type, library) → product[]   // enabled products whose suitab
 ```
 planPower(project, measured, runs, library) → PowerPlan
 PowerPlan = {
-  chains: [{id, productId, runIds /*ordered*/, reversed /*{runId: bool}*/, strings, watts, feedIds}],
-  feeds:  [{id, chainId, runIds, strings, watts, amps, start: {point:[x,y], imageId, planeId, label},
+  chains: [{id, productId, runIds /*ordered*/, reversed /*{runId: bool}*/, strings /*hung*/, spares, watts /*live*/, feedIds}],
+  feeds:  [{id, chainId, runIds, strings, watts, amps, start: {point:[x,y], imageId, planeId, label, toward?},
             outletId|null, circuitId|null,
-            cord: {lengthFt, awg, pieces: [lengths], voltageDropPct} | null,
+            cord: {lengthFt /*needed*/, boughtFt, awg, pieces: [lengths], voltageDropPct} | null,
             cordPath: [[x,y],[x,y]],          // image-space polyline outlet → feed start (for overlay)
-            crossesWalkway: bool}],
-  outlets: [{id, label, circuitId, feedIds, watts, needsSplitter, splitters, timer: bool}],
+            crossesWalkway: bool, crossesDoorway: bool, doorway?: label, cordUnknown: bool,
+            portions: [{runId, units, total, startsRun, endsRun}]}],   // hung strings per run, for the checklist
+  outlets: [{id, label, circuitId, feedIds, watts, needsSplitter, splitters, timer: bool, limitW, overloaded, incandescentW}],
   circuits: [{id, name, breakerAmps, voltage, limitW, loadW, existingLoadW, utilizationPct, outletIds, overloaded}],
-  runInfo: { [runId]: {chainId, feedIds, outletId, circuitId, start:[x,y], end:[x,y], reversed} },
+  runInfo: { [runId]: {chainId, feedIds, outletId, circuitId, start:[x,y], end:[x,y], reversed,
+                       quantity? /*bought*/, hung?, watts? /*live*/, note?} },
   cords: [{awg, lengthFt, count}],            // purchasable pieces aggregated
   counts: { timers, splitters, cordCovers, gfciAdapters },
-  totals: { watts, amps },
+  totals: { watts, amps },                    // live load: hung strings only
   warnings: [{level:'danger'|'warn'|'info', code, message, featureId?, outletId?, circuitId?}]
 }
 ```
 Rules:
-- Chains: runs with the same productId whose endpoints are within `config.power.chainGapFt` (approx feet,
-  computed with local plane scale, cross-plane allowed) connect end to end. Closed runs have start = end.
-- Feeds: split a chain whenever cumulative units would exceed product.maxEndToEnd (split between runs;
-  if one run alone exceeds it, split it into several feeds along its length).
+- Distances: same calibrated plane → plane coordinates; different planes that both have a camera pose (walls with a
+  perspective rectangle and the roof/ground planes built on them) → 3D distance in the camera frame; otherwise the
+  image vector scaled by each plane's local Jacobian in that direction (never a direction-blind scale).
+- Chains: runs with the same productId whose endpoints are within `config.power.chainGapFt` (feet, as above,
+  cross-plane allowed) connect end to end. Closed runs have start = end.
+- Strings: for string products laid along a measured length only the strings that cover the true length are hung
+  and loaded; the rest (waste rounding) are spares. Consecutive runs of a chain with the same string and colors are
+  counted as one continuous line (a string carries on around the corner); runInfo carries each run's share.
+- Feeds: split a chain whenever cumulative hung units would exceed product.maxEndToEnd (split between runs;
+  if one run alone exceeds it, split it into several feeds along its length). A mid-run feed starts where the
+  hung strings end (string length along the run). A chain may instead be fed from its point nearest an outlet
+  with two walks working outward, when that needs at least 10% less cord.
 - Orientation & outlet choice minimize cord length; respect `feature.params.outletId` and `reverse`.
-  Greedy: feeds by watts desc → nearest outlet whose circuit stays ≤ limitW; else nearest + overload warning.
-- Cord length (ft) = routed distance outlet→feed start (same plane: |Δu|+|Δv|; otherwise image distance ×
-  mean local scale) × routingFactor + cordSlackFt. Gauge: smallest of 16/14/12 AWG whose ampacity ≥ I and
-  drop% = 2·L·(Ω/1000)·I / V · 100 ≤ maxVoltageDropPct. Pieces: smallest standard length ≥ L; L > 100 → 100s + remainder.
-- limitW = breakerAmps · voltage · continuousFactor (15 A → 1440 W; 20 A → 1920 W).
-- Timers: one per outlet with feeds. Splitters: outlet with > 1 feed → ceil(feeds / splitterOutlets).
-- Cord covers: one per feed whose cordPath crosses a walkway feature. GFCI adapters: one per used outlet with gfci=false.
-- Warnings (codes): incandescent, circuit-overload, circuit-high (>90% of limit), max-end-to-end (info: "needs N feeds"),
-  cord-walkway, no-gfci, interior-outlet, voltage-drop, long-cord (>100 ft), no-outlets, unassigned, and always
+  Greedy: feeds by watts desc → nearest outlet whose circuit stays ≤ limitW and whose plug-in gear stays ≤ its
+  limit; else nearest whose circuit fits; else nearest + overload warning.
+- Cord length (ft) = routed distance outlet→feed start (same plane: |Δu|+|Δv|; otherwise straight distance as
+  above × 1.3) × routingFactor + cordSlackFt. Pieces: smallest standard length ≥ L; L > 100 → 100s + remainder.
+  Gauge: smallest of 16/14/12 AWG whose ampacity (capped at the 15 A plug, `plugAmps`) ≥ I and
+  drop% = 2·L·(Ω/1000)·I / V · 100 ≤ maxVoltageDropPct, with L = the length of the pieces bought.
+- limitW = breakerAmps · voltage · continuousFactor (15 A → 1440 W; 20 A → 1920 W); continuousFactor is bounded
+  to (0, 1] (80 reads as 80%). Each outlet's cords share one receptacle, timer and stakes: ≤ plugAmps · V · factor.
+- Timers: one per outlet with feeds. Splitters (chained from the timer socket): outlet with n > 1 feeds →
+  ceil((n − 1) / (splitterOutlets − 1)).
+- Cord covers: one per feed whose cordPath crosses a walkway feature, or whose same-wall route passes a traced door
+  or a walkway meeting that wall. GFCI adapters: one per used outlet with gfci=false.
+- Warnings (codes): incandescent, circuit-overload, circuit-high (>90% of limit), outlet-overload, timer-tungsten,
+  many-cords (> 6 cords at one outlet), continuous-factor, max-end-to-end (info: "needs N feeds"), fed-from-middle
+  (info), cord-walkway, cord-doorway, no-gfci, interior-outlet, voltage-drop, long-cord (>100 ft), cord-ampacity,
+  cord-unknown, no-outlets, unassigned, outlet-no-circuit, outlet-missing, and always
   `disclaimer` (info): "This is a planning estimate, not an electrical inspection. ..."
 
 ### 5.8 bom
