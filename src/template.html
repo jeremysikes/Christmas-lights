@@ -1,0 +1,120 @@
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>LightPlan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Big+Shoulders+Display:wght@700;800&family=JetBrains+Mono:wght@400;600&display=swap">
+<!-- @@STYLES -->
+<div id="lp-app" class="lp-app" data-sheet="half" data-step="1" data-mode="select">
+  <header class="topbar">
+    <div class="brand" aria-label="LightPlan">
+      <span class="brand-mark" data-icon="bulb"></span>
+      <span class="brand-name" aria-hidden="true">LightPlan</span>
+    </div>
+    <div class="project-name">
+      <label class="sr-only" for="project-name">Plan name</label>
+      <input id="project-name" type="text" placeholder="Name this plan" autocomplete="off" spellcheck="false" maxlength="120">
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-undo" class="icon-btn" type="button" aria-label="Undo" title="Undo" disabled><span data-icon="undo"></span></button>
+      <button id="btn-redo" class="icon-btn" type="button" aria-label="Redo" title="Redo" disabled><span data-icon="redo"></span></button>
+      <div class="menu-wrap">
+        <button id="btn-menu" class="icon-btn" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="app-menu" aria-label="Menu" title="Menu"><span data-icon="more"></span></button>
+        <div id="app-menu" class="menu" role="menu" aria-label="Plan menu" hidden>
+          <button type="button" role="menuitem" data-menu="new-photo"><span data-icon="image"></span>New from photo</button>
+          <button type="button" role="menuitem" data-menu="open"><span data-icon="folder"></span>Open project</button>
+          <button type="button" role="menuitem" data-menu="save"><span data-icon="download"></span>Save project</button>
+          <div class="menu-sep" role="separator"></div>
+          <button type="button" role="menuitem" data-menu="start-over" class="danger"><span data-icon="trash"></span>Start over</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <nav class="stepbar" aria-label="Planning steps">
+    <ol id="stepbar-list">
+      <li><button class="step" type="button" data-step="1"><span class="step-num">1</span><span class="step-label">Upload</span><span class="step-badge" hidden></span></button></li>
+      <li><button class="step" type="button" data-step="2"><span class="step-num">2</span><span class="step-label">Calibrate</span><span class="step-badge" hidden></span></button></li>
+      <li><button class="step" type="button" data-step="3"><span class="step-num">3</span><span class="step-label">Trace</span><span class="step-badge" hidden></span></button></li>
+      <li><button class="step" type="button" data-step="4"><span class="step-num">4</span><span class="step-label">Design</span><span class="step-badge" hidden></span></button></li>
+      <li><button class="step" type="button" data-step="5"><span class="step-num">5</span><span class="step-label">Power</span><span class="step-badge" hidden></span></button></li>
+      <li><button class="step" type="button" data-step="6"><span class="step-num">6</span><span class="step-label">Review</span><span class="step-badge" hidden></span></button></li>
+    </ol>
+  </nav>
+
+  <div class="workspace">
+    <main id="stage" class="stage" aria-label="Photo and light layout">
+      <div id="viewport" class="viewport-host"></div>
+
+      <div id="empty-state" class="empty-state" hidden>
+        <div class="empty-card">
+          <span class="empty-icon" data-icon="house"></span>
+          <h2>Start with a photo of the house</h2>
+          <p>Stand across the street and fit the whole front of the house in the picture, or drop a photo here.</p>
+          <div class="btn-row center">
+            <button type="button" class="btn primary" data-pick="file"><span data-icon="image"></span><span>Choose photo</span></button>
+            <button type="button" class="btn" data-pick="camera"><span data-icon="camera"></span><span>Take photo</span></button>
+          </div>
+          <button type="button" class="btn ghost" data-pick="sample"><span data-icon="house"></span><span>Use the sample house</span></button>
+        </div>
+      </div>
+
+      <div class="stage-top">
+        <div id="hintbar" class="hintbar" role="status" hidden>
+          <p class="hint-line"><span id="hint-text"></span> <span id="hint-count" class="hint-count num" hidden></span></p>
+          <div class="hint-actions">
+            <button id="hint-undo" type="button" class="btn small">Undo point</button>
+            <button id="hint-cancel" type="button" class="btn small">Cancel</button>
+            <button id="hint-finish" type="button" class="btn small primary">Finish</button>
+          </div>
+        </div>
+        <div id="sample-banner" class="sample-banner" hidden>
+          <span class="banner-icon" data-icon="house"></span>
+          <p id="sample-banner-text">This is a sample house, already measured and traced. Use your own photo to plan your house.</p>
+          <div class="banner-actions">
+            <button type="button" class="btn small primary" data-pick="file">Use my photo</button>
+            <button id="banner-close" type="button" class="icon-btn small" aria-label="Hide this note" title="Hide this note"><span data-icon="close"></span></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="canvas-controls zoom-controls" role="toolbar" aria-label="Zoom">
+        <button id="ctl-zoom-in" class="ctl" type="button" aria-label="Zoom in" title="Zoom in"><span data-icon="zoomIn"></span></button>
+        <button id="ctl-zoom-out" class="ctl" type="button" aria-label="Zoom out" title="Zoom out"><span data-icon="zoomOut"></span></button>
+        <button id="ctl-fit" class="ctl" type="button" aria-label="Fit the photo" title="Fit the photo"><span data-icon="fit"></span></button>
+      </div>
+      <div class="canvas-controls view-controls" role="toolbar" aria-label="View">
+        <button id="ctl-night" class="ctl" type="button" aria-pressed="true" aria-label="Night preview"><span data-icon="moon"></span></button>
+        <button id="ctl-twinkle" class="ctl" type="button" aria-pressed="false" aria-label="Twinkle"><span data-icon="sparkle"></span></button>
+        <button id="ctl-overlay" class="ctl" type="button" aria-pressed="true" aria-label="Tracing overlay"><span data-icon="layers"></span></button>
+        <button id="ctl-labels" class="ctl" type="button" aria-pressed="true" aria-label="Length labels"><span data-icon="tag"></span></button>
+      </div>
+
+      <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+      <div id="busy" class="busy" role="status" hidden><span class="spinner" aria-hidden="true"></span><span id="busy-text">Working…</span></div>
+      <div id="drop-overlay" class="drop-overlay" hidden>
+        <div class="drop-card"><span data-icon="image"></span><p>Drop the photo (or a saved project) to open it</p></div>
+      </div>
+    </main>
+
+    <aside id="panel" class="panel" aria-label="Step details">
+      <button id="sheet-handle" class="sheet-handle" type="button" aria-label="Change the panel size"><span class="grip" aria-hidden="true"></span></button>
+      <div id="panel-root" class="panel-root"><p class="panel-loading">Loading LightPlan…</p></div>
+    </aside>
+  </div>
+
+  <div id="dialog-backdrop" class="dialog-backdrop" hidden>
+    <div id="dialog" class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-body">
+      <h2 id="dialog-title"></h2>
+      <p id="dialog-body"></p>
+      <div class="dialog-actions">
+        <button id="dialog-cancel" type="button" class="btn">Cancel</button>
+        <button id="dialog-confirm" type="button" class="btn primary">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <input id="file-input" type="file" accept="image/*" hidden>
+  <input id="camera-input" type="file" accept="image/*" capture="environment" hidden>
+  <input id="json-input" type="file" accept=".json,application/json" hidden>
+</div>
+<!-- @@SCRIPTS -->
