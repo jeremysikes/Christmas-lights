@@ -546,7 +546,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         const unit = items[m[0]].run.unit;
         const what = runIds.length > 1 ? 'these connected runs use' : 'this run uses';
         warn('info', 'max-end-to-end',
-          `${chainLabels.get(chainId)} needs ${opt.feeds.length} feeds: ${(product && product.name) || items[m[0]].run.productName} allows only ` +
+          `${chainLabels.get(chainId)} ${runIds.length > 1 ? 'need' : 'needs'} ${opt.feeds.length} feeds: ${(product && product.name) || items[m[0]].run.productName} allows only ` +
           `${fmtInt(opt.maxE)} ${unitWord(unit, opt.maxE)} end to end and ${what} ${fmtInt(units)}.`,
           { featureId: items[m[0]].feature.id });
       }

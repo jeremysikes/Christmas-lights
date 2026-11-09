@@ -868,8 +868,11 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 
 /* ---------------------------------------------------------------- small phones */
-@media (max-width: 389px) {
+/* Phones: the bulb mark alone stands for the brand so the plan name has room to be read. */
+@media (max-width: 479px) {
   .brand-name { display: none; }
+}
+@media (max-width: 389px) {
   .row-2 { grid-template-columns: minmax(0, 1fr); }
   .row-2.align-center { grid-template-columns: auto minmax(0, 1fr); }
   .chip-grid { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }

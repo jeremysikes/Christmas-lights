@@ -1,9 +1,11 @@
 // LightPlan end-to-end smoke test (Playwright + Chromium).
 //
 // Usage:
-//   npm run e2e                          build dist/ and run every pass (phone, desktop, desktop dark)
+//   npm run e2e                          build dist/ and run every pass (phone, desktop, desktop dark,
+//                                        blocked storage)
 //   node tests/e2e/smoke.mjs             run against the existing dist/lightplan.html
-//   node tests/e2e/smoke.mjs --only=phone        one pass: phone | desktop | dark
+//   node tests/e2e/smoke.mjs --only=phone        one pass: phone | desktop | dark | storage
+//                                                (storage = localStorage and IndexedDB blocked)
 //
 // It opens dist/lightplan.html over file://, drives the real app the way a person would
 // (step bar, tracing taps on the canvas, typed overrides, undo/redo, outlet placement,
@@ -33,7 +35,7 @@ const PASSES = {
 };
 
 const onlyArg = process.argv.find((a) => a.startsWith('--only='));
-const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES);
+const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES).concat('storage');
 
 if (!fs.existsSync(APP)) {
   console.error('dist/lightplan.html is missing. Run "node build.js" first (npm run e2e does both).');
@@ -361,11 +363,43 @@ async function runPass(browser, name) {
   return t;
 }
 
+// ------------------------------------------------------------------ blocked storage
+// The viewer may block localStorage and IndexedDB. The app must still start and work.
+async function runBlockedStorage(browser) {
+  const t = new Check('blocked-storage');
+  console.log('\n== blocked storage 390x844');
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
+  await context.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+  await context.addInitScript(() => {
+    const deny = () => { throw new DOMException('Storage is blocked', 'SecurityError'); };
+    Object.defineProperty(window, 'localStorage', { get: deny, configurable: true });
+    Object.defineProperty(window, 'indexedDB', { get: deny, configurable: true });
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push('page error: ' + e.message));
+  try {
+    await page.goto(URL);
+    await waitForApp(page);
+    const info = await projectInfo(page);
+    t.ok(info.features > 0, 'the sample opens with storage blocked');
+    await page.click('button.step[data-step="6"]');
+    await sleep(400);
+    t.ok(await page.locator('.bom-row').count() > 0, 'the shopping list still renders');
+  } catch (e) {
+    t.ok(false, 'unexpected error: ' + (e && e.message ? e.message.split('\n')[0] : e));
+  }
+  t.ok(errors.length === 0, 'no page errors' + (errors.length ? ': ' + errors.slice(0, 3).join(' | ') : ''));
+  await context.close();
+  return t;
+}
+
 // ------------------------------------------------------------------ main
 
 const browser = await chromium.launch();
 const results = [];
 for (const name of selected) {
+  if (name === 'storage') { results.push(await runBlockedStorage(browser)); continue; }
   if (!PASSES[name]) { console.error('unknown pass ' + name); process.exitCode = 2; continue; }
   results.push(await runPass(browser, name));
 }

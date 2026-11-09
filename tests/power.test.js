@@ -594,3 +594,14 @@ test('integration: a real measure.measureProject result flows through design and
   close(pw.circuits[0].loadW, 9.6 * 2 + 4.8, 1e-9);
   assert.deepEqual(codes(pw), ['disclaimer']);
 });
+
+test('a chain of several runs that needs more than one feed reads "need" (plural)', () => {
+  // Two adjacent incandescent C9 eaves, 5 + 5 strings: they chain and need 4 feeds of at most 3 strings.
+  const a = feature('ft_a', 'roofline', [F(10, 20), F(110, 20)], { label: 'Front eave', productId: 'c9-incan' });
+  const b = feature('ft_b', 'roofline', [F(110, 20), F(210, 20)], { label: 'Garage eave', productId: 'c9-incan' });
+  const pw = plan(project({ features: [a, b], outlets: [outlet('out_a', F(5, 1.5))] })).power;
+  assert.equal(pw.chains.length, 1);
+  const info = byCode(pw, 'max-end-to-end');
+  assert.equal(info.length, 1);
+  assert.match(info[0].message, /^Front eave and Garage eave need \d feeds: .* these connected runs use \d+\.$/);
+});
