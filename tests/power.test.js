@@ -541,7 +541,8 @@ test('warnings are ordered danger, warn, info and every one has a level, code an
   for (let i = 1; i < pw.warnings.length; i++) assert.ok(order[pw.warnings[i - 1].level] <= order[pw.warnings[i].level]);
   for (const w of pw.warnings) assert.ok(w.level && w.code && typeof w.message === 'string' && w.message.length > 10);
   // the 4th feed starts 203 ft along the eave, far from the only outlet → long cord too
-  assert.deepEqual([...new Set(codes(pw))].sort(), ['circuit-overload', 'disclaimer', 'incandescent', 'long-cord', 'max-end-to-end', 'no-gfci']);
+  // 1,750 W through one outlet and timer also overloads the 15 A plug-in gear and the timer's incandescent rating.
+  assert.deepEqual([...new Set(codes(pw))].sort(), ['circuit-overload', 'disclaimer', 'incandescent', 'long-cord', 'max-end-to-end', 'no-gfci', 'outlet-overload', 'timer-tungsten']);
 });
 
 // ------------------------------------------------------------------ integration with measure.js
@@ -645,4 +646,33 @@ test('cord gauge and voltage drop are checked on the cord actually bought, not t
   assert.equal(b.dropOk, true);
   assert.equal(b.lengthFt, 82.8, 'lengthFt stays the length needed');
   assert.equal(b.boughtFt, 100);
+});
+
+test('plug-in cords, timers, power stakes and outlets are 15 A devices: cords cap at 15 A, outlets at 1,440 W', () => {
+  // A cord with a 15 A plug is never good for 19 A, whatever its gauge.
+  const a = power.sizeCord(30, 2300, lib.config.power);
+  assert.equal(a.ampacityOk, false);
+  assert.equal(a.ok, false);
+  assert.equal(power.sizeCord(30, 1900, lib.config.power).ampacityOk, false, '15.8 A is over a 15 A plug');
+  assert.equal(power.sizeCord(10, 1800, lib.config.power).ampacityOk, true, '15 A is within a 15 A plug');
+  // 200 ft of incandescent C9 on a 20 A circuit, one outlet: 9 hung strings = 1,575 W through one timer and stake.
+  const eave = feature('ft_eave', 'roofline', [F(10, 20), F(210, 20)], { label: 'Front eave', productId: 'c9-incan' });
+  const one = plan(project({ features: [eave], outlets: [outlet('out_a', F(110, 1.5), { label: 'Porch outlet' })], circuits: [circuit('cir_1', 20)] })).power;
+  assert.equal(one.circuits[0].overloaded, false, 'the 20 A circuit itself is fine');
+  const over = byCode(one, 'outlet-overload');
+  assert.equal(over.length, 1);
+  assert.equal(over[0].level, 'danger');
+  assert.equal(over[0].outletId, 'out_a');
+  assert.match(over[0].message, /^Porch outlet would feed [\d,]+ W through one outlet, timer and power stake, over the 1,440 W safe limit for 15 A plug-in gear \(80%\)\. Move a cord to another outlet/);
+  assert.equal(one.outlets[0].limitW, 1440);
+  assert.equal(one.outlets[0].overloaded, true);
+  const tung = byCode(one, 'timer-tungsten');
+  assert.equal(tung.length, 1);
+  assert.match(tung[0].message, /incandescent/);
+  // A second outlet on the same circuit takes the feeds that would overload the first one.
+  const two = plan(project({ features: [eave], circuits: [circuit('cir_1', 20)],
+    outlets: [outlet('out_a', F(110, 1.5), { label: 'Porch outlet' }), outlet('out_b', F(120, 1.5), { label: 'Side outlet' })] })).power;
+  assert.deepEqual(byCode(two, 'outlet-overload'), []);
+  assert.ok(two.outlets.every((o) => o.watts <= 1440), JSON.stringify(two.outlets.map((o) => o.watts)));
+  assert.ok(two.outlets.every((o) => o.feedIds.length > 0), 'both outlets are used');
 });

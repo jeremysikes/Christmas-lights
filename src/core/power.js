@@ -16,7 +16,13 @@
  * Deviations from SPEC §5.7 (documented signature and shapes unchanged):
  *  - Extra warning codes: cord-unknown (no scale to size a cord), outlet-no-circuit (used outlet has no
  *    circuit; assumed to be alone on a 15 A breaker), outlet-missing (params.outletId names an outlet
- *    that does not exist), cord-ampacity (a feed draws more than a 12 AWG cord can carry).
+ *    that does not exist), cord-ampacity (a feed draws more than a plug-in cord can carry: gauge ampacity
+ *    capped at the 15 A plug, config.power.plugAmps), outlet-overload (danger: the cords at one outlet share
+ *    one receptacle, timer and power stake, all 15 A gear, so an outlet carries at most plugAmps × V ×
+ *    continuous factor = 1,440 W), timer-tungsten (more incandescent watts through one timer than
+ *    config.power.timerTungstenW, 1,250 W by default).
+ *  - Outlet choice also keeps each outlet within its plug-in limit when another outlet can take the feed.
+ *    Outlet objects carry extra limitW, overloaded and incandescentW fields.
  *  - Feeds only consider outlets on the same photo (unless forced with params.outletId); feeds with no
  *    outlet on their photo stay unassigned and get the 'unassigned' warning.
  *  - Feed objects carry an extra `cordUnknown: bool`; cord is null when there is no outlet or the length
@@ -34,6 +40,8 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
   const CROSS_PLANE_FACTOR = 1.3;     // straight-line cord distance between planes → routed distance
   const ASSUMED_BREAKER_AMPS = 15;    // outlets with no circuit are assumed to sit alone on a 15 A breaker
   const DEFAULT_CONTINUOUS_FACTOR = 0.8; // the 80% rule for continuous loads (ASSUMPTIONS.md #6)
+  const DEFAULT_PLUG_AMPS = 15;       // plug-in cords, timers, power stakes and duplex outlets are 15 A devices
+  const DEFAULT_TIMER_TUNGSTEN_W = 1250; // typical outdoor timer rating for incandescent (tungsten) loads
   const DISCLAIMER = 'This is a planning estimate, not an electrical inspection. Check your breaker sizes ' +
     'and what else shares each circuit, use outdoor-rated cords and GFCI protection, and ask a licensed ' +
     'electrician before adding outlets or circuits.';
@@ -96,8 +104,9 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
   }
 
   /**
-   * Thinnest gauge (16 → 14 → 12 AWG) whose ampacity covers the current and whose voltage drop stays within
-   * maxVoltageDropPct. When none qualifies, 12 AWG is returned with ok:false.
+   * Thinnest gauge (16 → 14 → 12 AWG) whose ampacity (capped at the 15 A plug rating, cfg.plugAmps) covers the
+   * current and whose voltage drop stays within maxVoltageDropPct. When none qualifies, 12 AWG is returned
+   * with ok:false.
    * Returns {awg, voltageDropPct, ok, ampacityOk, dropOk}.
    */
   function chooseCordGauge(lengthFt, amps, cfg) {
@@ -106,16 +115,19 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     const maxDrop = pos(c.maxVoltageDropPct) || 3;
     const L = Math.max(0, Number.isFinite(lengthFt) ? lengthFt : 0);
     const I = Math.max(0, Number.isFinite(amps) ? amps : 0);
+    // A plug-in extension cord ends in a 15 A (NEMA 5-15) plug, so no gauge carries more than plugAmps.
+    const plugA = pos(c.plugAmps) || DEFAULT_PLUG_AMPS;
+    const capacity = (g) => Math.min(g.ampacity, plugA);
     const gauges = catalog.CORD_GAUGES.slice().sort((a, b) => b.awg - a.awg); // 16, 14, 12
     for (const g of gauges) {
       const drop = voltageDropPct(L, I, g.ohmsPer1000ft, V);
-      if (g.ampacity >= I && drop <= maxDrop + 1e-9) {
+      if (capacity(g) >= I && drop <= maxDrop + 1e-9) {
         return { awg: g.awg, voltageDropPct: round(drop, 2), ok: true, ampacityOk: true, dropOk: true };
       }
     }
     const thick = gauges[gauges.length - 1];
     const drop = voltageDropPct(L, I, thick.ohmsPer1000ft, V);
-    return { awg: thick.awg, voltageDropPct: round(drop, 2), ok: false, ampacityOk: thick.ampacity >= I, dropOk: drop <= maxDrop + 1e-9 };
+    return { awg: thick.awg, voltageDropPct: round(drop, 2), ok: false, ampacityOk: capacity(thick) >= I, dropOk: drop <= maxDrop + 1e-9 };
   }
 
   /** Purchasable cord pieces: the smallest standard length ≥ L; above 100 ft, 100 ft cords plus the remainder. */
@@ -311,6 +323,14 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       if (!limits.has(k)) { limits.set(k, limitW(ASSUMED_BREAKER_AMPS, V, factor)); baseLoads.set(k, 0); }
     }
     const outletVoltage = (o) => circuitVoltage(o && circuitById.get(o.circuitId));
+    // Every cord at an outlet goes through one receptacle, one timer and the power stakes: 15 A plug-in gear.
+    const plugAmps = pos(cfg.plugAmps) || DEFAULT_PLUG_AMPS;
+    const outletLimit = (o) => limitW(plugAmps, outletVoltage(o), factor);
+    const socketKey = (o) => 'socket:' + o.id;
+    const addLoad = (map, o, w) => {
+      map.set(circuitKey(o), (map.get(circuitKey(o)) || 0) + w);
+      map.set(socketKey(o), (map.get(socketKey(o)) || 0) + w);
+    };
 
     // ---- powered runs: measured runs with a quantity and traceable geometry
     const items = [];
@@ -481,13 +501,18 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
           return ax - ay || cmpStr(x.outlet.id, y.outlet.id);
         });
     }
-    const fits = (loads, o, watts) => (loads.get(circuitKey(o)) || 0) + watts <= limits.get(circuitKey(o)) + 1e-9;
-    /** Greedy outlet choice: forced outlet → nearest outlet whose circuit stays within its limit → nearest. */
+    const circuitFits = (loads, o, watts) => (loads.get(circuitKey(o)) || 0) + watts <= limits.get(circuitKey(o)) + 1e-9;
+    const outletFits = (loads, o, watts) => (loads.get(socketKey(o)) || 0) + watts <= outletLimit(o) + 1e-9;
+    /**
+     * Greedy outlet choice: forced outlet → nearest outlet whose circuit and plug-in gear both stay within
+     * their limits → nearest whose circuit does → nearest.
+     */
     function pickOutlet(feed, loads) {
       if (feed.forcedOutlet) return outletById.get(feed.forcedOutlet);
       const cands = candidates(feed);
       if (!cands.length) return null;
-      const ok = cands.find((c) => fits(loads, c.outlet, feed.watts));
+      const ok = cands.find((c) => circuitFits(loads, c.outlet, feed.watts) && outletFits(loads, c.outlet, feed.watts)) ||
+        cands.find((c) => circuitFits(loads, c.outlet, feed.watts));
       return (ok || cands[0]).outlet;
     }
     const cordLen = (o, feed) => {
@@ -523,7 +548,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       // Tentatively load circuits so later chains see what is already planned.
       for (const f of best.feeds) {
         const o = pickOutlet(f, tentative);
-        if (o) tentative.set(circuitKey(o), (tentative.get(circuitKey(o)) || 0) + f.watts);
+        if (o) addLoad(tentative, o, f.watts);
       }
     }
 
@@ -592,7 +617,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       if (!o) continue;
       feed.outletId = o.id;
       feed.circuitId = o.circuitId && circuitById.has(o.circuitId) ? o.circuitId : null;
-      loads.set(circuitKey(o), (loads.get(circuitKey(o)) || 0) + feed.watts);
+      addLoad(loads, o, feed.watts);
       const r = route(o, feed.start);
       feed.cordPath = r.path.map((p) => p.slice());
       if (r.lengthFt === null) {
@@ -640,11 +665,15 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     const outletsOut = outlets.map((o) => {
       const fs = feedsOut.filter((f) => f.outletId === o.id);
       const n = fs.length;
+      const w = round(fs.reduce((s, f) => s + f.watts, 0), 2);
+      const lim = outletLimit(o);
       return {
         id: o.id, label: o.label || 'Outlet', circuitId: o.circuitId && circuitById.has(o.circuitId) ? o.circuitId : null,
-        feedIds: fs.map((f) => f.id), watts: round(fs.reduce((s, f) => s + f.watts, 0), 2),
+        feedIds: fs.map((f) => f.id), watts: w,
         needsSplitter: n > 1, splitters: n > 1 ? Math.ceil(n / splitterOutlets) : 0,
         timer: n > 0 && cfg.timerPerOutlet !== false,
+        limitW: lim, overloaded: w > lim + 1e-9,
+        incandescentW: round(fs.filter((f) => f._incandescent).reduce((s, f) => s + f.watts, 0), 2),
       };
     });
     const circuitsOut = circuits.map((c) => {
@@ -705,6 +734,22 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
           'Keep other appliances off that circuit while the lights are on.', ids);
       }
     }
+    // Outlets: every cord at one outlet shares its receptacle, timer and power stakes (15 A plug-in gear).
+    const tungstenW = pos(cfg.timerTungstenW) || DEFAULT_TIMER_TUNGSTEN_W;
+    for (const o of outletsOut) {
+      if (!o.feedIds.length) continue;
+      if (o.overloaded) {
+        const gear = o.timer ? (o.splitters > 0 ? 'outlet, timer and power stake' : 'outlet and timer') : (o.splitters > 0 ? 'outlet and power stake' : 'outlet');
+        warn('danger', 'outlet-overload',
+          `${o.label} would feed ${fmtInt(o.watts)} W through one ${gear}, over the ${fmtInt(o.limitW)} W safe limit for ${fmtInt(plugAmps)} A plug-in gear ` +
+          `(${fmtInt(factor * 100)}%). Move a cord to another outlet${o.incandescentW > 0 ? ' or switch to LED' : ''}.`, { outletId: o.id });
+      }
+      if (o.timer && o.incandescentW > tungstenW + 1e-9) {
+        warn('warn', 'timer-tungsten',
+          `${o.label} would run ${fmtInt(o.incandescentW)} W of incandescent lights through one timer. Many outdoor timers are rated about ` +
+          `${fmtInt(tungstenW)} W for incandescent loads: check the timer's label, use a heavy-duty timer, or switch to LED.`, { outletId: o.id });
+      }
+    }
     // The safe-share setting: say how an odd value was read, and flag a share above the 80% rule.
     if (cf.reading === 'percent') {
       warn('warn', 'continuous-factor', `The safe share of the breaker is set to ${fmt1(cf.raw)}, so LightPlan reads it as ${fmt1(factor * 100)}%. Enter it as a fraction of 1 (for example 0.8).`);
@@ -741,7 +786,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       }
       if (!f.cord) continue;
       if (!f.cord.ampacityOk) {
-        warn('danger', 'cord-ampacity', `The feed at the ${f.start.label} draws ${fmt1(f.watts / outletVoltage(outletById.get(f.outletId)))} A, more than a 12 AWG cord can carry. Split it across more outlets.`, { featureId: fid, outletId: f.outletId });
+        warn('danger', 'cord-ampacity', `The feed at the ${f.start.label} draws ${fmt1(f.watts / outletVoltage(outletById.get(f.outletId)))} A, more than a plug-in extension cord can carry (${fmtInt(plugAmps)} A plug). Split it into more feeds.`, { featureId: fid, outletId: f.outletId });
       } else if (!f.cord.dropOk) {
         const need = f.cord.boughtFt > f.cord.lengthFt + 0.5 ? ` (about ${fmtInt(f.cord.lengthFt)} ft needed)` : '';
         warn('warn', 'voltage-drop', `The ${fmtInt(f.cord.boughtFt)} ft cord to the ${f.start.label}${need} would lose ${fmt1(f.cord.voltageDropPct)}% of its voltage even with 12 AWG cord (limit ${fmt1(cfg.maxVoltageDropPct)}%). Use a closer outlet or split the run.`, { featureId: fid, outletId: f.outletId });

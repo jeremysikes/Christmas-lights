@@ -97,7 +97,7 @@ LP.define('catalog', [], function () {
     tree: { defaultDiameterIn: 10, spiralSpacingIn: 4, canopyLightsPerFtHeight: 100 },
     column: { defaultDiameterIn: 8, spiralSpacingIn: 6 },
     stakes: { spacingIn: 12, packSize: 25 },
-    power: { voltage: 120, continuousFactor: 0.8, maxVoltageDropPct: 3, cordSlackFt: 4, routingFactor: 1.15, chainGapFt: 3, outletHeightFt: 1.5, timerPerOutlet: true, splitterOutlets: 3 },
+    power: { voltage: 120, continuousFactor: 0.8, maxVoltageDropPct: 3, cordSlackFt: 4, routingFactor: 1.15, chainGapFt: 3, outletHeightFt: 1.5, timerPerOutlet: true, splitterOutlets: 3, plugAmps: 15, timerTungstenW: 1250 },
     labor: { ftPerHour: 40, setupHours: 1, hoursPerTree: 0.75, hoursPerBush: 0.25 },
     refDisagreementWarnPct: 5,
     confidence: { highMin: 75, mediumMin: 50 },
