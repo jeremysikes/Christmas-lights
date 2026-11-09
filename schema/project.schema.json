@@ -1229,9 +1229,15 @@
     "product": {
       "type": "object",
       "required": [
-        "id"
+        "id",
+        "category",
+        "unit",
+        "stringLengthFt",
+        "wattsPerUnit",
+        "maxEndToEnd",
+        "price"
       ],
-      "description": "A light product (catalog Product). Only id is required here; the planner ignores products with missing data and says so.",
+      "description": "A light product (catalog Product). Import refuses a product without a valid category, unit, lit length, watts, end-to-end limit or price; the planner also skips products whose data it cannot use and says so.",
       "properties": {
         "id": {
           "type": "string",
@@ -1282,6 +1288,7 @@
         },
         "stringLengthFt": {
           "type": "number",
+          "exclusiveMinimum": 0,
           "description": "Lit length per unit in feet."
         },
         "leadFt": {
@@ -1294,10 +1301,12 @@
         },
         "wattsPerUnit": {
           "type": "number",
+          "minimum": 0,
           "description": "Watts per string/net/set, or per foot when unit is \"foot\"."
         },
         "maxEndToEnd": {
           "type": "number",
+          "exclusiveMinimum": 0,
           "description": "Most units that may be connected end to end on one feed."
         },
         "coverageSqFt": {

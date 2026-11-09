@@ -156,7 +156,7 @@ LP.define('bom', ['catalog'], function (catalog) {
       g.uses.push((run.label || 'A run') + ' (' + fmtNum(qty, 2) + ')');
     }
     for (const g of groups.values()) {
-      const priceNote = Number.isFinite(g.price) ? '' : ' No price in the product library.';
+      const priceNote = Number.isFinite(g.price) && g.price >= 0 ? '' : ' No price in the product library.';
       addLine('lights', g.sku, g.name, roundQty(g.qty), g.unit, g.price, 'For ' + shortList(g.uses, 6).join(', ') + '.' + priceNote);
     }
 

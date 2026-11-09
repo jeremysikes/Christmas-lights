@@ -475,3 +475,26 @@ test('unknown fields survive normalize, export and import on every nested object
   bad.settings.wastePct = 'abc';
   assert.equal(schema.normalizeProject(bad).settings.wastePct, 10);
 });
+
+test('importProject checks custom products: bad watts, price, lengths, unit or category are refused with a plain message', () => {
+  const withProducts = (edit) => {
+    const raw = sampleProject();
+    raw.library.products = clone(catalog.DEFAULT_PRODUCTS);
+    edit(raw.library.products.find((p) => p.id === 'c9-led'));
+    return raw;
+  };
+  assert.equal(schema.importProject(withProducts(() => {})).project.library.products.length, catalog.DEFAULT_PRODUCTS.length);
+  const cases = [
+    [(p) => { p.wattsPerUnit = 'abc'; }, /"wattsPerUnit" must be a number of 0 or more/],
+    [(p) => { p.price = -5; }, /"price" must be a number of 0 or more/],
+    [(p) => { p.stringLengthFt = 0; }, /"stringLengthFt" must be a number above 0/],
+    [(p) => { delete p.maxEndToEnd; }, /"maxEndToEnd" must be a number above 0/],
+    [(p) => { p.unit = 'yard'; }, /"unit" must be one of/],
+    [(p) => { p.category = 'spaceship'; }, /"category" must be one of/],
+  ];
+  for (const [edit, re] of cases) {
+    const raw = withProducts(edit);
+    assert.throws(() => schema.importProject(raw), (e) => re.test(e.message) && /C9 LED string/.test(e.message), String(re));
+    assert.equal(schema.validateProject(schema.normalizeProject(raw)).ok, false);
+  }
+});

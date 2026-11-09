@@ -22,7 +22,12 @@
  *    closest to it: LED before incandescent, then the same category, then the same unit, then library order
  *    (not simply the first suitable product, which put C9 incandescent on windows). The run gets a warning
  *    naming the default that is unavailable and the product used instead.
- *  - Extra exports: resolveProduct(feature, library) and clipsFor(feature, product, lengthFt, config).
+ *  - Products with data the planner cannot use (watts per unit not a number of 0 or more, unknown unit, no
+ *    end-to-end limit, no lit length / coverage / stake spacing for their unit) are skipped like turned-off
+ *    products, with a warning, instead of being planned at 0 W or as unlimited. A product without a valid
+ *    price is still planned, with a warning that the shopping list prices it at $0.
+ *  - Extra exports: resolveProduct(feature, library), clipsFor(feature, product, lengthFt, config) and
+ *    productDataProblem(product).
  */
 LP.define('design', ['catalog'], function (catalog) {
   'use strict';
@@ -66,6 +71,23 @@ LP.define('design', ['catalog'], function (catalog) {
     return catalog.getLibrary(project);
   }
   function isEnabled(p) { return !!p && p.enabled !== false; }
+  const UNITS = ['string', 'net', 'set', 'foot'];
+  /**
+   * The first thing the planner needs from a product but cannot use (in words), or null when it is usable.
+   * A product without valid watts would plan its runs at 0 W, and one without an end-to-end limit as unlimited,
+   * so such products are skipped (with a warning) rather than planned silently.
+   */
+  function productDataProblem(p) {
+    if (!isObj(p)) return 'data';
+    if (!(Number.isFinite(p.wattsPerUnit) && p.wattsPerUnit >= 0)) return 'watts per unit';
+    if (!UNITS.includes(p.unit)) return 'unit';
+    if (!(Number.isFinite(p.maxEndToEnd) && p.maxEndToEnd > 0)) return 'end-to-end limit';
+    if (p.unit === 'string' && !pos(p.stringLengthFt)) return 'lit length';
+    if (p.unit === 'net' && !pos(p.coverageSqFt)) return 'coverage area';
+    if (p.unit === 'set' && !(pos(p.stakesPerSet) && (pos(p.stakeSpacingIn) || pos(p.bulbSpacingIn)))) return 'stake spacing';
+    return null;
+  }
+  const isUsable = (p) => isEnabled(p) && !productDataProblem(p);
 
   // ---------------------------------------------------------------- products
   /** Enabled products whose suitableFor list includes the feature type, in library order. */
@@ -80,7 +102,7 @@ LP.define('design', ['catalog'], function (catalog) {
    * Turning off an LED product therefore never silently switches to its 12× hungrier incandescent twin.
    */
   function fallbackProduct(type, lib, ref) {
-    const list = suitableProducts(type, lib);
+    const list = suitableProducts(type, lib).filter((p) => !productDataProblem(p));
     if (!list.length) return null;
     const rank = (p) => {
       const tech = p.tech === 'incandescent' ? 3 : 0;
@@ -108,16 +130,16 @@ LP.define('design', ['catalog'], function (catalog) {
     let wantedProduct = null;
     if (wanted) {
       const p = catalog.getProduct(lib.products, wanted);
-      if (isEnabled(p)) return { product: p, source: 'feature', warnings };
+      if (isUsable(p)) return { product: p, source: 'feature', warnings };
       wantedProduct = p;
-      warnings.push(p
-        ? `${label}: ${p.name || wanted} is turned off in the product library, so the default product is used instead.`
-        : `${label}: the chosen product (${wanted}) is no longer in the product library, so the default product is used instead.`);
+      if (!p) warnings.push(`${label}: the chosen product (${wanted}) is no longer in the product library, so the default product is used instead.`);
+      else if (!isEnabled(p)) warnings.push(`${label}: ${p.name || wanted} is turned off in the product library, so the default product is used instead.`);
+      else warnings.push(`${label}: ${p.name || wanted} has no valid ${productDataProblem(p)} in the product library, so the default product is used instead.`);
     }
     const defaults = (lib.config && lib.config.typeDefaults) || {};
     const defId = typeof defaults[type] === 'string' && defaults[type] ? defaults[type] : null;
     const defProduct = defId ? catalog.getProduct(lib.products, defId) : null;
-    if (isEnabled(defProduct)) return { product: defProduct, source: 'typeDefault', warnings };
+    if (isUsable(defProduct)) return { product: defProduct, source: 'typeDefault', warnings };
     // The type default is off or missing: the stand-in should resemble it (or the catalog's default for the type).
     const ref = defProduct || (defId && catalog.getProduct(catalog.DEFAULT_PRODUCTS, defId)) || wantedProduct ||
       (FEATURE_TYPES[type] && catalog.getProduct(catalog.DEFAULT_PRODUCTS, FEATURE_TYPES[type].defaultProduct)) || null;
@@ -125,7 +147,8 @@ LP.define('design', ['catalog'], function (catalog) {
     if (fallback) {
       const what = PLURAL[type] || 'this feature';
       const name = fallback.name || fallback.id;
-      if (defProduct) warnings.push(`${defProduct.name || defId} is turned off in the product library, so ${name} is used for ${what} instead.`);
+      if (defProduct && !isEnabled(defProduct)) warnings.push(`${defProduct.name || defId} is turned off in the product library, so ${name} is used for ${what} instead.`);
+      else if (defProduct) warnings.push(`${defProduct.name || defId} has no valid ${productDataProblem(defProduct)} in the product library, so ${name} is used for ${what} instead.`);
       else if (defId) warnings.push(`The default product for ${what} (${defId}) is not in the product library, so ${name} is used instead.`);
       return { product: fallback, source: 'suitable', warnings };
     }
@@ -331,6 +354,10 @@ LP.define('design', ['catalog'], function (catalog) {
         clips: null, lightStakes: 0, method: methodGuess(ftype, product), detail: '', warnings: warnings.slice(),
         start: null, end: null, reversed: false, chainId: null, feedIds: [], outletId: null, circuitId: null,
       };
+      if (product && !(Number.isFinite(product.price) && product.price >= 0)) {
+        const shown = product.price === undefined ? '' : ` (${String(product.price)})`;
+        run.warnings.push(`${run.productName} has no valid price in the product library${shown}, so the shopping list prices it at $0. Fix it in the product library.`);
+      }
       if (product && Array.isArray(product.colors) && product.colors.length && !product.colors.includes(colors.mode)) {
         const modeLabel = (catalog.COLOR_MODES[colors.mode] && catalog.COLOR_MODES[colors.mode].label) || colors.mode;
         run.warnings.push(`${label}: ${run.productName} is not sold in ${modeLabel.toLowerCase()}. Pick another color or product.`);
@@ -386,5 +413,5 @@ LP.define('design', ['catalog'], function (catalog) {
     return 'linear';
   }
 
-  return { planRuns, suitableProducts, resolveProduct, clipsFor };
+  return { planRuns, suitableProducts, resolveProduct, clipsFor, productDataProblem };
 });

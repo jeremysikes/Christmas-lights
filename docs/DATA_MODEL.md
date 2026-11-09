@@ -80,7 +80,7 @@ Every field below is always present after `schema.normalizeProject` (factories f
 | `features` | Feature[] | Traced parts of the house that get lights. |
 | `outlets` | Outlet[] | Power outlets. |
 | `circuits` | Circuit[] | Breaker circuits. A new project has one: `Circuit 1`, 15 A. |
-| `library` | `{products, config}` | `products`: full replacement product list or null (catalog defaults). `config`: overrides deep-merged into `catalog.DEFAULT_CONFIG`, or null. |
+| `library` | `{products, config}` | `products`: full replacement product list or null (catalog defaults). Each product needs a known `category` and `unit`, `price` and `wattsPerUnit` of 0 or more, and `stringLengthFt` and `maxEndToEnd` above 0 (`validateProject` checks this, so a file cannot carry a product planned as 0 W or $0). `config`: overrides deep-merged into `catalog.DEFAULT_CONFIG`, or null. |
 | `pricing` | `{overrides: {sku: price}}` | Unit prices that replace library prices in the BOM, keyed by SKU. |
 | `quote` | Quote settings | Installer mode. |
 

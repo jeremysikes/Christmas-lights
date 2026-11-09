@@ -350,12 +350,19 @@ test('never throws on partial or bad input, and never mutates its inputs', () =>
   assert.equal(runOf(runs, 'nolabel').quantity, 1); // falls back to length × (1 + waste)
   // library omitted → defaults from the project
   assert.equal(design.planRuns(p, m).length, 2);
-  // broken product data (no lit length) → quantity 0 with a reason, no NaN
+  // broken product data (no lit length) → the product is skipped for a usable one, with a reason, no NaN
   const broken = catalog.deepClone(lib);
   broken.products.find((x) => x.id === 'c9-led').stringLengthFt = 0;
   const r = runOf(design.planRuns(p, m, broken), 'ok');
-  assert.equal(r.quantity, 0);
-  assert.match(r.warnings.join(' '), /has no lit length/);
+  assert.equal(r.productId, 'c7-led');
+  assert.ok(Number.isFinite(r.quantity) && r.quantity > 0 && Number.isFinite(r.watts));
+  assert.match(r.warnings.join(' '), /C9 LED string, 25 bulbs has no valid lit length/);
+  // nothing usable left for the type → quantity 0 with a reason, no NaN
+  for (const x of broken.products) if (x.suitableFor.includes('roofline')) x.stringLengthFt = 0;
+  const r0 = runOf(design.planRuns(p, m, broken), 'ok');
+  assert.equal(r0.quantity, 0);
+  assert.equal(r0.watts, 0);
+  assert.match(r0.warnings.join(' '), /no enabled product suits a roofline/);
 });
 
 test('bulbs always equal quantity × bulbs per unit', () => {
@@ -430,4 +437,28 @@ test('mini and rope lights on eaves, gutters, rakes and ridges still get clips; 
   }
   assert.equal(r('path-walk').lightStakes, 0, 'path-light sets bring their own stakes');
   assert.equal(r('net-eave').clips, null, 'a net is not clipped like a string');
+});
+
+test('products with missing or bad data are not planned with silent 0 W or $0: the planner skips or flags them', () => {
+  const broken = catalog.deepClone(lib);
+  broken.products.find((p) => p.id === 'c9-led').wattsPerUnit = 'abc';
+  const p = project([feature('eave', 'roofline', { label: 'Front eave' }), feature('pick', 'roofline', { label: 'Garage eave', productId: 'c9-led' })]);
+  const m = measured([linearFm('eave', 'roofline', 34), linearFm('pick', 'roofline', 20)]);
+  const runs = design.planRuns(p, m, broken);
+  for (const r of runs) {
+    assert.equal(r.productId, 'c7-led', r.label + ': a product without watts is not planned at 0 W');
+    assert.ok(r.watts > 0);
+  }
+  assert.match(runOf(runs, 'eave').warnings.join(' '), /C9 LED string, 25 bulbs has no valid watts per unit in the product library, so C7 LED string, 25 bulbs is used for eaves instead/);
+  assert.match(runOf(runs, 'pick').warnings.join(' '), /Garage eave: C9 LED string, 25 bulbs has no valid watts per unit in the product library/);
+  // A bad price keeps the product (it still lights) but says the shopping list prices it at $0.
+  const cheap = catalog.deepClone(lib);
+  cheap.products.find((p) => p.id === 'c9-led').price = -5;
+  const r2 = design.planRuns(project([feature('eave', 'roofline', { label: 'Front eave' })]), measured([linearFm('eave', 'roofline', 34)]), cheap)[0];
+  assert.equal(r2.productId, 'c9-led');
+  assert.match(r2.warnings.join(' '), /C9 LED string, 25 bulbs has no valid price in the product library \(-5\), so the shopping list prices it at \$0/);
+  // Missing end-to-end limit: never planned as unlimited.
+  const nolimit = catalog.deepClone(lib);
+  delete nolimit.products.find((p) => p.id === 'c9-led').maxEndToEnd;
+  assert.equal(design.planRuns(project([feature('eave', 'roofline')]), measured([linearFm('eave', 'roofline', 34)]), nolimit)[0].productId, 'c7-led');
 });

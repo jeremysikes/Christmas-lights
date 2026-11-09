@@ -19,6 +19,9 @@
  *    from input), nulls references that point at missing items, infers a missing imageId from the
  *    item's plane or the active image, drops calibration refs whose point count is wrong, and keeps
  *    features of unknown type (validateProject reports them).
+ *  - validateProject (and so importProject) checks each custom product like the product editor does: a known
+ *    category and unit, price and wattsPerUnit numbers of 0 or more, stringLengthFt and maxEndToEnd above 0,
+ *    unique ids. ENUMS gains productCategory, productUnit and productTech.
  *  - importProject also accepts a JSON string. Extra exports: EXPORT_SCHEMA_ID, EXPORT_VERSION,
  *    ENUMS, ID_PREFIX, createDefaultSettings, createDefaultQuote.
  */
@@ -43,6 +46,9 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     outletType: ['exteriorGfci', 'garage', 'interior', 'other'],
     laborMethod: ['perFt', 'perHour'],
     featureType: catalog.TYPE_ORDER.slice(),
+    productCategory: ['c9', 'c7', 'mini', 'icicle', 'net', 'rope', 'track', 'path', 'treewrap'],
+    productUnit: ['string', 'net', 'set', 'foot'],
+    productTech: ['LED', 'incandescent'],
   };
   const PLANE_COLORS = { wall: '#4f9dff', roof: '#ff8a3d', ground: '#7bd88f' };
   const HEX_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -297,21 +303,21 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
         },
       },
       product: {
-        type: 'object', required: ['id'],
-        description: 'A light product (catalog Product). Only id is required here; the planner ignores products with missing data and says so.',
+        type: 'object', required: ['id', 'category', 'unit', 'stringLengthFt', 'wattsPerUnit', 'maxEndToEnd', 'price'],
+        description: 'A light product (catalog Product). Import refuses a product without a valid category, unit, lit length, watts, end-to-end limit or price; the planner also skips products whose data it cannot use and says so.',
         properties: {
           id: { type: 'string', minLength: 1, description: 'Product id, e.g. "c9-led".' },
           sku: { type: 'string', description: 'Price key: pricing.overrides and BOM lines use it.' },
           name: { type: 'string', description: 'Name shown in the BOM.' },
-          category: { enum: ['c9', 'c7', 'mini', 'icicle', 'net', 'rope', 'track', 'path', 'treewrap'], description: 'Product family.' },
-          tech: { enum: ['LED', 'incandescent'], description: 'Bulb technology.' },
-          unit: { enum: ['string', 'net', 'set', 'foot'], description: 'What one purchasable unit is.' },
+          category: { enum: ENUMS.productCategory.slice(), description: 'Product family.' },
+          tech: { enum: ENUMS.productTech.slice(), description: 'Bulb technology.' },
+          unit: { enum: ENUMS.productUnit.slice(), description: 'What one purchasable unit is.' },
           bulbSpacingIn: { type: 'number', description: 'Inches between bulbs.' },
-          stringLengthFt: { type: 'number', description: 'Lit length per unit in feet.' },
+          stringLengthFt: { type: 'number', exclusiveMinimum: 0, description: 'Lit length per unit in feet.' },
           leadFt: { type: 'number', description: 'Unlit lead length in feet.' },
           bulbsPerUnit: { type: 'number', description: 'Bulbs per unit.' },
-          wattsPerUnit: { type: 'number', description: 'Watts per string/net/set, or per foot when unit is "foot".' },
-          maxEndToEnd: { type: 'number', description: 'Most units that may be connected end to end on one feed.' },
+          wattsPerUnit: { type: 'number', minimum: 0, description: 'Watts per string/net/set, or per foot when unit is "foot".' },
+          maxEndToEnd: { type: 'number', exclusiveMinimum: 0, description: 'Most units that may be connected end to end on one feed.' },
           coverageSqFt: { type: 'number', description: 'Net lights only: area one net covers.' },
           stakesPerSet: { type: 'number', description: 'Path lights only: stakes per set.' },
           stakeSpacingIn: { type: 'number', description: 'Path lights only: inches between stakes.' },
@@ -1071,6 +1077,20 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
       if (lib.products !== null && !(Array.isArray(lib.products) && lib.products.length && lib.products.every((x) => isObj(x) && typeof x.id === 'string' && x.id))) {
         err('The custom product list must be a non-empty list of products that each have an id, or empty.');
       }
+      // The same checks as the product editor, so a file can never carry a product the planner would read as 0 W or $0.
+      const productIds = new Set();
+      arr(lib.products).forEach((x, i) => {
+        if (!isObj(x)) return;
+        const who = 'Product ' + (typeof x.name === 'string' && x.name ? '"' + x.name + '"' : typeof x.id === 'string' && x.id ? '"' + x.id + '"' : '#' + (i + 1));
+        if (typeof x.id === 'string' && x.id) {
+          if (productIds.has(x.id)) err('Two products share the id "' + x.id + '".');
+          productIds.add(x.id);
+        }
+        if (!ENUMS.productCategory.includes(x.category)) err(who + ': "category" must be one of ' + ENUMS.productCategory.join(', ') + '.');
+        if (!ENUMS.productUnit.includes(x.unit)) err(who + ': "unit" must be one of ' + ENUMS.productUnit.join(', ') + '.');
+        for (const k of ['price', 'wattsPerUnit']) if (!(typeof x[k] === 'number' && Number.isFinite(x[k]) && x[k] >= 0)) err(who + ': "' + k + '" must be a number of 0 or more.');
+        for (const k of ['stringLengthFt', 'maxEndToEnd']) if (!(typeof x[k] === 'number' && Number.isFinite(x[k]) && x[k] > 0)) err(who + ': "' + k + '" must be a number above 0.');
+      });
       if (lib.config !== null && !isObj(lib.config)) err('The library config overrides must be an object or empty.');
     }
     if (!isObj(p.pricing) || !isObj(p.pricing.overrides)) err('Price overrides are missing.');
