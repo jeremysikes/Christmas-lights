@@ -316,20 +316,29 @@ test('scoreConfidence deductions follow the spec table', () => {
   const s = (fx) => measure.scoreConfidence(Object.assign({ checks: 1 }, fx)).score;
   assert.equal(s({ mode: 'rect-known' }), 100);
   assert.equal(s({ mode: 'rect-refs' }), 95);
-  assert.equal(s({ mode: 'refs-only' }), 80);
-  assert.equal(s({ mode: 'roof-3d', pitchSource: 'default' }), 65);
+  // Level caps (score clamped into the capped level's band): refs-only is Low unless two directions agree.
+  assert.equal(s({ mode: 'refs-only' }), 49);
+  assert.equal(s({ mode: 'refs-only', refsBothDirections: true }), 74);
+  assert.equal(s({ mode: 'roof-3d', pitchSource: 'default' }), 49);
+  assert.equal(s({ mode: 'roof-3d' }), 90);
   assert.equal(s({ mode: 'rect-known', checks: 0 }), 95);
   assert.equal(s({ mode: 'rect-known', disagreementPct: 4 }), 90);
   assert.equal(s({ mode: 'rect-known', disagreementPct: 8 }), 80);
   assert.equal(s({ mode: 'rect-known', disagreementPct: 12 }), 65);
   assert.equal(s({ mode: 'rect-known', viewAngleDeg: 40 }), 85);
   assert.equal(s({ mode: 'rect-known', viewAngleDeg: 60 }), 75);
-  assert.equal(s({ mode: 'rect-refs', focalSource: 'default' }), 85);
-  assert.equal(s({ mode: 'rect-known', offPlane: 'tree' }), 85);
+  assert.equal(s({ mode: 'rect-refs', focalSource: 'default' }), 74);
+  assert.equal(s({ mode: 'rect-refs', focalSource: 'default', anisotropic: true }), 85);
+  assert.equal(s({ mode: 'rect-known', offPlane: 'tree' }), 49);
+  assert.equal(s({ mode: 'rect-known', offPlane: 'bush' }), 74);
+  assert.equal(s({ mode: 'rect-known', uncertaintyPct: 2 }), 100);
+  assert.equal(s({ mode: 'rect-known', uncertaintyPct: 4 }), 74);
+  assert.equal(s({ mode: 'rect-known', uncertaintyPct: 7 }), 49);
+  assert.equal(s({ mode: 'rect-known', disagreementPct: 8, disagreementZ: 1.5 }), 100);
   assert.equal(s({ mode: 'rect-known', extrapolation: true }), 90);
   assert.equal(s({ mode: 'rect-known', pixelLength: 40 }), 90);
   assert.equal(measure.scoreConfidence({ mode: 'uncalibrated' }).level, 'low');
-  assert.equal(measure.scoreConfidence({ mode: 'refs-only', checks: 0, onlyMediumLowRefs: true, minCourses: 4 }).level, 'medium');
+  assert.equal(measure.scoreConfidence({ mode: 'refs-only', checks: 0, onlyMediumLowRefs: true, minCourses: 4 }).level, 'low');
 });
 
 test('ridge off-plane penalty applies only on a wall plane', () => {
