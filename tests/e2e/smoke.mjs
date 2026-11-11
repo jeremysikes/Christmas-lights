@@ -11,7 +11,8 @@
 //                                                review = UI review findings on a phone; landscape = 844x390;
 //                                                v11-* = the Phase 1.1 UI, SPEC 8.4 and 8.5: cords on the photo,
 //                                                the Power step, rough measurements, the flow, tap precision.
-//                                                They also write v11-<phone|desktop>-step<3|5|6>.png)
+//                                                They also write ui-finish-<phone|desktop>-step<2|3|5|6>.png,
+//                                                -step5-no-jumpers.png and dark-scheme copies of steps 5 and 6)
 //   LP_APP=/path/to/lightplan.html node tests/e2e/smoke.mjs   run against another build
 //   LP_SECTIONS='UX-0[45]' node tests/e2e/smoke.mjs --only=review   run only the matching review sections
 //
@@ -1068,26 +1069,92 @@ async function runPhase11(browser, name) {
       }
       if (best > 22) far.push(b.text + ' (' + Math.round(best) + ' px from its cord)');
     }
+    const bought = (kind) => power.feeds.filter((f) => f.cord && f.cord.kind === kind).map((f) => M.cordLabelText(f));
     return {
       texts: boxes.map((b) => b.text), cords: cordLabels.filter((b) => / cord$/.test(b.text)).length, jumpers: cordLabels.filter((b) => / jumper$/.test(b.text)).length,
       anchoredAll: cordLabels.every((b) => b.anchored), pairs, under, outside, far,
+      homeTexts: bought('home'), jumperTexts: bought('jumper'),
     };
   });
+  /** Centre a stretch of cord (two image points) on the photo so that it spans about half the canvas. */
+  const zoomToPiece = async (a, b) => {
+    await act(([p, q]) => {
+      const vp = window.LightPlanApp.viewport;
+      vp.fit();
+      const v = vp.getView();
+      const len = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1;
+      // The sheet covers the lower part of the canvas on a phone; pixels are read from the canvas itself, so only
+      // the canvas size matters here.
+      const s = Math.min(6, Math.max(v.fitScale * 0.96, 0.5 * Math.min(v.cssW, v.cssH) / len));
+      vp.setView({ scale: s, tx: v.cssW / 2 - ((p[0] + q[0]) / 2) * s, ty: v.cssH / 2 - ((p[1] + q[1]) / 2) * s });
+    }, [a, b]);
+    await sleep(450);
+  };
+  /** Flip "Give this run its own cord" on the row of the cord that feeds a traced item. */
+  const flipOwnCord = async (featureId) => {
+    const ok = await page.evaluate((id) => {
+      const sw = Array.from(document.querySelectorAll('[data-act="feed-own-cord"]')).find((el) => (el.getAttribute('data-ids') || '').split(',').includes(id));
+      if (sw) sw.click();
+      return !!sw;
+    }, featureId);
+    await sleep(400);
+    return ok;
+  };
+  /** Wait for the autosave (debounced), reload the page and wait for the app. */
+  const reload = async () => {
+    await sleep(1000);
+    await page.reload();
+    await waitForApp(page);
+  };
 
   try {
     await page.goto(URL);
     await waitForApp(page);
     await sleep(500);
 
-    // ---- The three screens the hand-off asks to be looked at, on the sample as it first opens.
-    for (const n of [3, 5, 6]) {
-      await goStep(n);
-      if (n === 5) await act(() => window.LightPlanApp.actions.setView({ night: false }));
-      await sleep(300);
-      await shot('step' + n);
+    // ---- The screens the hand-off asks to be looked at, on the sample as it first opens (day view, so the cords
+    // and labels can be read): steps 2, 3, 5 and 6, step 5 with jumper cords switched off, and steps 5 and 6 in the
+    // dark colour scheme. A phone also gets the panel on its own (sheet fully open) for steps 5 and 6.
+    const dev = phone ? 'phone' : 'desktop';
+    const finish = (label) => page.screenshot({ path: path.join(OUT, 'ui-finish-' + dev + '-' + label + '.png') });
+    const noScroll = async (what) => {
       const overflowX = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-      t.ok(overflowX <= 0, 'step ' + n + ': no horizontal page scroll');
+      t.ok(overflowX <= 0, what + ': no horizontal page scroll');
+    };
+    const sheetShot = async (label) => {
+      if (!phone) return;
+      await act(() => window.LightPlanApp.actions.setSheet('full'));
+      await sleep(400);
+      await finish(label + '-sheet');
+      await act(() => window.LightPlanApp.actions.setSheet('half'));
+      await sleep(350);
+    };
+    await act(() => window.LightPlanApp.actions.setView({ night: false }));
+    for (const n of [2, 3, 5, 6]) {
+      await goStep(n);
+      await sleep(300);
+      await finish('step' + n);
+      await noScroll('step ' + n);
+      if (n >= 5) await sheetShot('step' + n);
     }
+    await goStep(5);
+    await page.locator('[data-act="power-daisy"]').evaluate((el) => el.click());
+    await sleep(500);
+    await act(() => { document.getElementById('panel-root').scrollTop = 0; });
+    await finish('step5-no-jumpers');
+    await noScroll('step 5 with jumper cords off');
+    await sheetShot('step5-no-jumpers');
+    await page.locator('[data-act="power-daisy"]').evaluate((el) => el.click());
+    await sleep(400);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    for (const n of [5, 6]) {
+      await goStep(n);
+      await sleep(300);
+      await finish('dark-step' + n);
+      await sheetShot('dark-step' + n);
+    }
+    await page.emulateMedia({ colorScheme: 'light' });
+    await sleep(200);
 
     // ================================================================ A. cords on the photo
     await sec('A1 cord labels', async () => {
@@ -1096,7 +1163,8 @@ async function runPhase11(browser, name) {
       await zoomTo([700, 720], phone ? 2.4 : 1);
       const a = await labelReport();
       t.ok(a.cords >= 1 && a.jumpers >= 1 && a.anchoredAll, 'cords are labelled "N ft cord" and jumpers "N ft jumper" (' + a.texts.filter((x) => / ft /.test(x)).join(', ') + ')');
-      t.ok(a.texts.includes('25 ft cord') || a.texts.includes('15 ft cord'), 'a cord from an outlet carries the length that is bought');
+      t.ok(a.homeTexts.length >= 1 && a.homeTexts.every((x) => /^\d+ ft cord$/.test(x)) && a.homeTexts.some((x) => a.texts.includes(x)),
+        'a cord from an outlet carries the length that is bought (' + a.homeTexts.join(', ') + ')');
       t.ok(a.texts.some((x) => /outlet$/i.test(x)), 'outlet labels are still shown (' + a.texts.filter((x) => /outlet/i.test(x)).join(', ') + ')');
       t.ok(a.pairs.length === 0, 'no label covers another label or an outlet label' + (a.pairs.length ? ': ' + a.pairs.join('; ') : ''));
       t.ok(a.under.length === 0, 'no label sits under the buttons floating over the photo' + (a.under.length ? ': ' + a.under.join(', ') : ''));
@@ -1114,38 +1182,58 @@ async function runPhase11(browser, name) {
     await sec('A2 cord styles and markers', async () => {
       await goStep(5);
       await act(() => { const a = window.LightPlanApp.actions; a.dismissBanner(); a.setView({ night: false, preview: false, labels: false, overlay: true }); });
+      // Which cords to look at: the cord from an outlet with the longest riser and the jumper cord with the longest
+      // stretch along the ground (whatever the planner made of the sample), each in its circuit's colour.
+      const pick = await page.evaluate(() => {
+        const s = window.LightPlanApp.store;
+        const power = s.plan().power;
+        const COLORS = [[79, 157, 255], [255, 138, 61]];   // the first two circuit colours (viewport.js)
+        const longest = (kind, piece) => {
+          let best = null;
+          for (const f of power.feeds) {
+            if (!f.cord || f.cord.kind !== kind) continue;
+            for (const r of f.cord.route || []) {
+              if (r.kind !== piece || !r.from || !r.to) continue;
+              if (!best || r.lengthFt > best.lengthFt) best = { id: f.id, from: r.from, to: r.to, lengthFt: r.lengthFt, rgb: COLORS[s.project().circuits.findIndex((c) => c.id === f.circuitId)] || null };
+            }
+          }
+          return best;
+        };
+        return { home: longest('home', 'rise'), jumper: longest('jumper', 'ground') };
+      });
+      t.ok(pick.home && pick.home.rgb && pick.jumper && pick.jumper.rgb, 'the sample has a cord from an outlet with a riser and a jumper cord along the ground (' + (pick.home && pick.home.id) + ', ' + (pick.jumper && pick.jumper.id) + ')');
+      /** Share of the points along a stretch of cord (from t0 to t1 of the way) painted in its colour. */
+      const painted = (piece, t0, t1) => page.evaluate(([pc, a0, a1]) => {
+        const vp = window.LightPlanApp.viewport;
+        const ctx = document.querySelector('#viewport canvas').getContext('2d');
+        const near = (q) => Math.abs(q[0] - pc.rgb[0]) <= 45 && Math.abs(q[1] - pc.rgb[1]) <= 45 && Math.abs(q[2] - pc.rgb[2]) <= 45;
+        const A = vp.imageToScreen(pc.from), B = vp.imageToScreen(pc.to);
+        const len = Math.hypot(B[0] - A[0], B[1] - A[1]);
+        let n = 0, on = 0;
+        for (let d = len * a0; d <= len * a1; d += 0.5) {
+          n += 1;
+          if (near(ctx.getImageData(Math.round(A[0] + (B[0] - A[0]) * d / len), Math.round(A[1] + (B[1] - A[1]) * d / len), 1, 1).data)) on += 1;
+        }
+        return { share: n ? on / n : 0, len: Math.round(len) };
+      }, [piece, t0, t1]);
+      await zoomToPiece(pick.home.from, pick.home.to);
+      const home = await painted(pick.home, 0.4, 0.85);
+      t.ok(home.len > 20 && home.share > 0.95, 'a cord from an outlet is drawn as a solid line in its circuit colour (' + (home.share * 100).toFixed(0) + '% of ' + home.len + ' px)');
+      await zoomToPiece(pick.jumper.from, pick.jumper.to);
+      const jumper = await painted(pick.jumper, 0.2, 0.8);
+      t.ok(jumper.len > 40 && jumper.share > 0.3 && jumper.share < 0.9, 'a jumper cord is drawn dashed (' + (jumper.share * 100).toFixed(0) + '% of ' + jumper.len + ' px painted)');
+      // 3-way taps: a white diamond where each one sits.
       await zoomTo([760, 730], phone ? 2.4 : 1.3);
-      const px = await page.evaluate(() => {
+      const taps = await page.evaluate(() => {
         const vp = window.LightPlanApp.viewport;
         const M = LP.require('ui.viewport');
         const c = document.querySelector('#viewport canvas');
         const ctx = c.getContext('2d');
         const power = window.LightPlanApp.store.plan().power;
-        const near = (q, rgb, tol) => Math.abs(q[0] - rgb[0]) <= tol && Math.abs(q[1] - rgb[1]) <= tol && Math.abs(q[2] - rgb[2]) <= tol;
-        const at = (s) => ctx.getImageData(Math.round(s[0]), Math.round(s[1]), 1, 1).data;
-        /** Share of the points along a→b (from t0 to t1 of the way) painted in the cord colour. */
-        const share = (a, b, rgb, t0, t1) => {
-          const A = vp.imageToScreen(a), B = vp.imageToScreen(b);
-          const len = Math.hypot(B[0] - A[0], B[1] - A[1]);
-          let n = 0, on = 0;
-          for (let d = len * t0; d <= len * t1; d += 0.5) { n += 1; if (near(at([A[0] + (B[0] - A[0]) * d / len, A[1] + (B[1] - A[1]) * d / len]), rgb, 45)) on += 1; }
-          return { share: n ? on / n : 0, len: Math.round(len) };
-        };
-        const BLUE = [79, 157, 255], ORANGE = [255, 138, 61];
-        const home = power.feeds.find((f) => f.id === 'feed_ft_garage_gutter_1');
-        const riser = home.cord.route.find((r) => r.kind === 'rise');
-        const jumper = power.feeds.find((f) => f.id === 'feed_ft_tree_1');
-        const ground = jumper.cord.route.find((r) => r.kind === 'ground');
-        const taps = M.tapMarkers(power).map((tp) => { const s = vp.imageToScreen(tp.point); return s[0] > 4 && s[1] > 4 && s[0] < c.width - 4 && s[1] < c.height - 4 ? Array.from(at(s)).slice(0, 3) : null; }).filter(Boolean);
-        return {
-          homeKind: home.cord.kind, jumperKind: jumper.cord.kind,
-          home: share(riser.from, riser.to, ORANGE, 0.4, 0.85), jumper: share(ground.from, ground.to, BLUE, 0.2, 0.8),
-          taps, tapCount: power.counts.taps,
-        };
+        const seen = M.tapMarkers(power).map((tp) => { const s = vp.imageToScreen(tp.point); return s[0] > 4 && s[1] > 4 && s[0] < c.width - 4 && s[1] < c.height - 4 ? Array.from(ctx.getImageData(Math.round(s[0]), Math.round(s[1]), 1, 1).data).slice(0, 3) : null; }).filter(Boolean);
+        return { seen, count: power.counts.taps };
       });
-      t.ok(px.homeKind === 'home' && px.home.len > 20 && px.home.share > 0.95, 'a cord from an outlet is drawn as a solid line in its circuit colour (' + (px.home.share * 100).toFixed(0) + '% of ' + px.home.len + ' px)');
-      t.ok(px.jumperKind === 'jumper' && px.jumper.len > 40 && px.jumper.share > 0.3 && px.jumper.share < 0.9, 'a jumper cord is drawn dashed (' + (px.jumper.share * 100).toFixed(0) + '% of ' + px.jumper.len + ' px painted)');
-      t.ok(px.taps.length >= 3 && px.taps.every((q) => q[0] > 215 && q[1] > 215 && q[2] > 215), 'each 3-way tap has a white marker where it sits (' + px.taps.length + ' of ' + px.tapCount + ' in view)');
+      t.ok(taps.count >= 1 && taps.seen.length >= Math.min(3, taps.count) && taps.seen.every((q) => q[0] > 215 && q[1] > 215 && q[2] > 215), 'each 3-way tap has a white marker where it sits (' + taps.seen.length + ' of ' + taps.count + ' in view)');
       await shot('cord-styles');
       // A run that plugs straight into the one before it: a ring and "plugs in", and no cord of its own.
       await act(() => window.LightPlanApp.store.commit('test: walkway starts at the door plug', (d) => { d.features.find((f) => f.id === 'ft_walk_right').points[0] = [732.4, 809.3]; }));
@@ -1160,12 +1248,35 @@ async function runPhase11(browser, name) {
         let white = 0;
         for (let k = 0; k < 24; k++) { const a = (k / 24) * Math.PI * 2; const q = ctx.getImageData(Math.round(s[0] + Math.cos(a) * 9), Math.round(s[1] + Math.sin(a) * 9), 1, 1).data; if (q[0] > 200 && q[1] > 200 && q[2] > 200) white += 1; }
         const row = document.querySelector('.feed-item[data-key="' + feed.id + '"]');
-        return { id: feed.id, cord: feed.cord, white, labels: vp.labelBoxes().map((b) => b.text), kind: row ? row.getAttribute('data-kind') : null, rowText: row ? row.innerText : '' };
+        const boxes = vp.labelBoxes();
+        const hit = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+        const lab = boxes.find((b) => b.text === 'plugs in');
+        return {
+          id: feed.id, cord: feed.cord, white, labels: boxes.map((b) => b.text), kind: row ? row.getAttribute('data-kind') : null, rowText: row ? row.innerText : '',
+          labelNear: lab ? Math.hypot(Math.max(lab.x - s[0], 0, s[0] - (lab.x + lab.w)), Math.max(lab.y - s[1], 0, s[1] - (lab.y + lab.h))) : null,
+          labelClear: lab ? !boxes.some((b) => b !== lab && hit(b, lab)) : false,
+          outletsOff: (window.LightPlanApp.store.project().outlets || []).filter((o) => { const q = vp.imageToScreen(o.point); const v = vp.getView(); return q[0] < -20 || q[0] > v.cssW + 20 || q[1] < -20 || q[1] > v.cssH + 20; }).map((o) => o.label),
+        };
       });
       t.ok(!!pi && pi.cord === null, 'the test plan has a run that plugs straight in');
-      t.ok(pi && pi.white >= 12 && pi.labels.includes('plugs in'), 'it gets a ring and a "plugs in" label on the photo (' + (pi && pi.white) + '/24 ring points, labels ' + (pi && pi.labels.join(', ')) + ')');
+      t.ok(pi && pi.white >= 12 && pi.labels.includes('plugs in') && pi.labelNear != null && pi.labelNear <= 16 && pi.labelClear,
+        'it gets a ring and a "plugs in" label beside it on the photo (' + (pi && pi.white) + '/24 ring points, label ' + (pi && pi.labelNear != null ? Math.round(pi.labelNear) + ' px from the ring' : 'missing') + ', labels ' + (pi && pi.labels.join(', ')) + ')');
+      t.ok(pi && pi.outletsOff.every((name) => !pi.labels.includes(name)), 'an outlet that is off the edge of the view has no label left behind at the edge (' + (pi && (pi.outletsOff.join(', ') || 'none off screen')) + ')');
       t.ok(pi && pi.kind === 'plugIn' && /Plugs straight into the end of Front door \(no cord needed\)/.test(pi.rowText) && !/unknown/i.test(pi.rowText), 'the Power list says it plugs straight in, not "length unknown" (' + (pi && pi.rowText.replace(/\s+/g, ' ').slice(0, 90)) + ')');
       await shot('plug-in');
+      // C: the PDF report says the same for that run.
+      await goStep(6);
+      const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 20000 }), page.click('#action-btn')]);
+      const pdfFile = path.join(OUT, name + '-plug-in-' + dl.suggestedFilename());
+      await dl.saveAs(pdfFile);
+      let text = '';
+      try { text = execFileSync('pdftotext', ['-layout', pdfFile, '-'], { encoding: 'utf8' }); } catch (e) { text = ''; }
+      const rowLine = text.split(/\r?\n/).find((ln) => /Plugs straight in/.test(ln)) || '';
+      t.ok(/Walkway right edge/.test(rowLine) && /The end of Front door/.test(rowLine) && /No cord needed\./.test(text),
+        'PDF cords table: the run that plugs straight in says so, with what it plugs into (' + rowLine.replace(/\s+/g, ' ').trim().slice(0, 90) + ')');
+      await sleep(600);
+      await act(() => window.LightPlanApp.store.setUI({ toast: null }));
+      await goStep(5);
       await page.click('#btn-undo');
       await sleep(300);
       t.ok(await act(() => !window.LightPlanApp.store.plan().power.feeds.some((f) => f.plugIn)), 'undo puts the walkway back');
@@ -1202,38 +1313,62 @@ async function runPhase11(browser, name) {
           ownSwitches: feeds.querySelectorAll('[data-act="feed-own-cord"]').length,
           daisy: !!(root.querySelector('[data-act="power-daisy"]') || {}).checked,
           nextButtons: root.querySelectorAll('.panel-next').length,
+          plan: (() => {
+            // What the panel should say, worked out from the plan itself (not from the panel's own helpers).
+            const s = window.LightPlanApp.store;
+            const plan = s.plan();
+            const pw = plan.power;
+            const feedById = new Map(pw.feeds.map((f) => [f.id, f]));
+            const used = pw.outlets.filter((o) => o.feedIds.length > 0);
+            const first = used[0];
+            const runs = new Set();
+            first.feedIds.forEach((id) => feedById.get(id).runIds.forEach((r) => runs.add(r)));
+            const root0 = feedById.get(pw.groups.find((g) => g.outletId === first.id).rootFeedId);
+            return {
+              totalW: plan.summary.watts, limitW: Math.max(...used.map((o) => o.limitW)), counts: pw.counts,
+              first: { label: s.project().outlets.find((o) => o.id === first.id).label, cords: first.directFeedIds.length, runs: runs.size, watts: first.watts },
+              root: { bought: root0.cord.boughtFt, route: root0.cord.routeText, name: plan.runs.find((r) => r.id === root0.runIds[0]).label },
+              warnings: pw.warnings.filter((w) => w.level === 'warn' || w.level === 'danger').length,
+            };
+          })(),
         };
       });
-      t.ok(/^Good to go: these lights use 233 W, 16% of one outlet's safe limit\.$/.test(b.verdictText) && / ok/.test(b.verdictClass), 'the Power step opens with a plain verdict (' + b.verdictText + ')');
+      const W = (v) => (v < 100 ? v.toFixed(1) : String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')) + ' W';
+      const P = b.plan;
+      const wantVerdict = 'Good to go: these lights use ' + W(P.totalW) + ', ' + Math.round(P.totalW / P.limitW * 100) + '% of one outlet\'s safe limit.';
+      t.ok(P.warnings === 0 && b.verdictText === wantVerdict && / ok/.test(b.verdictClass), 'the Power step opens with a plain verdict (' + b.verdictText + ')');
       t.ok(b.firstAfterHead && b.v && b.p && b.d && b.v.bottom <= b.p.top && b.p.bottom <= b.d.top, 'order: verdict, Place outlet, then the planning-estimate note');
       t.ok(b.v && b.v.bottom <= b.rootBottom + 1, 'the verdict is in view without scrolling' + (phone ? ' on a half-open sheet' : ''));
-      t.ok(b.outletInfo[0] === '1 cord at this outlet feeding 11 runs · 185 W', 'the outlet card counts the cords at the outlet and the runs they feed (' + b.outletInfo[0] + ')');
-      t.ok(b.rows === b.feeds && b.kinds[0] === 'home' && b.kinds.filter((k) => k === 'home').length === 2 && b.kinds.filter((k) => k === 'jumper').length === 10,
-        'the supply tree lists every cord: 2 from outlets, 10 jumper cords (' + b.rows + ' rows)');
-      t.ok(/Walkway left edge .*15 ft cord from Porch outlet .*Down 1\.5 ft, 2\.5 ft along the ground/.test(b.firstRow), 'a cord row says where it comes from and how it runs (' + b.firstRow.slice(0, 110) + ')');
+      const wantInfo = P.first.cords + (P.first.cords === 1 ? ' cord' : ' cords') + ' at this outlet feeding ' + P.first.runs + ' runs · ' + W(P.first.watts);
+      t.ok(b.outletInfo[0] === wantInfo && P.first.cords < P.first.runs, 'the outlet card counts the cords at the outlet (' + P.first.cords + ') apart from the runs they feed (' + P.first.runs + '): ' + b.outletInfo[0]);
+      t.ok(b.rows === b.feeds && b.kinds[0] === 'home' && b.kinds.filter((k) => k === 'home').length === P.counts.homeRuns && b.kinds.filter((k) => k === 'jumper').length === P.counts.jumpers && P.counts.jumpers >= 1 && P.counts.homeRuns < b.feeds,
+        'the supply tree lists every cord: ' + P.counts.homeRuns + ' from outlets, ' + P.counts.jumpers + ' jumper cords (' + b.rows + ' rows)');
+      const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
+      t.ok(b.firstRow.includes(P.root.name) && b.firstRow.includes(P.root.bought + ' ft cord from ' + P.first.label) && b.firstRow.includes(cap(P.root.route)) && / along the ground/.test(b.firstRow),
+        'a cord row says where it comes from and how it runs (' + b.firstRow.slice(0, 110) + ')');
       t.ok(!/unknown/i.test(b.treeText) && /16-gauge/.test(b.treeText) && !/AWG/.test(b.treeText) && /16 AWG/.test(b.detailText), 'gauge reads "16-gauge" in the list; AWG only under Cord details');
-      t.ok(b.tiles['Cords to outlets'] === '2' && b.tiles['Jumper cords'] === '10' && b.tiles['3-way taps'] === '4', 'count tiles: cords to outlets, jumper cords, 3-way taps (' + JSON.stringify(b.tiles) + ')');
+      t.ok(b.tiles['Cords to outlets'] === String(P.counts.homeRuns) && b.tiles['Jumper cords'] === String(P.counts.jumpers) && b.tiles['3-way taps'] === String(P.counts.taps) && P.counts.taps >= 1,
+        'count tiles: cords to outlets, jumper cords, 3-way taps (' + JSON.stringify(b.tiles) + ')');
       t.ok(/jumper cord \(a short cord from one run to the next\)/.test(b.treeText) && /3-way tap \(a plug with three outlets\)/.test(b.treeText), 'jumper cord and 3-way tap are explained in plain words');
-      t.ok(b.daisy === true && b.ownSwitches === 10, 'switches: link nearby runs (on) and one "own cord" per jumper-fed run (' + b.ownSwitches + ')');
+      t.ok(b.daisy === true && b.ownSwitches === P.counts.jumpers, 'switches: link nearby runs (on) and one "own cord" per jumper-fed run (' + b.ownSwitches + ')');
       t.ok(b.nextButtons === 0, 'the panel no longer ends in its own Next button');
       await shot('power-top');
     });
 
     await sec('B2 daisy chain and own cord switches', async () => {
       await goStep(5);
-      const own = page.locator('.feed-item[data-key="feed_ft_door_1"] [data-act="feed-own-cord"]');
-      await own.evaluate((el) => el.click());
-      await sleep(400);
+      const linked = await act(() => { const c = window.LightPlanApp.store.plan().power.counts; return { homeRuns: c.homeRuns, jumpers: c.jumpers }; });
+      t.ok(await flipOwnCord('ft_door'), 'the door\'s row has a "Give this run its own cord" switch');
       const o = await page.evaluate(() => {
         const s = window.LightPlanApp.store;
         const door = s.plan().power.feeds.find((f) => f.runIds.includes('run_ft_door'));
         const sw = document.querySelector('.feed-item[data-key="' + door.id + '"] [data-act="feed-own-cord"]');
         return { param: s.project().features.find((f) => f.id === 'ft_door').params.ownCord, source: door.source.kind, checked: !!(sw && sw.checked), homeRuns: s.plan().power.counts.homeRuns, undo: s.undoLabel() };
       });
-      t.ok(o.param === true && o.source === 'outlet' && o.checked && o.homeRuns > 2 && o.undo === 'Give a run its own cord', '"Give this run its own cord" gives the door a cord from the outlet (' + JSON.stringify(o) + ')');
+      t.ok(o.param === true && o.source === 'outlet' && o.checked && o.homeRuns > linked.homeRuns && o.undo === 'Give a run its own cord', '"Give this run its own cord" gives the door a cord from the outlet (' + JSON.stringify(o) + ')');
       await page.click('#btn-undo');
       await sleep(300);
-      t.ok(await act(() => window.LightPlanApp.store.plan().power.counts.homeRuns === 2), 'one Undo takes it back');
+      t.ok(await act((n) => window.LightPlanApp.store.plan().power.counts.homeRuns === n, linked.homeRuns), 'one Undo takes it back');
       await page.locator('[data-act="power-daisy"]').evaluate((el) => el.click());
       await sleep(500);
       const d = await page.evaluate(() => {
@@ -1255,7 +1390,40 @@ async function runPhase11(browser, name) {
       await shot('power-flat');
       await page.locator('[data-act="power-daisy"]').evaluate((el) => el.click());
       await sleep(400);
-      t.ok(await act(() => window.LightPlanApp.store.plan().power.counts.jumpers === 10 && !window.LightPlanApp.store.project().library.config), 'switching it back on restores the linked plan and leaves no override behind');
+      const back = await act(() => { const s = window.LightPlanApp.store; return { jumpers: s.plan().power.counts.jumpers, homeRuns: s.plan().power.counts.homeRuns, config: s.project().library.config, checked: document.querySelector('[data-act="power-daisy"]').checked }; });
+      t.ok(back.jumpers === linked.jumpers && back.homeRuns === linked.homeRuns && back.checked && !back.config, 'switching it back on restores the linked plan (' + back.jumpers + ' jumper cords) and leaves no override behind');
+    });
+
+    await sec('B3 the switches survive a reload', async () => {
+      // "Give this run its own cord" and "Link nearby runs" are part of the saved plan: autosave, reload, still set.
+      await goStep(5);
+      const before = await act(() => { const c = window.LightPlanApp.store.plan().power.counts; return { homeRuns: c.homeRuns, jumpers: c.jumpers }; });
+      await flipOwnCord('ft_door');
+      await reload();
+      const own = await page.evaluate(() => {
+        const s = window.LightPlanApp.store;
+        const door = s.plan().power.feeds.find((f) => f.runIds.includes('run_ft_door'));
+        const sw = document.querySelector('.feed-item[data-key="' + door.id + '"] [data-act="feed-own-cord"]');
+        return { step: s.ui().step, param: s.project().features.find((f) => f.id === 'ft_door').params.ownCord, source: door.source.kind, checked: !!(sw && sw.checked), homeRuns: s.plan().power.counts.homeRuns };
+      });
+      t.ok(own.step === 5 && own.param === true && own.source === 'outlet' && own.checked && own.homeRuns > before.homeRuns, 'after a reload the door still has its own cord and its switch is on (' + JSON.stringify(own) + ')');
+      await page.locator('[data-act="power-daisy"]').evaluate((el) => el.click());
+      await sleep(300);
+      await reload();
+      const flat = await page.evaluate(() => {
+        const s = window.LightPlanApp.store;
+        const c = s.plan().power.counts;
+        const cfg = s.project().library.config;
+        return { daisy: cfg && cfg.power ? cfg.power.daisyChain : undefined, jumpers: c.jumpers, homeRuns: c.homeRuns, feeds: s.plan().power.feeds.length, checked: document.querySelector('[data-act="power-daisy"]').checked, ownCord: s.project().features.find((f) => f.id === 'ft_door').params.ownCord };
+      });
+      t.ok(flat.daisy === false && flat.jumpers === 0 && flat.homeRuns === flat.feeds && flat.checked === false && flat.ownCord === true, 'after a reload "Link nearby runs" is still off: one cord per run (' + JSON.stringify(flat) + ')');
+      // Put both back the way a person would, and check the sample plan is the linked one again.
+      await page.locator('[data-act="power-daisy"]').evaluate((el) => el.click());
+      await sleep(400);
+      await flipOwnCord('ft_door');
+      const restored = await act(() => { const s = window.LightPlanApp.store; const c = s.plan().power.counts; return { homeRuns: c.homeRuns, jumpers: c.jumpers, config: s.project().library.config, ownCord: s.project().features.find((f) => f.id === 'ft_door').params.ownCord }; });
+      t.ok(restored.homeRuns === before.homeRuns && restored.jumpers === before.jumpers && !restored.config && !restored.ownCord, 'switching both back gives the linked plan again (' + restored.homeRuns + ' cords to outlets, ' + restored.jumpers + ' jumper cords)');
+      await reload();
     });
 
     // ================================================================ D. rough measurements on Review
@@ -1281,19 +1449,28 @@ async function runPhase11(browser, name) {
       t.ok(d.badge && d.badge.text === String(d.low) && /neutral/.test(d.badge.cls), 'the Trace step counts them in a neutral badge (' + JSON.stringify(d.badge) + ')');
       t.ok(d.cost && d.cost.rough === 'true' && /rough/.test(d.cost.text), 'the cost tile is marked rough');
       await shot('review-rough');
-      // Type a tape length for the ridge: it leaves the list and the plan uses it.
-      const ridge = page.locator('.rough-item[data-key="rough-ft_ridge"] [data-act="feature-len"]');
+      // Type a tape length for a roofline item on the list (the ridge on the sample): it leaves the list and the
+      // plan uses it.
+      const rid = await page.evaluate(() => {
+        const types = ['ridge', 'rake', 'roofline', 'gutter'];
+        const prj = window.LightPlanApp.store.project();
+        const ids = Array.from(document.querySelectorAll('.rough-item')).map((li) => li.getAttribute('data-key').replace('rough-', ''));
+        const typeOf = (id) => (prj.features.find((f) => f.id === id) || {}).type;
+        return ids.find((id) => typeOf(id) === 'ridge') || ids.find((id) => types.includes(typeOf(id))) || null;
+      });
+      t.ok(!!rid, 'a roofline length is on the list (' + rid + ')');
+      const ridge = page.locator('.rough-item[data-key="rough-' + rid + '"] [data-act="feature-len"]');
       await ridge.evaluate((el) => { const det = el.closest('details'); if (det) det.open = true; });
       await ridge.scrollIntoViewIfNeeded();
       await ridge.fill('33 6');
       await ridge.press('Enter');
       await ridge.evaluate((el) => el.blur()).catch(() => {});
       await sleep(500);
-      const after = await page.evaluate(() => {
+      const after = await page.evaluate((id) => {
         const s = window.LightPlanApp.store;
         const sec = document.querySelector('[data-key="rough"]');
-        return { override: s.project().features.find((f) => f.id === 'ft_ridge').overrideFt, run: s.plan().runs.find((r) => r.featureId === 'ft_ridge').lengthFt, title: sec.querySelector('.sec-title').textContent, still: !!sec.querySelector('[data-key="rough-ft_ridge"]'), badge: document.querySelector('button.step[data-step="3"] .step-badge').textContent };
-      });
+        return { override: s.project().features.find((f) => f.id === id).overrideFt, run: s.plan().runs.find((r) => r.featureId === id).lengthFt, title: sec.querySelector('.sec-title').textContent, still: !!sec.querySelector('[data-key="rough-' + id + '"]'), badge: document.querySelector('button.step[data-step="3"] .step-badge').textContent };
+      }, rid);
       t.ok(after.override === 33.5 && after.run === 33.5 && !after.still && after.title === 'Measurements to double-check (' + (d.low - 1) + ')' && after.badge === String(d.low - 1),
         'a tape-measured length sets the override and takes the item off the list (' + JSON.stringify(after) + ')');
       // "Show it" opens the item in the Trace step.
@@ -1307,7 +1484,7 @@ async function runPhase11(browser, name) {
       await act(() => window.LightPlanApp.actions.select(null));
       await page.click('#btn-undo');
       await sleep(300);
-      t.ok(await act(() => window.LightPlanApp.store.project().features.find((f) => f.id === 'ft_ridge').overrideFt == null), 'undo clears the tape length again');
+      t.ok(await act((id) => window.LightPlanApp.store.project().features.find((f) => f.id === id).overrideFt == null, rid), 'undo clears the tape length again');
     });
 
     // ================================================================ E. flow: the pinned button and the step bar
@@ -1338,12 +1515,88 @@ async function runPhase11(browser, name) {
       let text = '';
       try { text = execFileSync('pdftotext', [pdfFile, '-'], { encoding: 'utf8' }).replace(/\s+/g, ' '); } catch (e) { text = ''; }
       t.ok(/\.pdf$/.test(pdfFile) && fs.readFileSync(pdfFile).subarray(0, 4).toString('latin1') === '%PDF', '"Save PDF" on Review saves the report');
-      t.ok(/PLUGS INTO/.test(text) && /CORD AND ROUTE/.test(text) && /15 ft cord, 16 AWG/.test(text) && /6 ft jumper cord, 16 AWG/.test(text) && /The end of Front door/.test(text),
-        'PDF cords table: what each cord plugs into, cord or jumper cord');
-      t.ok(/Down 1\.5 ft, 2\.5 ft along the ground\./.test(text) && /3-way tap at its start/.test(text), 'PDF cords table: route in words and where the 3-way taps go');
-      t.ok(/2 10 4 \d+ Cords to outlets Jumper cords 3-way taps Timers/.test(text), 'PDF counts: cords to outlets, jumper cords, 3-way taps');
+      // What the report should say, from the plan: the first cord from an outlet, a jumper cord that leaves the
+      // end of another run, the 3-way taps and the counts.
+      const pw = await page.evaluate(() => {
+        const plan = window.LightPlanApp.store.plan();
+        const power = plan.power;
+        const bought = (c) => (Array.isArray(c.pieces) && c.pieces.length ? c.pieces.map((x) => x + ' ft').join(' + ') : Math.ceil(c.lengthFt) + ' ft');
+        const label = (runId) => (plan.runs.find((r) => r.id === runId) || {}).label;
+        const home = power.feeds.find((f) => f.id === power.groups[0].rootFeedId);
+        const jumper = power.feeds.find((f) => f.cord && f.cord.kind === 'jumper' && f.source.kind === 'feed' && f.source.port === 'end');
+        const parent = jumper ? power.feeds.find((f) => f.id === jumper.source.feedId) : null;
+        return {
+          home: bought(home.cord) + ' cord, ' + home.cord.awg + ' AWG', route: home.cord.routeText,
+          jumper: jumper ? bought(jumper.cord) + ' jumper cord, ' + jumper.cord.awg + ' AWG' : null,
+          from: parent ? 'The end of ' + label(parent.runIds[parent.runIds.length - 1]) : null,
+          tapAtStart: power.feeds.some((f) => f.taps > 0 && power.feeds.some((c) => c.source && c.source.kind === 'feed' && c.source.feedId === f.id && c.source.port === 'start')),
+          counts: power.counts,
+        };
+      });
+      const cap = (x) => x.charAt(0).toUpperCase() + x.slice(1);
+      t.ok(/PLUGS INTO/.test(text) && /CORD AND ROUTE/.test(text) && text.includes(pw.home) && !!pw.jumper && text.includes(pw.jumper) && text.includes(pw.from),
+        'PDF cords table: what each cord plugs into, cord or jumper cord (' + pw.home + '; ' + pw.jumper + '; ' + pw.from + ')');
+      t.ok(text.includes(cap(pw.route) + '.') && / along the ground/.test(pw.route) && pw.tapAtStart && /3-way tap at its start/.test(text), 'PDF cords table: route in words (' + cap(pw.route) + ') and where the 3-way taps go');
+      t.ok(new RegExp(pw.counts.homeRuns + ' ' + pw.counts.jumpers + ' ' + pw.counts.taps + ' \\d+ Cords to outlets Jumper cords 3-way taps Timers').test(text),
+        'PDF counts: ' + pw.counts.homeRuns + ' cords to outlets, ' + pw.counts.jumpers + ' jumper cords, ' + pw.counts.taps + ' 3-way taps');
       t.ok(/Measurements to double-check \(\d+\)/.test(text) && /Materials cost \(rough\)/.test(text), 'PDF lists the measurements to double-check and marks the cost rough');
       await sleep(600);
+    });
+
+    await sec('E3 nothing hides behind the pinned button', async () => {
+      // The button is pinned under the panel, not over it: with the panel scrolled to its end, the last control of
+      // every step is above the button and can be tapped.
+      for (let n = 1; n <= 6; n += 1) {
+        await goStep(n);
+        for (const sheet of phone ? ['half', 'full'] : ['half']) {
+          if (phone) { await act((sh) => window.LightPlanApp.actions.setSheet(sh), sheet); await sleep(350); }
+          const r = await page.evaluate(() => {
+            const root = document.getElementById('panel-root');
+            const bar = document.getElementById('action-bar').getBoundingClientRect();
+            const rr = root.getBoundingClientRect();
+            // Controls that are really shown: not inside a folded <details> (its summary is), not the hidden
+            // checkbox inside a switch.
+            const folded = (el) => { const d = el.closest('details:not([open])'); return !!d && !(el.tagName === 'SUMMARY' && el.parentElement === d); };
+            const shown = (el) => { const b = el.getBoundingClientRect(); return b.width > 1 && b.height > 1 && !folded(el) && (typeof el.checkVisibility !== 'function' || el.checkVisibility()); };
+            const controls = Array.from(root.querySelectorAll('button, input, select, textarea, summary, label.switch'))
+              .filter((el) => shown(el) && (el.matches('label.switch') || !el.closest('label.switch')));
+            const last = controls[controls.length - 1];
+            last.scrollIntoView({ block: 'end' });
+            const b = last.getBoundingClientRect();
+            const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+            const out = {
+              name: (last.innerText || last.getAttribute('aria-label') || last.tagName).trim().replace(/\s+/g, ' ').slice(0, 32),
+              bottom: Math.round(b.bottom), barTop: Math.round(bar.top), rootBottom: Math.round(rr.bottom),
+              reachable: !!hit && (last.contains(hit) || hit.contains(last)),
+            };
+            root.scrollTop = 0;
+            return out;
+          });
+          t.ok(r.rootBottom <= r.barTop && r.bottom <= r.rootBottom && r.reachable,
+            'step ' + n + (phone ? ' (sheet ' + sheet + ')' : '') + ': the last control ("' + r.name + '") scrolls clear of the pinned button and can be tapped');
+        }
+      }
+      if (phone) {
+        // A collapsed sheet shows the step's title whole above the button, not a heading cut in half.
+        for (const n of [3, 5]) {
+          await goStep(n);
+          await act(() => window.LightPlanApp.actions.setSheet('min'));
+          await sleep(400);
+          const m = await page.evaluate(() => {
+            const root = document.getElementById('panel-root');
+            root.scrollTop = 0;
+            const rr = root.getBoundingClientRect();
+            const kids = Array.from(root.querySelector('.panel-content').children);
+            const title = root.querySelector('.panel-title').getBoundingClientRect();
+            const peeking = kids.slice(1).concat(Array.from(kids[0].children)).filter((el) => { const b = el.getBoundingClientRect(); return b.height > 0 && b.top < rr.bottom - 0.5 && b.bottom > rr.bottom + 0.5; }).map((el) => el.className || el.tagName);
+            return { title: root.querySelector('.panel-title').textContent, whole: title.height > 20 && title.top >= rr.top - 0.5 && title.bottom <= rr.bottom + 0.5, peeking, strip: Math.round(rr.height) };
+          });
+          t.ok(m.whole && m.peeking.length === 0, 'step ' + n + ', sheet collapsed: the title "' + m.title + '" is whole in the ' + m.strip + ' px above the button and nothing is cut off' + (m.peeking.length ? ' (cut: ' + m.peeking.join(', ') + ')' : ''));
+          if (n === 5) await shot('sheet-min');
+        }
+        await act(() => window.LightPlanApp.actions.setSheet('half'));
+        await sleep(300);
+      }
     });
 
     await sec('G lens wording', async () => {
@@ -1371,7 +1624,8 @@ async function runPhase11(browser, name) {
       const e = await page.evaluate(() => {
         const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
         const buttons = Array.from(document.querySelectorAll('#lp-app button')).filter(vis).map((b) => b.textContent.trim());
-        const text = Array.from(document.querySelectorAll('#lp-app p, #lp-app h2, #lp-app span')).filter(vis).map((el) => el.textContent).join(' ');
+        // innerText: the words that are shown (textContent would include the desktop-only words a phone hides).
+        const text = Array.from(document.querySelectorAll('#lp-app p, #lp-app h2')).filter(vis).map((el) => el.innerText).join(' ');
         return { take: buttons.filter((x) => x === 'Take photo').length, choose: buttons.filter((x) => x === 'Choose photo').length, drop: /drop (a|one|the) (photo)?/i.test(text) || /drop one/i.test(text), chooseOrTake: /Choose or take a photo/.test(text),
           done: Array.from(document.querySelectorAll('#stepbar-list .step.done')).length };
       });
@@ -1408,6 +1662,8 @@ async function runPhase11(browser, name) {
       // A toast does not follow to another step.
       await goStep(3);
       t.ok((await ui(page)).toast == null, 'the toast is gone after a step change');
+      const p3 = await pinned();
+      t.ok(p3.label === 'Set the scale' && p3.action === 'go-2' && p3.inView, 'on Trace with no scale yet the pinned button says "Set the scale" (' + p3.label + ')');
       await goStep(2);
     });
 
@@ -1459,12 +1715,23 @@ async function runPhase11(browser, name) {
         'dragging one corner zoomed in' + (phone ? ' (aimed with the loupe)' : '') + ' updates that corner only: ' + JSON.stringify(dragged.tapErr) + ' (expected ' + wantDrag + ' at index 2)');
       await page.click('#btn-undo');
       await sleep(300);
-      const undone = await act(() => window.LightPlanApp.store.project().planes[0].rect.tapErr);
-      t.ok(undone.length === 4 && undone.every((e) => e === want), 'undo restores the corner and its value (' + JSON.stringify(undone) + ')');
+      const undone = await act(() => { const r = window.LightPlanApp.store.project().planes[0].rect; return { tapErr: r.tapErr, corner: r.corners[2] }; });
+      t.ok(undone.tapErr.length === 4 && undone.tapErr.every((e) => e === want) && Math.hypot(undone.corner[0] - 950, undone.corner[1] - 660) < 0.01, 'undo restores the corner and its value (' + JSON.stringify(undone.tapErr) + ')');
+      await page.click('#btn-redo');
+      await sleep(300);
+      const redone = await act(() => { const r = window.LightPlanApp.store.project().planes[0].rect; return { tapErr: r.tapErr, corner: r.corners[2] }; });
+      t.ok(redone.tapErr.length === 4 && redone.tapErr[2] === dragged.tapErr[2] && redone.tapErr[0] === want && redone.corner[0] === dragged.corner[0] && redone.corner[1] === dragged.corner[1],
+        'redo brings back the dragged corner with its own value, still index for index (' + JSON.stringify(redone.tapErr) + ')');
+      await page.click('#btn-undo');
+      await sleep(300);
       // Trace an eave: the first end snaps onto a rectangle corner and copies its value; the second is a fresh tap.
       await act(() => { window.LightPlanApp.viewport.fit(); window.LightPlanApp.actions.select(null); });
       await goStep(3);
+      const pr = await pinned();
+      t.ok(pr.label === 'Trace the roofline' && pr.action === 'trace-roofline' && pr.inView, 'on Trace with a scale and nothing traced the pinned button says "Trace the roofline" (' + pr.label + ')');
       await press(page, '[data-act="trace-type"][data-type="roofline"]');
+      const pd = await pinned();
+      t.ok(pd.label === 'Done tracing' && pd.primary && pd.inView, 'while tracing the pinned button says "Done tracing" (' + pd.label + ')');
       await zoomTo([420, 340], phone ? 2.5 : 1);
       const view = await act(() => window.LightPlanApp.viewport.getView().scale);
       const corner0 = await act(() => window.LightPlanApp.store.project().planes[0].rect.corners[0]);
@@ -1479,6 +1746,19 @@ async function runPhase11(browser, name) {
       await sleep(400);
       const feat = await act(() => { const f = window.LightPlanApp.store.project().features; return f[f.length - 1]; });
       t.ok(feat && feat.tapErr && feat.tapErr.length === feat.points.length && feat.tapErr[0] === want, 'the traced item stores one value per point (' + JSON.stringify(feat && feat.tapErr) + ')');
+      // E: after Finish the hint bar shows the length and offers what to trace next; the pinned button moves on.
+      const chooser = await page.evaluate(() => {
+        const shown = (id) => { const el = document.getElementById(id); return !!el && !el.hidden && el.getBoundingClientRect().height > 0; };
+        return {
+          mode: window.LightPlanApp.store.ui().mode.name, text: document.getElementById('hint-text').textContent,
+          chips: Array.from(document.querySelectorAll('#hint-next-chips [data-next]')).filter((b) => b.getBoundingClientRect().height > 0).map((b) => b.textContent).join('/'),
+          next: shown('hint-next'), more: shown('hint-more'), done: shown('hint-done'), finish: shown('hint-finish'),
+        };
+      });
+      t.ok(chooser.mode === 'select' && chooser.next && chooser.more && chooser.done && !chooser.finish && chooser.chips === 'Eave/Window/Bush' && /^Eave( \d+)?: \d+′/.test(chooser.text),
+        'after Finish the hint bar gives the length and offers Eave / Window / Bush, More and Done (' + chooser.text + ' ' + chooser.chips + ')');
+      const pn = await pinned();
+      t.ok(pn.label === 'Next: Design' && pn.inView, 'and the pinned button says "Next: Design" (' + pn.label + ')');
       // Insert a point with the + handle, then delete it: the list stays in step.
       const mid = [(feat.points[0][0] + feat.points[1][0]) / 2, (feat.points[0][1] + feat.points[1][1]) / 2];
       const [mp] = await toPage(page, [mid]);
@@ -1490,6 +1770,71 @@ async function runPhase11(browser, name) {
       const del = await act((id) => { const f = window.LightPlanApp.store.project().features.find((x) => x.id === id); return { n: f.points.length, e: f.tapErr }; }, feat.id);
       t.ok(del.n === 2 && del.e.length === 2 && del.e[0] === want, 'deleting it too (' + JSON.stringify(del.e) + ')');
       await act(() => window.LightPlanApp.actions.finishTracing());
+    });
+
+    await sec('F2 zoomed-out taps lower the confidence', async () => {
+      // SPEC 8.4: a rectangle marked with the photo zoomed out is rated by how coarse those taps were, and the
+      // Calibrate step says "Tapped zoomed out … zoom in and re-tap" outright. Re-tapped zoomed in, the note goes.
+      await goStep(2);
+      const wallId = await act(() => window.LightPlanApp.actions.addPlane('wall'));
+      await act(() => window.LightPlanApp.actions.setCalib({ rectPresetId: 'garage-double' }));
+      const corners = [[400, 500], [720, 500], [720, 640], [400, 640]];   // 320 x 140 px for a 16 x 7 ft door
+      const state = () => page.evaluate((id) => {
+        const s = window.LightPlanApp.store;
+        const pl = s.project().planes.find((x) => x.id === id);
+        const sol = s.plan().measured.planes[id] || {};
+        const note = document.querySelector('.plane-editor [data-key="zoomed-out"]');
+        let seen = false;
+        if (note) {
+          note.scrollIntoView({ block: 'center' });
+          const b = note.getBoundingClientRect();
+          const rr = document.getElementById('panel-root').getBoundingClientRect();
+          const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+          seen = b.height > 0 && b.top >= rr.top - 0.5 && b.bottom <= rr.bottom + 0.5 && !!hit && note.contains(hit);
+        }
+        const row = document.querySelector('.plane-row[data-key="' + id + '"] .pill');
+        return {
+          tapErr: pl.rect ? pl.rect.tapErr : null, level: sol.confidence ? sol.confidence.level : null, score: sol.confidence ? sol.confidence.score : null,
+          reasons: sol.confidence ? sol.confidence.reasons : [], note: note ? note.textContent.trim() : '', seen, pill: row ? row.textContent.trim() : '',
+        };
+      }, wallId);
+      /** Tap the four corners: at the zoom the view has now, or (zoomK) zoomed in on each corner in turn. */
+      const mark = async (zoomK) => {
+        await act((id) => window.LightPlanApp.actions.startPlaneRect(id), wallId);
+        await sleep(350);
+        for (const c of corners) {
+          if (zoomK) await zoomTo(c, zoomK);
+          const [pt] = await toPage(page, [c]);
+          await tapAt(page, cfg, pt[0], pt[1]);
+        }
+        await sleep(400);
+        if (phone) { await act(() => window.LightPlanApp.actions.setSheet('full')); await sleep(400); }
+      };
+      // Zoomed out: a phone at the zoom the photo opens with; a mouse on a photo zoomed far out.
+      await act(() => window.LightPlanApp.viewport.fit());
+      if (!phone) await zoomTo([560, 570], 0.35);
+      await mark();
+      const out = await state();
+      const coarse = out.tapErr ? Math.max(...out.tapErr) : 0;
+      const rank = { low: 0, medium: 1, high: 2 };
+      t.ok(coarse > 5 && /^Tapped zoomed out \(about ±\d+ px on the photo\): zoom in and re-tap the corners of the rectangle\./.test(out.reasons[0] || '') && rank[out.level] < 2,
+        (phone ? 'a finger at fit zoom' : 'a mouse on a zoomed-out photo') + ' (±' + coarse + ' px) rates the wall ' + out.level + ', and the first reason says why (' + (out.reasons[0] || '').slice(0, 70) + ')');
+      t.ok(out.seen && out.note === out.reasons[0] && out.pill.toLowerCase() === out.level, 'the Calibrate step shows that reason in a note on screen, and the wall\'s row reads ' + out.pill);
+      await shot('zoomed-out');
+      // The same corners, each tapped with the photo zoomed in on it (on a phone the whole rectangle does not fit
+      // on screen at that zoom, so the view moves between taps, as it does in a person's hands).
+      if (phone) { await act(() => window.LightPlanApp.actions.setSheet('half')); await sleep(350); }
+      await mark(phone ? 4.5 : 2);
+      const fine = await state();
+      t.ok(fine.tapErr && fine.tapErr.every((e) => e === 2.5) && rank[fine.level] > rank[out.level] && fine.score > out.score && !fine.note && !fine.reasons.some((r) => /Tapped zoomed out/.test(r)),
+        're-tapped zoomed in (±2.5 px) the rating goes from ' + out.level + ' to ' + fine.level + ' and the note is gone');
+      await page.click('#btn-undo');
+      await sleep(300);
+      const again = await state();
+      t.ok(again.tapErr && Math.max(...again.tapErr) === coarse && again.level === out.level && again.note === out.note, 'undo brings the zoomed-out corners back with their precision and the note (' + JSON.stringify(again.tapErr) + ')');
+      await act((id) => { window.LightPlanApp.viewport.fit(); window.LightPlanApp.actions.deletePlane(id); }, wallId);
+      if (phone) { await act(() => window.LightPlanApp.actions.setSheet('half')); await sleep(300); }
+      await sleep(300);
     });
 
     await sec('G hint wording', async () => {
