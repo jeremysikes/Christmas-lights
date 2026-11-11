@@ -5,21 +5,21 @@
  * JSON-able, no DOM, no clock, no network. Nothing here is ever fetched: every URL is a link for a person
  * to open.
  *
- * HOW FAR TO TRUST IT. Every price, part number and spec below was read from search results on
- * 2026-11-11. The suppliers' own pages could not be opened that day, so nothing is confirmed:
- * priceStatus is 'observed' everywhere and the app must say "check the price". Entries the research
- * marked as doubtful were handled like this:
- *  - A part number that may be wrong is left out (supplierSku: null) and the note says to order from the
- *    link. This covers the Christmas Lights Etc spools and stringers (the number seen was the page number,
- *    not the item number), its C7 warm white and cool white bulbs (two numbers were seen) and its 70-light
- *    5 mm set (item number never seen).
- *  - Items seen as out of stock, old product lines, incandescent items, items with no product page and
- *    items with no listed watts are not offered at all (see docs/DATA_MODEL.md for the list).
- *  - Where a colour of a bulb family had no watts of its own, the family's listed figure is used and the
- *    note says so.
+ * HOW FAR TO TRUST IT. Everything below was read from the suppliers' own pages on 2026-11-11 (the check
+ * is written up in docs/SUPPLIER_CHECK.md). Each price is a snapshot of that day.
+ *  - priceStatus 'verified': the price, part number, pack size and electrical figures were read on the
+ *    item's own product page that day.
+ *  - priceStatus 'observed': the item was seen on the supplier's category list only (its own page was not
+ *    opened), so the app says "check the price". Four 1000Bulbs items are like this.
+ *  - A cut-to-length product as a whole (kind 'bulk') has no part number and its per-foot price is worked
+ *    out from its parts, not read from a page, so it is never 'verified': its parts carry their own status.
+ *  - Nothing else is entered. Items that could not be ordered that day, items with no watts on their page,
+ *    and items whose shape the planner cannot handle are left out (docs/DATA_MODEL.md lists them).
+ *  - Where a page gives two different amp or connect-limit figures, the lower one is used.
  *  - Run limits: bulk socket wire uses the trade rule "250 bulbs or 250 ft of line, whichever comes
- *    first"; the ready-made 25 ft C7/C9 sets are held to the same 250 ft (10 sets) although the supplier's
- *    fuse limit is higher; pre-made sets use the lowest connect count seen.
+ *    first", whatever larger rating a page prints for the wire.
+ *  - Quantity prices printed on Christmas Lights Etc pages are stored as `tiers` (the page's own wording
+ *    of each range) and mentioned in a note. They are never used to price a plan: the ranges are ambiguous.
  *
  * Wholesale (account) prices are not public for either supplier, so the prices here are the public ones.
  * The user overwrites any price with their own (project.pricing.overrides, keyed by `sku`).
@@ -51,21 +51,28 @@ LP.define('suppliers', [], function () {
     },
     {
       id: 'cle', name: 'Christmas Lights Etc', short: 'CLE', url: CLE,
+      // Read from the supplier's wholesale page. Its sign-up form is on the parent company's own site, which was
+      // not checked, so there is no link to it here: the link is the wholesale page that was read.
       wholesale: {
-        name: 'Wintergreen Corporation wholesale program',
-        url: 'https://wintergreencorp.com/wholesale-application.htm',
-        phone: '855-942-7100',
-        note: 'Christmas Lights Etc is the retail site of Wintergreen Corporation. Trade prices are on Wintergreen\'s own site behind a login: ' +
-          'apply as a professional installer and a representative replies within about one business day. The retail site also takes money off ' +
-          'bulb boxes when you buy 10 or more.',
+        name: 'Christmas Lights Etc wholesale program',
+        url: CLE + 'wholesale-Christmas-lights-and-trees.htm',
+        phone: '1-855-WGC-7100',
+        email: 'sales@wintergreencorp.com',
+        note: 'Christmas Lights Etc is part of the Wintergreen Corporation family. Its wholesale page promises wholesale pricing, large-order ' +
+          'discounts, same-day shipping and shipping straight to your clients, but lists no discount levels, minimum order, free-shipping amount ' +
+          'or payment terms. The sign-up form is on Wintergreen\'s own site, which was not checked.',
       },
-      // The research found only a Google site-search fallback, not the site's own search address, so there is none.
-      searchUrlTemplate: null,
+      // The site's own search form. Tested on 2026-11-11: the results page loaded and listed products.
+      searchUrlTemplate: CLE + 'browse/?q={query}',
+      searchUrlWorks: true,
+      searchNote: 'Checked on Nov 11, 2026: the search page loaded and listed products.',
       categoryUrls: {
         c9Bulbs: CLE + 'c9-led-replacement-lamp-bulbs--790.htm',
         c7Bulbs: CLE + 'c7-led-replacement-bulbs--789.htm',
         spools: CLE + 'c7-c9-christmas-light-strings-spools-8015.htm',
         stringers: CLE + 'c7-c9-christmas-light-strings-spools-8015.htm',
+        // There is no page for plugs alone: they are on the electrical accessories page (filter "Electrical Plugs").
+        plugs: CLE + 'christmas-light-adapters-and-electrical-accessories--106.htm',
         clips: CLE + 'c7-c9-light-clips-and-hangers--753.htm',
         miniLights: CLE + 'Wide-Angle-Lens-LED-Lights--864.htm',
         icicle: CLE + 'Icicle-Lights.htm',
@@ -76,19 +83,24 @@ LP.define('suppliers', [], function () {
         extensionCords: CLE + 'christmas-extension-cords--104.htm',
       },
       priceAsOf: PRICE_AS_OF,
-      notes: 'Public prices seen in search results on 2026-11-11, not confirmed on the supplier\'s pages. Some part numbers could not be ' +
-        'confirmed: those lines have a link and no part number.',
+      notes: 'Public prices read from the supplier\'s own product pages on Nov 11, 2026. Order by the Item Number shown on each page. ' +
+        'Bulb boxes, mini light sets, icicle sets and nets cost less in quantity: the supplier\'s page shows the price breaks.',
     },
     {
       id: '1000bulbs', name: '1000Bulbs', short: '1000Bulbs', url: TB,
+      // No wholesale, contractor or business-account page was seen on the site, so there is no link: only the
+      // phone number from its home page and the free-shipping line from its product pages.
       wholesale: {
-        name: '1000Bulbs business accounts',
-        url: 'https://shop.1000bulbs.com/business-owners/',
-        phone: '855-400-3240',
-        note: 'There is no published trade price list. Call the business line or fill in the form and a lighting specialist sets up the account ' +
-          '(volume pricing, payment terms, tax-exempt orders).',
+        name: '1000Bulbs lighting specialists (by phone)',
+        url: null,
+        phone: '1-800-624-4488',
+        note: 'No wholesale or contractor account page was seen on the site when it was checked. The phone number is the one on its home page. ' +
+          'Product pages say an item ships free with orders of $600 or more.',
       },
+      // The address the site's own search box uses. The test on 2026-11-11 was blocked by the site, so it is not confirmed.
       searchUrlTemplate: TB + 'fil/search?q={query}',
+      searchUrlWorks: null,
+      searchNote: 'This is the address the site\'s own search box uses. It could not be checked on Nov 11, 2026 (the site blocked the test).',
       categoryUrls: {
         c9Bulbs: TB + 'category/c9-led-light-bulb-replacements',
         c7Bulbs: TB + 'category/c7-led-light-bulb-replacements',
@@ -105,27 +117,41 @@ LP.define('suppliers', [], function () {
         timers: TB + 'category/christmas-light-timers',
       },
       priceAsOf: PRICE_AS_OF,
-      notes: 'Public prices seen in search results on 2026-11-11, not confirmed on the supplier\'s pages. This supplier\'s prices moved a lot ' +
-        'between listings of the same item, and promo codes are common: check each price.',
+      notes: 'Public prices read from the supplier\'s own product pages on Nov 11, 2026. A few items were seen on its category lists only and ' +
+        'say "check the price". Its pages showed no quantity price breaks.',
     },
   ];
 
   // ---------------------------------------------------------------- builders
   const round = (v, d) => { const k = Math.pow(10, d); return Math.round(v * k) / k; };
-  const NOT_CONFIRMED = 'Part number not confirmed: order from the link.';
+  /** Printed on the line of anything that was seen on a category list only (priceStatus 'observed'). */
+  const LISTED_ONLY = 'Seen on the supplier\'s category list only, not on its own page: check the price and details there.';
+  const LIMITED = 'The page said "Limited Quantity Available" when it was checked.';
+  /** The short sentence for a page's quantity prices: "Quantity price from 20 boxes: see the supplier's page." */
+  function tierNote(tiers, unit) {
+    const m = /^\s*(\d+)/.exec(tiers[0].qty);
+    return `Quantity price from ${m[1]} ${unit}: see the supplier's page.`;
+  }
+  const copyTiers = (tiers) => tiers.map((t) => Object.assign({}, t));
 
   /**
-   * One thing you can order (SPEC "Offer"). `supplierSku` null means the part number could not be confirmed;
-   * the `sku` (price-override key) then uses `extra.slug` instead.
+   * One thing you can order (SPEC "Offer"): a bulk part or an accessory. `sku` (the price-override key) is
+   * "<supplierId>:<part number>". Read on its own product page unless `extra.listedOnly` (seen on a category
+   * list only → 'observed', with a note). `extra.tiers` + `extra.tierUnit`: the page's quantity prices, kept as
+   * data and mentioned in the note. Every other key of `extra` is copied onto the offer.
    */
   function offer(supplierId, supplierSku, name, url, price, packQty, extra) {
     const x = extra || {};
     const out = {
-      sku: supplierId + ':' + (supplierSku || x.slug), supplierSku: supplierSku || null, name, url, price, packQty,
-      priceAsOf: PRICE_AS_OF, priceStatus: 'observed',
+      sku: supplierId + ':' + supplierSku, supplierSku, name, url, price, packQty,
+      priceAsOf: PRICE_AS_OF, priceStatus: x.listedOnly ? 'observed' : 'verified',
     };
-    for (const k of Object.keys(x)) if (k !== 'slug') out[k] = x[k];
-    if (!supplierSku) out.notes = (out.notes ? out.notes + ' ' : '') + NOT_CONFIRMED;
+    for (const k of Object.keys(x)) if (!['listedOnly', 'tierUnit', 'tiers', 'notes'].includes(k)) out[k] = x[k];
+    const notes = [];
+    if (x.notes) notes.push(x.notes);
+    if (x.tiers) { out.tiers = copyTiers(x.tiers); notes.push(tierNote(x.tiers, x.tierUnit || 'packs')); }
+    if (x.listedOnly) notes.push(LISTED_ONLY);
+    if (notes.length) out.notes = notes.join(' ');
     return out;
   }
 
@@ -134,8 +160,10 @@ LP.define('suppliers', [], function () {
    * measuring, chaining and power feeds work unchanged (SPEC §8.3). Derived figures:
    * bulbsPerUnit = 12 / spacing, wattsPerUnit = wattsEach × bulbsPerUnit, maxEndToEnd = the feet one run may
    * be (maxRunFt, and never more sockets than maxBulbsPerRun), maxConnectedW = the watts one run may carry
-   * (maxBulbsPerRun × wattsEach, and never more than 80% of the wire's amp rating at 120 V), and `price` = a
-   * per-foot equivalent of wire + default bulbs (display and fallback only; the BOM prices the components).
+   * (maxBulbsPerRun × wattsEach, and never more than 80% of the lowest amp rating printed for any length of
+   * the wire, at 120 V), and `price` = a per-foot equivalent of the spool + default bulbs (display and
+   * fallback only; the BOM prices the components). The product itself has no part number and its price is
+   * worked out, not read from a page, so its priceStatus is 'observed' whatever its parts are.
    */
   function bulkProduct(spec) {
     const spacing = spec.bulbSpacingIn;
@@ -144,7 +172,8 @@ LP.define('suppliers', [], function () {
     const maxRunFt = spec.maxRunFt || 250;
     const maxBulbs = spec.maxBulbsPerRun || 250;
     const def = c.bulb.variants[c.bulb.defaultVariant];
-    const wireW = c.wire.maxAmps > 0 ? c.wire.maxAmps * 120 * 0.8 : Infinity;
+    const amps = [c.wire].concat(Array.isArray(c.wire.sizes) ? c.wire.sizes : []).map((w) => w && w.maxAmps).filter((a) => a > 0);
+    const wireW = amps.length ? Math.min.apply(null, amps) * 120 * 0.8 : Infinity;
     return {
       id: spec.id, sku: spec.id, supplierId: spec.supplierId, supplierSku: null, equiv: spec.equiv, kind: 'bulk',
       name: spec.name, category: spec.category, tech: 'LED', unit: 'foot',
@@ -157,122 +186,170 @@ LP.define('suppliers', [], function () {
     };
   }
 
-  /** A ready-made supplier product (same shape as catalog.DEFAULT_PRODUCTS plus the supplier fields). */
+  /**
+   * A ready-made supplier product (same shape as catalog.DEFAULT_PRODUCTS plus the supplier fields), read on
+   * its own product page. `fields.tiers` + `fields.tierUnit`: the page's quantity prices, kept as data and
+   * mentioned in orderNote (the short caution printed on the shopping-list line; `notes` is the longer
+   * description shown in the product library).
+   */
   function product(supplierId, slug, supplierSku, fields) {
     const id = supplierId + ':' + slug;
-    const out = Object.assign({ id, sku: id, supplierId, supplierSku: supplierSku || null }, fields,
-      { enabled: true, priceAsOf: PRICE_AS_OF, priceStatus: 'observed' });
-    // orderNote: a short caution printed on the shopping-list line (notes is the longer description).
-    if (!supplierSku) out.orderNote = (out.orderNote ? out.orderNote + ' ' : '') + NOT_CONFIRMED;
+    const out = { id, sku: id, supplierId, supplierSku };
+    for (const k of Object.keys(fields)) if (!['tierUnit', 'tiers', 'orderNote'].includes(k)) out[k] = fields[k];
+    Object.assign(out, { enabled: true, priceAsOf: PRICE_AS_OF, priceStatus: 'verified' });
+    const order = [];
+    if (fields.orderNote) order.push(fields.orderNote);
+    if (fields.tiers) { out.tiers = copyTiers(fields.tiers); order.push(tierNote(fields.tiers, fields.tierUnit || 'sets')); }
+    if (order.length) out.orderNote = order.join(' ');
     return out;
   }
 
   const RUN_RULE = 'One run: at most 250 ft of wire or 250 bulbs, whichever comes first (the trade rule for 18-gauge socket wire).';
-  const FAMILY_WATTS = 'Watts are the bulb family\'s listed figure; this colour\'s own page did not show them.';
+  /** What a length of socket wire comes with, said on the BOM line because slide-on plugs are counted for every cut length. */
+  const PLUGS_BOTH = 'It comes with a plug on each end, so a length you use uncut needs no slide-on plugs.';
+  const PLUG_MALE_ONLY = 'It comes with a male plug only, so a length you use uncut needs no slide-on male plug.';
 
   // ---------------------------------------------------------------- Christmas Lights Etc
-  const cleBulb = (item, slug, colour, page, base, price, extra) => offer('cle', item,
-    `${base} OptiCore LED bulbs, ${colour}, faceted, box of 25`, CLE + 'p/' + page, price, 25, Object.assign({ slug }, extra));
+  // Quantity prices as the bulb pages print them ("Bulk Discounts": range, price per box, percent off list).
+  const CLE_C9_BULB_TIERS = [{ qty: '20 - 40 boxes', each: 28.7, pctOffList: 30 }, { qty: '40+ boxes', each: 26.65, pctOffList: 35 }];
+  const CLE_C7_BULB_TIERS = [{ qty: '10 - 20 boxes', each: 24.94, pctOffList: 25 }, { qty: '20 - 40 boxes', each: 23.28, pctOffList: 30 },
+    { qty: '40+ boxes', each: 21.61, pctOffList: 35 }];
+  const cleBulb = (item, colour, page, base, price, tiers) => offer('cle', item,
+    `${base} OptiCore LED bulbs, ${colour}, faceted, box of 25`, CLE + 'p/' + page, price, 25, { tiers, tierUnit: 'boxes' });
+  /** Socket wire at Christmas Lights Etc: 18-gauge SPT-1 (the pages say "SPT1W"), a socket every 12 in, green. */
+  const cleWire = (item, name, page, price, extra) => offer('cle', item, name, CLE + 'p/' + page, price, 1,
+    Object.assign({ wireType: 'SPT-1', wireGauge: 18 }, extra));
+  const CLE_AMPS = 'The supplier\'s pages give this wire 7 A in the table and 8 A in the text. LightPlan takes the lowest figure a page gives, ' +
+    'and 250 bulbs (200 W) stay far inside it.';
+
+  // SPT-1 slide-on plugs, green, packs of 10 (the packs of 5 could not be ordered on 2026-11-11).
+  const CLE_PLUG_MALE = offer('cle', '88283', 'Slide-on male plug for SPT-1 wire, green, pack of 10',
+    CLE + 'p/Male-Zip-Plug-SPT1-2-Prong-Male-Plug-Green-10-Pack-67468.htm', 12.4, 10, { wireType: 'SPT-1', maxAmps: 10 });
+  const CLE_PLUG_FEMALE = offer('cle', '88287', 'Slide-on female plug for SPT-1 wire, green, pack of 10',
+    CLE + 'p/Female-Zip-Plug-with-Knockout-Tab-SPT1-Green-10-Pack-67469.htm', 12.4, 10, { wireType: 'SPT-1', maxAmps: 10 });
 
   const CLE_C9_BULK = bulkProduct({
     id: 'cle:c9-bulk-12', supplierId: 'cle', equiv: 'c9-led', category: 'c9', bulbSpacingIn: 12,
     name: 'C9 LED on socket wire, a bulb every 12 in (cut to length)',
-    notes: 'Bought as socket wire, boxes of 25 screw-in bulbs and slide-on plugs. 0.8 W per bulb as the supplier lists it. ' + RUN_RULE,
+    notes: 'Bought as socket wire, boxes of 25 screw-in bulbs and slide-on plugs. 0.8 W per bulb as the supplier lists it. ' + RUN_RULE + ' ' + CLE_AMPS +
+      ' (The table for the 25 ft length says 5 A.)',
     components: {
-      wire: offer('cle', null, 'C9 socket wire, 1,000 ft spool, a socket every 12 in, green SPT-1 (no plugs)',
-        CLE + 'p/C9-Christmas-Lights-Spool-1000-ft-Length-12-inch-Spacing-7-Amp-Green-Wire--15085.htm', 409.99, 1, {
-          slug: 'c9-spool-1000-spt1', spoolFt: 1000, wireType: 'SPT-1', maxAmps: 7,
-          notes: 'The page lists 7 A in one place and 8 A in another; LightPlan uses 7 A.',
+      wire: cleWire('15085', 'C9 socket wire, 1,000 ft spool, a socket every 12 in, green SPT-1 (no plugs)',
+        'C9-Christmas-Lights-Spool-1000-ft-Length-12-inch-Spacing-7-Amp-Green-Wire--15085.htm', 409.99, {
+          spoolFt: 1000, maxAmps: 7, plugsIncluded: false,
           sizes: [
-            offer('cle', null, 'C9 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1 (comes with a fused plug)',
-              CLE + 'p/C9-Christmas-Lights-String-100-ft-Length-12-inch-Spacing-7-Amp-Green-Wire--15098.htm', 54.99, 1, { slug: 'c9-stringer-100-spt1', lengthFt: 100 }),
-            offer('cle', null, 'C9 socket wire, 25 ft ready-made length, a socket every 12 in, green SPT-1 (comes with a fused plug)',
-              CLE + 'p/C9-Christmas-Lights-String-25-ft-Length-12-inch-Spacing-Green-Wire--15100.htm', 14.99, 1, { slug: 'c9-stringer-25-spt1', lengthFt: 25 }),
+            cleWire('81832', 'C9 socket wire, 500 ft spool, a socket every 12 in, green SPT-1 (no plugs)',
+              '500-foot-c9-commercial-light-spool-spt1-green-wire-61557.htm', 219.99, { lengthFt: 500, maxAmps: 7, plugsIncluded: false }),
+            cleWire('15098', 'C9 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
+              'C9-Christmas-Lights-String-100-ft-Length-12-inch-Spacing-7-Amp-Green-Wire--15098.htm', 49.99,
+              { lengthFt: 100, maxAmps: 7, plugsIncluded: 'both', notes: PLUGS_BOTH }),
+            cleWire('15100', 'C9 socket wire, 25 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
+              'C9-Christmas-Lights-String-25-ft-Length-12-inch-Spacing-Green-Wire--15100.htm', 15.99,
+              { lengthFt: 25, maxAmps: 5, plugsIncluded: 'both', notes: PLUGS_BOTH }),
           ],
         }),
       bulb: {
         name: 'C9 OptiCore LED bulbs, faceted, box of 25', packQty: 25, wattsEach: 0.8, base: 'E17', defaultVariant: 'warmWhite',
         variants: {
-          warmWhite: cleBulb('72636', null, 'warm white', 'C9--Warm-White-OptiCore-LED-Replacement-Bulbs-13603.htm', 'C9', 32.99),
-          coolWhite: cleBulb('72639', null, 'cool white', 'C9--Cool-White-OptiCore-LED-Replacement-Bulbs-13604.htm', 'C9', 32.99, { notes: FAMILY_WATTS }),
-          multi: cleBulb('72642', null, 'multicolor', 'C9--Multicolor-OptiCore-LED-Replacement-Bulbs-13605.htm', 'C9', 32.99),
-          red: cleBulb('72645', null, 'red', 'C9--Red-OptiCore-LED-Replacement-Bulbs-13606.htm', 'C9', 32.99, { notes: FAMILY_WATTS }),
-          green: cleBulb('72654', null, 'green', 'C9--Green-OptiCore-LED-Replacement-Bulbs-13609.htm', 'C9', 32.99, { notes: FAMILY_WATTS }),
+          warmWhite: cleBulb('72636', 'warm white', 'C9--Warm-White-OptiCore-LED-Replacement-Bulbs-13603.htm', 'C9', 29.99, CLE_C9_BULB_TIERS),
+          coolWhite: cleBulb('72639', 'cool white', 'C9--Cool-White-OptiCore-LED-Replacement-Bulbs-13604.htm', 'C9', 29.99, CLE_C9_BULB_TIERS),
+          multi: cleBulb('72642', 'multicolor', 'C9--Multicolor-OptiCore-LED-Replacement-Bulbs-13605.htm', 'C9', 29.99, CLE_C9_BULB_TIERS),
+          red: cleBulb('72645', 'red', 'C9--Red-OptiCore-LED-Replacement-Bulbs-13606.htm', 'C9', 29.99, CLE_C9_BULB_TIERS),
+          green: cleBulb('72654', 'green', 'C9--Green-OptiCore-LED-Replacement-Bulbs-13609.htm', 'C9', 29.99, CLE_C9_BULB_TIERS),
+          blue: cleBulb('72648', 'blue', 'C9--Blue-OptiCore-LED-Replacement-Bulbs-13607.htm', 'C9', 29.99, CLE_C9_BULB_TIERS),
         },
       },
-      plugMale: offer('cle', '67083', 'Slide-on male plug for SPT-1 wire, green, pack of 5',
-        CLE + 'p/Male-Zip-Plug-SPT1-Polarized-Male-Plug-Green-1-Pack-56874.htm', 6.2, 5,
-        { notes: 'Pack size not confirmed (the page address says 1-pack): check it before you order.' }),
-      plugFemale: offer('cle', '67081', 'Slide-on female plug for SPT-1 wire, green, pack of 5',
-        CLE + 'p/Female-Zip-Plug-SPT1-Green-1-Pack-56873.htm', 6.2, 5,
-        { notes: 'Pack size not confirmed (the page address says 1-pack): check it before you order.' }),
+      plugMale: CLE_PLUG_MALE,
+      plugFemale: CLE_PLUG_FEMALE,
     },
   });
 
   const CLE_C7_BULK = bulkProduct({
     id: 'cle:c7-bulk-12', supplierId: 'cle', equiv: 'c7-led', category: 'c7', bulbSpacingIn: 12,
     name: 'C7 LED on socket wire, a bulb every 12 in (cut to length)',
-    notes: 'Bought as socket wire, boxes of 25 screw-in bulbs and slide-on plugs. 0.8 W per bulb as the supplier lists it. ' + RUN_RULE,
+    notes: 'Bought as socket wire, boxes of 25 screw-in bulbs and slide-on plugs. 0.8 W per bulb as the supplier lists it. ' + RUN_RULE + ' ' + CLE_AMPS,
     components: {
-      wire: offer('cle', null, 'C7 socket wire, 1,000 ft spool, a socket every 12 in, green SPT-1 (no plugs)',
-        CLE + 'p/C7-Christmas-Lights-Spool-1000-ft-Length-12-inch-Spacing-7-Amp-Green-Wire--15054.htm', 369.99, 1, {
-          slug: 'c7-spool-1000-spt1', spoolFt: 1000, wireType: 'SPT-1', maxAmps: 7,
-          notes: 'The page lists 7 A in one place and 8 A in another; LightPlan uses 7 A.',
+      wire: cleWire('15054', 'C7 socket wire, 1,000 ft spool, a socket every 12 in, green SPT-1 (no plugs)',
+        'C7-Christmas-Lights-Spool-1000-ft-Length-12-inch-Spacing-7-Amp-Green-Wire--15054.htm', 369.99, {
+          spoolFt: 1000, maxAmps: 7, plugsIncluded: false,
+          sizes: [
+            cleWire('72912', 'C7 socket wire, 500 ft spool, a socket every 12 in, green SPT-1 (no plugs)',
+              '500-foot-c7-commercial-light-spool-spt1-green-wire-61546.htm', 199.99, { lengthFt: 500, maxAmps: 7, plugsIncluded: false }),
+            cleWire('15067', 'C7 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
+              'C7-Christmas-Lights-String-100-ft-Length-12-inch-Spacing-5-Amp-Green-Wire--15067.htm', 44.99,
+              { lengthFt: 100, maxAmps: 7, plugsIncluded: 'both', notes: PLUGS_BOTH }),
+            cleWire('15071', 'C7 socket wire, 25 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
+              'C7-Christmas-Lights-String-25-ft-Length-12-inch-Spacing-Green-Wire--15071.htm', 11.99,
+              { lengthFt: 25, maxAmps: 8, plugsIncluded: 'both', notes: PLUGS_BOTH }),
+          ],
         }),
       bulb: {
         name: 'C7 OptiCore LED bulbs, faceted, box of 25', packQty: 25, wattsEach: 0.8, base: 'E12', defaultVariant: 'warmWhite',
         variants: {
-          // Two different item numbers were seen for the warm white and cool white boxes, so neither is given.
-          warmWhite: cleBulb(null, 'c7-opticore-warm-white', 'warm white', 'C7--Warm-White-OptiCore-LED-Replacement-Bulbs-13593.htm', 'C7', 24.99),
-          coolWhite: cleBulb(null, 'c7-opticore-cool-white', 'cool white', 'C7--Cool-White-OptiCore-LED-Replacement-Bulbs-13594.htm', 'C7', 24.99, { notes: FAMILY_WATTS }),
-          multi: cleBulb('72612', null, 'multicolor', 'C7--Multicolor-OptiCore-LED-Replacement-Bulbs-13595.htm', 'C7', 24.99, { notes: FAMILY_WATTS }),
-          red: cleBulb('72615', null, 'red', 'C7--Red-OptiCore-LED-Replacement-Bulbs-13596.htm', 'C7', 24.99, { notes: FAMILY_WATTS }),
-          green: cleBulb('72624', null, 'green', 'C7--Green-OptiCore-LED-Replacement-Bulbs-13599.htm', 'C7', 24.99, { notes: FAMILY_WATTS }),
+          warmWhite: cleBulb('72609', 'warm white', 'C7--Warm-White-OptiCore-LED-Replacement-Bulbs-13593.htm', 'C7', 24.99, CLE_C7_BULB_TIERS),
+          coolWhite: cleBulb('72606', 'cool white', 'C7--Cool-White-OptiCore-LED-Replacement-Bulbs-13594.htm', 'C7', 24.99, CLE_C7_BULB_TIERS),
+          multi: cleBulb('72612', 'multicolor', 'C7--Multicolor-OptiCore-LED-Replacement-Bulbs-13595.htm', 'C7', 24.99, CLE_C7_BULB_TIERS),
+          red: cleBulb('72615', 'red', 'C7--Red-OptiCore-LED-Replacement-Bulbs-13596.htm', 'C7', 24.99, CLE_C7_BULB_TIERS),
+          green: cleBulb('72624', 'green', 'C7--Green-OptiCore-LED-Replacement-Bulbs-13599.htm', 'C7', 24.99, CLE_C7_BULB_TIERS),
+          blue: cleBulb('72618', 'blue', 'C7--Blue-OptiCore-LED-Replacement-Bulbs-13597.htm', 'C7', 24.99, CLE_C7_BULB_TIERS),
         },
       },
-      plugMale: CLE_C9_BULK.components.plugMale,
-      plugFemale: CLE_C9_BULK.components.plugFemale,
+      plugMale: CLE_PLUG_MALE,
+      plugFemale: CLE_PLUG_FEMALE,
     },
   });
 
-  const SET_RULE = 'LightPlan plans at most 10 sets (250 ft) on one run, the trade rule for this wire; the supplier\'s fuse limit is higher (960 W).';
+  const SET_RULE = 'The supplier\'s page gives no limit for sets joined end to end: LightPlan plans at most 10 sets (250 ft, 250 bulbs) on one run, ' +
+    'the trade rule for this wire.';
   const CLE_PRODUCTS = [
     CLE_C9_BULK,
     CLE_C7_BULK,
     product('cle', 'c9-string-25', '77667', {
       equiv: 'c9-led', name: 'C9 OptiCore LED string, 25 bulbs on 25 ft, ready to hang', category: 'c9', tech: 'LED', unit: 'string',
-      bulbSpacingIn: 12, stringLengthFt: 25, leadFt: 0.5, bulbsPerUnit: 25, wattsPerUnit: 20, maxEndToEnd: 10, price: 47.99,
+      bulbSpacingIn: 12, stringLengthFt: 25, leadFt: 0.5, bulbsPerUnit: 25, wattsPerUnit: 20, maxEndToEnd: 10, price: 49.99,
       colors: ['warmWhite'], clipEligible: true, suitableFor: LINE_TYPES.slice(),
       url: CLE + 'p/C9-Warm-White-Opticore-Commercial-LED-Christmas-String-Lights-14953.htm',
-      notes: 'Ready-made: bulbs already in, plug on each end. 20 W per set (0.8 W per bulb). ' + SET_RULE,
+      notes: 'Ready-made: screw-in bulbs already in, on 18-gauge SPT-1 wire with a fused plug. 20 W per set (0.8 W per bulb). ' + SET_RULE,
+    }),
+    product('cle', 'c9-string-17', '84095', {
+      equiv: 'c9-led', name: 'C9 LED string, 25 bulbs on 17 ft, sealed set, green wire', category: 'c9', tech: 'LED', unit: 'string',
+      bulbSpacingIn: 8, stringLengthFt: 16, leadFt: 0.5, bulbsPerUnit: 25, wattsPerUnit: 2.4, maxEndToEnd: 90, price: 14.99,
+      colors: ['warmWhite'], clipEligible: true, suitableFor: LINE_TYPES.slice(),
+      url: CLE + 'C9-LED-Faceted-Warm-White-Prelamped-Light-Set--Green-Wire-7195.htm',
+      tiers: [{ qty: '192+', each: 12.64, pctOffList: 45 }], tierUnit: 'sets',
+      notes: 'Ready-made, 17 ft overall, bulbs 8 in apart and sealed in (they cannot be changed). 2.4 W per set, up to 90 sets end to end. ' +
+        'The lit length (16 ft) is worked out from 25 bulbs 8 in apart.',
     }),
     product('cle', 'c7-string-25', '77653', {
       equiv: 'c7-led', name: 'C7 OptiCore LED string, 25 bulbs on 25 ft, ready to hang', category: 'c7', tech: 'LED', unit: 'string',
-      bulbSpacingIn: 12, stringLengthFt: 25, leadFt: 0.5, bulbsPerUnit: 25, wattsPerUnit: 20, maxEndToEnd: 10, price: 34.99,
+      bulbSpacingIn: 12, stringLengthFt: 25, leadFt: 0.5, bulbsPerUnit: 25, wattsPerUnit: 20, maxEndToEnd: 10, price: 39.99,
       colors: ['warmWhite'], clipEligible: true, suitableFor: LINE_TYPES.slice(),
       url: CLE + 'p/C7-Warm-White-Opticore-Commercial-LED-Christmas-String-Lights-14949.htm',
-      notes: 'Ready-made: bulbs already in, plug on each end. 20 W per set (0.8 W per bulb). ' + SET_RULE,
+      notes: 'Ready-made: screw-in bulbs already in, on 18-gauge SPT-1 wire with a fused plug. 20 W per set (0.8 W per bulb). ' + SET_RULE,
     }),
-    product('cle', 'mini-5mm-70', null, {
+    product('cle', 'mini-5mm-70', '83768', {
       equiv: 'mini-led-100', name: '5 mm LED mini string, 70 bulbs, 4 in apart, green wire', category: 'mini', tech: 'LED', unit: 'string',
       bulbSpacingIn: 4, stringLengthFt: 23, leadFt: 0.5, bulbsPerUnit: 70, wattsPerUnit: 4.8, maxEndToEnd: 45, price: 19.99,
       colors: ['warmWhite'], clipEligible: false, suitableFor: MINI_TYPES.slice(),
       url: CLE + '5mm-LED-Wide-Angle-Warm-White-Prelamped-Light-Set--Green-Wire-7190.htm',
-      notes: '4.8 W per set, up to 45 sets end to end. The supplier lists 24 ft overall; the lit length (23 ft) is worked out from 70 bulbs 4 in apart.',
-      orderNote: 'The page lists more than one size: pick the 70-light set with bulbs 4 in apart.',
+      tiers: [{ qty: '100 - 192', each: 18.89, pctOffList: 30 }, { qty: '192+', each: 14.84, pctOffList: 45 }], tierUnit: 'sets',
+      notes: '4.8 W per set, up to 45 sets end to end. 24 ft overall; the lit length (23 ft) is worked out from 70 bulbs 4 in apart.',
+      orderNote: 'The page lists two sizes: pick the set with bulbs 4 in apart (item 83768).',
     }),
     product('cle', 'icicle-70', '85686', {
       equiv: 'icicle-led-300', name: '5 mm LED icicle lights, 70 bulbs, 7 ft lit, white wire', category: 'icicle', tech: 'LED', unit: 'string',
       bulbSpacingIn: 6, stringLengthFt: 7, leadFt: 0.5, bulbsPerUnit: 70, wattsPerUnit: 4.8, maxEndToEnd: 45, dropLengthsIn: [18, 15, 9], price: 21.99,
       colors: ['warmWhite'], clipEligible: true, suitableFor: ['roofline', 'gutter', 'railing'],
       url: CLE + 'p/5mm-Warm-White-LED-Icicle-Lights-5889.htm',
-      notes: '15 drops of 18, 15 and 9 in. 4.8 W per set, up to 45 sets end to end.',
+      tiers: [{ qty: '100+', each: 20.99, pctOffList: 25 }], tierUnit: 'sets',
+      notes: '15 drops of 18, 15 and 9 in, 6 in apart; 8 ft overall. 4.8 W per set, up to 45 sets end to end.',
     }),
     product('cle', 'net-4x6-100', '85472', {
       equiv: 'net-led-4x6', name: '5 mm LED net lights, 4 x 6 ft, 100 bulbs, green wire', category: 'net', tech: 'LED', unit: 'net',
-      bulbSpacingIn: 6, stringLengthFt: 6, leadFt: 2, bulbsPerUnit: 100, wattsPerUnit: 12, maxEndToEnd: 18, coverageSqFt: 24, price: 39.99,
+      bulbSpacingIn: 6, stringLengthFt: 6, leadFt: 2, bulbsPerUnit: 100, wattsPerUnit: 12, maxEndToEnd: 18, coverageSqFt: 24, price: 34.99,
       colors: ['warmWhite'], clipEligible: false, suitableFor: ['bush'],
       url: CLE + 'p/5mm-Warm-White-LED-Net-Lights-Green-Wire-6621.htm',
+      tiers: [{ qty: '100+', each: 33.74, pctOffList: 25 }], tierUnit: 'nets',
       notes: 'One net covers about 24 sq ft. 12 W per net, up to 18 nets end to end.',
     }),
   ];
@@ -281,63 +358,86 @@ LP.define('suppliers', [], function () {
   const tbUrl = (id, sku) => TB + 'product/' + id + '/' + sku + '.html';
   const tbBulb = (sku, id, base, colour, price, extra) => offer('1000bulbs', sku,
     `${base} VividCore Premium LED bulbs, ${colour}, faceted, pack of 25`, tbUrl(id, sku), price, 25, extra);
-  const TB_WIRE_AMPS = 'The listing gives no amp rating; 5 A is the supplier\'s planning figure for 18-gauge runs longer than 150 ft.';
+  /** Socket wire at 1000Bulbs: 18-gauge SPT-1, a socket every 12 in, green. Its 25 ft lengths are 20-gauge, so they are not offered as a size of it. */
+  const tbWire = (sku, id, name, price, extra) => offer('1000bulbs', sku, name, tbUrl(id, sku), price, 1,
+    Object.assign({ wireType: 'SPT-1', wireGauge: 18 }, extra));
+  const TB_AMPS = 'This supplier\'s spool pages give no amp rating for the wire; the page for its 100 ft length of C9 socket wire, the same ' +
+    '18-gauge wire, says 5 A. LightPlan holds a run to 250 bulbs, far inside that.';
 
-  const TB_PLUG_MALE = offer('1000bulbs', 'PLUG-10001', 'Slide-on male plug for SPT-1 wire, green, pack of 10', tbUrl(223184, 'PLUG-10001'), 6.73, 10);
+  // SPT-1 slide-on plugs, green, packs of 10.
+  const TB_PLUG_MALE = offer('1000bulbs', 'PLUG-10001', 'Slide-on male plug for SPT-1 wire, green, pack of 10', tbUrl(223184, 'PLUG-10001'), 6.73, 10,
+    { wireType: 'SPT-1', maxAmps: 10 });
+  const TB_PLUG_FEMALE = offer('1000bulbs', 'PLUG-10002', 'Slide-on female plug for SPT-1 wire, green, pack of 10', tbUrl(223291, 'PLUG-10002'), 6.73, 10,
+    { wireType: 'SPT-1', maxAmps: 10 });
 
   const TB_C9_BULK = bulkProduct({
     id: '1000bulbs:c9-bulk-12', supplierId: '1000bulbs', equiv: 'c9-led', category: 'c9', bulbSpacingIn: 12,
     name: 'C9 LED on socket wire, a bulb every 12 in (cut to length)',
-    notes: 'Bought as socket wire, packs of 25 screw-in bulbs and slide-on plugs. 0.74 W per bulb as the supplier lists it. ' + RUN_RULE,
+    notes: 'Bought as socket wire, packs of 25 screw-in bulbs and slide-on plugs. 0.74 W per bulb as the supplier lists it. ' + RUN_RULE + ' ' + TB_AMPS,
     components: {
-      wire: offer('1000bulbs', 'CMS-10105', 'C9 socket wire, 1,000 ft spool, a socket every 12 in, green SPT-1, 18 gauge (no plugs)',
-        tbUrl(221836, 'CMS-10105'), 391.13, 1, {
-          spoolFt: 1000, wireType: 'SPT-1', maxAmps: 5, notes: TB_WIRE_AMPS,
-          sizes: [
-            offer('1000bulbs', 'CMS-10124', 'C9 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1, 18 gauge (comes with a male plug only)',
-              tbUrl(221897, 'CMS-10124'), 39.43, 1, { lengthFt: 100 }),
-          ],
-        }),
+      wire: tbWire('CMS-10105', 221836, 'C9 socket wire, 1,000 ft spool, a socket every 12 in, green SPT-1, 18 gauge (no plugs)', 391.13, {
+        spoolFt: 1000, plugsIncluded: false,
+        sizes: [
+          tbWire('CMS-10110', 221841, 'C9 socket wire, 500 ft spool, a socket every 12 in, green SPT-1, 18 gauge (no plugs)', 224.4,
+            { lengthFt: 500, plugsIncluded: false }),
+          tbWire('CMS-10124', 221897, 'C9 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1, 18 gauge (male plug only)', 39.43,
+            { lengthFt: 100, maxAmps: 5, plugsIncluded: 'male', notes: PLUG_MALE_ONLY }),
+        ],
+      }),
       bulb: {
         name: 'C9 VividCore Premium LED bulbs, faceted, pack of 25', packQty: 25, wattsEach: 0.74, base: 'E17', defaultVariant: 'warmWhite',
         variants: {
-          warmWhite: tbBulb('CMS-10294', 225409, 'C9', 'warm white', 25.53),
-          coolWhite: tbBulb('CMS-10293', 225408, 'C9', 'cool white', 26.15, { notes: 'Other listings showed $21.29 to $23.77.' }),
-          multi: tbBulb('CMS-10298', 225413, 'C9', 'multicolor', 25.52),
+          warmWhite: tbBulb('CMS-10294', 225409, 'C9', 'warm white', 25.42),
+          coolWhite: tbBulb('CMS-10293', 225408, 'C9', 'cool white', 26.15),
+          multi: tbBulb('CMS-10298', 225413, 'C9', 'multicolor', 25.52, { notes: LIMITED }),
           red: tbBulb('CMS-10288', 225403, 'C9', 'red', 25.03),
-          green: tbBulb('CMS-10291', 225406, 'C9', 'green', 26.07),
+          green: tbBulb('CMS-10291', 225406, 'C9', 'green', 26.07, { notes: LIMITED }),
+          // No VividCore Premium blue was seen: this is the supplier's standard blue bulb, from its category list.
+          blue: offer('1000bulbs', 'CMS-C9BLU', 'C9 LED bulbs, blue, faceted, pack of 25 (standard line)', tbUrl(204203, 'CMS-C9BLU'), 22.33, 25, {
+            listedOnly: true, wattsEach: 0.5,
+            notes: 'A different bulb line from the other colours (standard, not VividCore Premium): 0.5 W per bulb as listed; the plan counts 0.74 W.',
+          }),
         },
       },
       plugMale: TB_PLUG_MALE,
-      // The matching female plug (PLUG-10002) was shown as unavailable when last seen, so it is not offered:
-      // the BOM lists a plain "female slide-on plug" line with a link to the supplier's plug page instead.
-      plugFemale: null,
+      plugFemale: TB_PLUG_FEMALE,
     },
   });
 
   const TB_C7_BULK = bulkProduct({
     id: '1000bulbs:c7-bulk-12', supplierId: '1000bulbs', equiv: 'c7-led', category: 'c7', bulbSpacingIn: 12,
     name: 'C7 LED on socket wire, a bulb every 12 in (cut to length)',
-    notes: 'Bought as socket wire, packs of 25 screw-in bulbs and slide-on plugs. 0.48 W per bulb as the supplier lists it. ' + RUN_RULE,
+    notes: 'Bought as socket wire, packs of 25 screw-in bulbs and slide-on plugs. 0.48 W per bulb as the supplier lists it. ' + RUN_RULE + ' ' + TB_AMPS,
     components: {
-      wire: offer('1000bulbs', 'CMS-10095', 'C7 socket wire, 1,000 ft spool, a socket every 12 in, green SPT-1, 18 gauge (no plugs)',
-        tbUrl(221781, 'CMS-10095'), 322.45, 1, {
-          spoolFt: 1000, wireType: 'SPT-1', maxAmps: 5,
-          notes: TB_WIRE_AMPS + ' Other listings showed this spool at $415.96 and $481.47.',
-        }),
+      wire: tbWire('CMS-10095', 221781, 'C7 socket wire, 1,000 ft spool, a socket every 12 in, green SPT-1, 18 gauge (no plugs)', 481.47, {
+        spoolFt: 1000, plugsIncluded: false,
+        sizes: [
+          tbWire('CMS-10093', 221779, 'C7 socket wire, 500 ft spool, a socket every 12 in, green SPT-1, 18 gauge (no plugs)', 229.77,
+            { lengthFt: 500, plugsIncluded: false, listedOnly: true }),
+          tbWire('CMS-10323', 233211, 'C7 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1, 18 gauge (plugs on both ends)', 57.64,
+            { lengthFt: 100, plugsIncluded: 'both', listedOnly: true, notes: PLUGS_BOTH }),
+        ],
+      }),
       bulb: {
         name: 'C7 VividCore Premium LED bulbs, faceted, pack of 25', packQty: 25, wattsEach: 0.48, base: 'E12', defaultVariant: 'warmWhite',
         variants: {
-          // The plain warm white pack (CMS-10284) had no product page in the research, so the "deluxe" warm white stands in.
-          warmWhite: tbBulb('CMS-10285', 225400, 'C7', 'warm white deluxe', 18.62),
+          // The plain warm white pack (CMS-10284, 0.54 W) was "temporarily unavailable" on 2026-11-11, so the
+          // warm white deluxe pack, which could be ordered, stands in.
+          warmWhite: tbBulb('CMS-10285', 225400, 'C7', 'warm white deluxe', 18.62,
+            { notes: 'The plain warm white pack (CMS-10284) could not be ordered when checked, so the warm white deluxe pack stands in.' }),
           coolWhite: tbBulb('CMS-10281', 225396, 'C7', 'cool white', 19.31),
-          multi: tbBulb('CMS-10286', 225401, 'C7', 'multicolor', 19.03, { notes: FAMILY_WATTS }),
+          multi: tbBulb('CMS-10286', 225401, 'C7', 'multicolor', 19.03),
           red: tbBulb('CMS-10276', 225391, 'C7', 'red', 19.69),
-          green: tbBulb('CMS-10279', 225394, 'C7', 'green', 18.78, { notes: FAMILY_WATTS }),
+          green: tbBulb('CMS-10279', 225394, 'C7', 'green', 19.72),
+          // No VividCore Premium blue was seen: this is the supplier's standard blue bulb, from its category list.
+          blue: offer('1000bulbs', 'CMS-C7BLU', 'C7 LED bulbs, blue, faceted, pack of 25 (standard line)', tbUrl(204195, 'CMS-C7BLU'), 17.29, 25, {
+            listedOnly: true, wattsEach: 0.54,
+            notes: 'A different bulb line from the other colours (standard, not VividCore Premium): 0.54 W per bulb as listed, a little more than the 0.48 W the plan counts.',
+          }),
         },
       },
       plugMale: TB_PLUG_MALE,
-      plugFemale: null,
+      plugFemale: TB_PLUG_FEMALE,
     },
   });
 
@@ -345,27 +445,42 @@ LP.define('suppliers', [], function () {
     TB_C9_BULK,
     TB_C7_BULK,
     product('1000bulbs', 'c9-string-17', 'CMS-25C9-8GWW', {
-      equiv: 'c9-led', name: 'C9 LED string, 25 bulbs on 17 ft, sealed set, green wire', category: 'c9', tech: 'LED', unit: 'string',
-      bulbSpacingIn: 8, stringLengthFt: 16, leadFt: 0.5, bulbsPerUnit: 25, wattsPerUnit: 2.4, maxEndToEnd: 90, price: 13.93,
+      equiv: 'c9-led', name: 'C9 LED string, 25 bulbs on 17 ft, ready-made, green wire', category: 'c9', tech: 'LED', unit: 'string',
+      bulbSpacingIn: 8, stringLengthFt: 16.5, leadFt: 0.5, bulbsPerUnit: 25, wattsPerUnit: 2.4, maxEndToEnd: 90, price: 13.97,
       colors: ['warmWhite'], clipEligible: true, suitableFor: LINE_TYPES.slice(),
       url: tbUrl(111494, 'CMS-25C9-8GWW'),
-      notes: 'Ready-made, 17 ft overall (not 25 ft), bulbs sealed in. 2.4 W per set, up to 90 sets end to end. ' +
-        'The 8 in spacing and 16 ft lit length are taken from the matching C7 set; this set\'s own page did not show them.',
+      notes: 'Ready-made, 17.3 ft overall and 16.5 ft lit (not 25 ft), bulbs 8 in apart. 2.4 W per set, up to 90 sets end to end.',
+    }),
+    product('1000bulbs', 'c7-string-17', 'CMS-25C7-8GWW', {
+      equiv: 'c7-led', name: 'C7 LED string, 25 bulbs on 17 ft, ready-made, green wire', category: 'c7', tech: 'LED', unit: 'string',
+      bulbSpacingIn: 8, stringLengthFt: 16, leadFt: 0.5, bulbsPerUnit: 25, wattsPerUnit: 2.4, maxEndToEnd: 90, price: 12.35,
+      colors: ['warmWhite'], clipEligible: true, suitableFor: LINE_TYPES.slice(),
+      url: tbUrl(111493, 'CMS-25C7-8GWW'),
+      notes: 'Ready-made, 16.6 ft overall and 16 ft lit (not 25 ft), bulbs 8 in apart. 2.4 W per set, up to 90 sets end to end.',
+      orderNote: LIMITED,
     }),
     product('1000bulbs', 'mini-5mm-50', 'CMS-50WA-6GWW', {
       equiv: 'mini-led-100', name: '5 mm LED mini string, 50 bulbs, 6 in apart, green wire', category: 'mini', tech: 'LED', unit: 'string',
       bulbSpacingIn: 6, stringLengthFt: 25, leadFt: 0.5, bulbsPerUnit: 50, wattsPerUnit: 4.8, maxEndToEnd: 45, price: 14.31,
       colors: ['warmWhite'], clipEligible: false, suitableFor: MINI_TYPES.slice(),
       url: tbUrl(111472, 'CMS-50WA-6GWW'),
-      notes: '26 ft overall, 25 ft lit. The page gave two figures (45 and 90 sets end to end); LightPlan uses the safer pair, 4.8 W and 45 sets.',
+      notes: '26 ft overall, 25 ft lit. 4.8 W per set. The page gives two limits for sets joined end to end (45 in its table, 90 in its text): LightPlan uses 45.',
+      orderNote: LIMITED,
+    }),
+    product('1000bulbs', 'icicle-70', 'SHL-LED70ICEWW', {
+      equiv: 'icicle-led-300', name: '5 mm LED icicle lights, 70 bulbs, 7 ft lit, white wire', category: 'icicle', tech: 'LED', unit: 'string',
+      bulbSpacingIn: 6, stringLengthFt: 7, leadFt: 0.5, bulbsPerUnit: 70, wattsPerUnit: 4.8, maxEndToEnd: 45, dropLengthsIn: [15, 18, 9], price: 21.72,
+      colors: ['warmWhite'], clipEligible: true, suitableFor: ['roofline', 'gutter', 'railing'],
+      url: tbUrl(6212, 'SHL-LED70ICEWW'),
+      notes: '15 drops of 15, 18 and 9 in, 6 in apart; 7.5 ft overall. 4.8 W per set, up to 45 sets end to end.',
     }),
     product('1000bulbs', 'net-4x6-100', 'CMS-100L5MMNETWWG', {
       equiv: 'net-led-4x6', name: '5 mm LED net lights, 4 x 6 ft, 100 bulbs, green wire', category: 'net', tech: 'LED', unit: 'net',
-      bulbSpacingIn: 6, stringLengthFt: 6, leadFt: 1, bulbsPerUnit: 100, wattsPerUnit: 9.6, maxEndToEnd: 22, coverageSqFt: 24, price: 32.97,
+      bulbSpacingIn: 6, stringLengthFt: 6, leadFt: 1, bulbsPerUnit: 100, wattsPerUnit: 9.6, maxEndToEnd: 22, coverageSqFt: 24, price: 33.08,
       colors: ['warmWhite'], clipEligible: false, suitableFor: ['bush'],
       url: tbUrl(202090, 'CMS-100L5MMNETWWG'),
-      notes: 'One net covers about 24 sq ft. 9.6 W per net. The listing says 25 nets end to end, which is more than the usual 216 W limit for ' +
-        'LED sets allows; LightPlan uses 22.',
+      notes: 'One net covers about 24 sq ft. 9.6 W per net. The page says up to 25 nets end to end (240 W); LightPlan plans at most 22 (216 W), ' +
+        'the most this supplier\'s other LED sets add up to.',
     }),
   ];
 
@@ -378,20 +493,22 @@ LP.define('suppliers', [], function () {
       'clip-allinone': offer('cle', '82761', 'All-in-one light clips (gutter or shingle), pack of 100',
         CLE + 'p/Wintergreen-Lighting-All-In-One-Christmas-Light-Clip-100-Pack-65767.htm', 13.99, 100),
       'clip-shingle': offer('cle', '83965', 'Shingle tab clips for C7 and C9, pack of 100',
-        CLE + 'p/Wintergreen-Lighting-Christmas-Light-Shingle-Tab-100-Pack-65866.htm', 25, 100),
+        CLE + 'p/Wintergreen-Lighting-Christmas-Light-Shingle-Tab-100-Pack-65866.htm', 24.99, 100),
+      'clip-ridge': offer('cle', '88780', 'Roof ridge clips for C7 and C9, pack of 25',
+        CLE + 'p/Canny-Ridge-Clip-Pro-X2-25-Pack-67572.htm', 26.25, 25),
       'light-stakes': offer('cle', '84144', 'Light stakes for C7 and C9, 5 in tall, pack of 25',
         CLE + 'p/5-Inch-Wintergreen-Lighting-PathPRO-Christmas-Light-Stake-25-Pack-65885.htm', 9.99, 25),
-      'timer-outdoor': offer('cle', '80056', 'Outdoor plug-in timer, mechanical, 15 A',
-        CLE + 'p/15-Amp-Heavy-Duty-Grounded-Timer-Outdoor-65107.htm', 29.99, 1, { maxAmps: 15 }),
+      'timer-outdoor': offer('cle', '80056', 'Outdoor plug-in timer, grounded, 15 A',
+        CLE + 'p/15-Amp-Heavy-Duty-Grounded-Timer-Outdoor-65107.htm', 34.99, 1, { maxAmps: 15 }),
     },
     '1000bulbs': {
       'clip-allinone': offer('1000bulbs', 'CLIP-10007', 'Light clips for shingles and gutters, C7 and C9, pack of 50', tbUrl(223218, 'CLIP-10007'), 6.83, 50),
-      'clip-shingle': offer('1000bulbs', 'CLIP-10005', 'Shingle tab clips for C7 and C9, pack of 50', tbUrl(223216, 'CLIP-10005'), 13.52, 50),
-      'clip-ridge': offer('1000bulbs', 'CLIP-10003', 'Roof ridge clips for C7, C9 and rope light, pack of 25', tbUrl(223214, 'CLIP-10003'), 17.59, 25),
-      'light-stakes': offer('1000bulbs', 'STAKE-10001', 'Lawn light stakes, 5 in tall, pack of 25', tbUrl(223227, 'STAKE-10001'), 6.29, 25,
-        { notes: 'The listing seen did not say which bulb sizes it holds: check that it takes C7 or C9 before you order.' }),
-      'timer-outdoor': offer('1000bulbs', 'PLTS-12336', 'Outdoor plug-in timer with dusk sensor, 2 outlets, 1,000 W maximum', tbUrl(223548, 'PLTS-12336'), 11.44, 1,
-        { maxWatts: 1000, notes: 'Rated for 1,000 W at most.' }),
+      'clip-shingle': offer('1000bulbs', 'CLIP-10005', 'Shingle tab clips for C7 and C9, pack of 50', tbUrl(223216, 'CLIP-10005'), 15.49, 50),
+      'clip-ridge': offer('1000bulbs', 'CLIP-10003', 'Roof ridge clips for C7, C9 and rope light, pack of 25', tbUrl(223214, 'CLIP-10003'), 17.59, 25,
+        { notes: 'The page says 25 to a pack in its title and price, and 50 in its table: LightPlan counts 25. ' + LIMITED }),
+      'light-stakes': offer('1000bulbs', 'STAKE-10001', 'Lawn light stakes for C7 and C9, 5 in tall, pack of 25', tbUrl(223227, 'STAKE-10001'), 7.31, 25),
+      'timer-outdoor': offer('1000bulbs', 'PLTS-12336', 'Outdoor plug-in timer with dusk sensor, 2 outlets, 15 A, 1,000 W maximum', tbUrl(223548, 'PLTS-12336'), 15.73, 1,
+        { maxAmps: 15, maxWatts: 1000, notes: 'Rated for 1,000 W at most.' }),
     },
   };
 
