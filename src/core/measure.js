@@ -17,9 +17,17 @@
  *     K·[R·e1, R·e2, R·origin + t]. Without a pose, roofs fall back to an orthographic pitch correction.
  *  4. Features are measured in their plane's coordinates; confidence is scored from how the plane was solved and
  *     from tap precision: every calibration tap behind the plane and every point of the feature is nudged by
- *     ±2.5 px (one coordinate at a time, plane solutions re-solved), and the expected error 2σ caps the level
- *     (High needs ≤ 3%, Medium ≤ 6%). Bias the noise model cannot see gets hard caps (refs-only walls, roof-ortho,
- *     assumed focal length or pitch, off-plane items, a single unchecked reference, lens/rectangle mismatch).
+ *     its tap precision (one coordinate at a time, plane solutions re-solved), and the expected error 2σ caps the
+ *     level (High needs ≤ 3%, Medium ≤ 6%). Bias the noise model cannot see gets hard caps (refs-only walls,
+ *     roof-ortho, assumed focal length or pitch, off-plane items, a single unchecked reference, lens/rectangle
+ *     mismatch).
+ *     Tap precision (SPEC §8.4) is ±2.5 px of the stored photo unless the project says the taps were coarser: an
+ *     optional `tapErr` array beside a point list (rect.corners, ref.points, derived.line, feature.points) holds
+ *     the expected error of each tap in stored-image pixels (the UI sets it from the zoom at the moment of the
+ *     tap). A plane's calibration taps use max(2.5, largest tapErr on its rectangle, references and eave/base
+ *     line); a feature's points use max(2.5, largest of feature.tapErr). A tapErr that is missing, the wrong
+ *     length or not all finite numbers carries no information (2.5 px). When coarse taps are what limits a
+ *     rating, the reason says "Tapped zoomed out (about ±N px on the photo): zoom in and re-tap …".
  *
  * Pure: no DOM, no clocks, inputs are never mutated, compute paths never throw on bad project data
  * (they return ok:false with a plain-language `reason`).
@@ -33,7 +41,8 @@
  *    `poseTolerancePct` (rectangle vs lens fit), `focalMismatchPct` (lens setting vs rectangle estimate, when
  *    significant), `pitchInfo` ({onEave, spread, samples} for estimated roof pitches), `groundScale` (ground
  *    planes re-fitted from their own references), `frontSign` (horizon test), `uncertaintyPct` (expected error of
- *    a typical item on the plane) and `confidence` (plane-level rating shown on its pill).
+ *    a typical item on the plane), `confidence` (plane-level rating shown on its pill) and `tapSigmaPx` (the tap
+ *    precision used for this plane's own calibration taps: 2.5, or more when its `tapErr` arrays say so).
  *  - viewAngleDeg of a roof/ground plane is its parent wall's view angle (the 3D accuracy comes from the wall).
  *  - scale.sx/sy are the fitted scale factors (ft per base unit): 1 for rect-known, ft per px for refs-only.
  *  - disagreementPct is the spread between independent size constraints: (max ratio / min ratio − 1)·100 where
@@ -47,6 +56,11 @@
  *  - An unknown-size rect with ONE known side uses that side as an extra scale reference.
  *  - FeatureMeasurement also has: `reason` (why !ok), `pixelLength`, `segmentsFt`, `uncertaintyPct` (expected
  *    error 2σ in % from tap precision; Infinity when a nudge breaks the measurement; null without measureProject).
+ *  - scoreConfidence() takes three more optional factors for coarse taps: `tapPx` (precision, px, of the coarse
+ *    taps that add most to the expected error; only when above 2.5), `tapWhat` (what was tapped: 'rect' | 'ref' |
+ *    'refs' | 'eave' | 'base' | 'item', several joined with '+') and `uncertaintyBasePct` (what the expected error
+ *    would be at the standard 2.5 px).
+ *  - REF_PRESETS also has three two-tap garage door widths: 'garage-width-16', 'garage-width-9', 'garage-width-8'.
  *  - Roof pitch is estimated per roof: rakes on its parent wall whose low end sits on its eave line first, else all
  *    gable rakes (`pitchInfo.onEave` false). measureProject warns 'pitch-spread' when samples differ by > 2/12.
  *  - measureProject also warns 'focal-mismatch' (warn; with imageId and suggestedFocalPx) when an EXIF, preset or
@@ -66,6 +80,10 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     { id: 'garage-single', label: 'Single garage door (9 × 7 ft)', kind: 'rect', widthIn: 108, heightIn: 84, quality: 'high' },
     { id: 'garage-double', label: 'Double garage door (16 × 7 ft)', kind: 'rect', widthIn: 192, heightIn: 84, quality: 'high' },
     { id: 'garage-height', label: 'Garage door height (7 ft)', kind: 'line', lengthIn: 84, quality: 'high' },
+    // Two taps across a garage door: the widest thing of known size on most fronts (SPEC §8.4).
+    { id: 'garage-width-16', label: 'Garage door width (16 ft)', kind: 'line', lengthIn: 192, quality: 'high' },
+    { id: 'garage-width-9', label: 'Garage door width (9 ft)', kind: 'line', lengthIn: 108, quality: 'high' },
+    { id: 'garage-width-8', label: 'Garage door width (8 ft)', kind: 'line', lengthIn: 96, quality: 'high' },
     { id: 'siding-4', label: 'Vinyl siding, 4 in courses', kind: 'courses', courseIn: 4, quality: 'medium' },
     { id: 'siding-5', label: 'Vinyl siding, 5 in courses', kind: 'courses', courseIn: 5, quality: 'medium' },
     { id: 'brick', label: 'Brick courses (3 ≈ 8 in)', kind: 'courses', courseIn: 8 / 3, quality: 'medium' },
@@ -215,19 +233,23 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     return c.kind === 'width' ? (g.dist(TL, TR) + g.dist(BL, BR)) / 2 : (g.dist(TL, BL) + g.dist(TR, BR)) / 2;
   }
 
-  /** Relative 1σ of a constraint's measured length from tap noise (two ends; a rect side is the mean of two). */
-  function constraintSigma(c) {
+  /**
+   * Relative 1σ of a constraint's measured length from tap noise (two ends; a rect side is the mean of two).
+   * tapSigma: the plane's tap precision in px.
+   */
+  function constraintSigma(c, tapSigma) {
     const px = constraintPx(c);
     if (!(px > 0)) return Infinity;
-    return c.kind === 'line' ? (SIGMA_TAP_PX * Math.SQRT2) / px : SIGMA_TAP_PX / px;
+    return c.kind === 'line' ? (tapSigma * Math.SQRT2) / px : tapSigma / px;
   }
 
   /**
    * Measure constraints with the final map. Returns refResults, the ratio spread (max/min − 1, %) and z: the
    * largest pairwise disagreement divided by what tap noise alone would explain (|ln(rᵢ/rⱼ)| / hypot(σᵢ, σⱼ)).
    * unitSigma (number) adds the plane's own size as a ratio-1 constraint with that relative σ (rect-known).
+   * tapSigma: the plane's tap precision in px.
    */
-  function evaluateConstraints(constraints, H, lenFn, unitSigma) {
+  function evaluateConstraints(constraints, H, lenFn, unitSigma, tapSigma) {
     const refResults = [];
     const items = isNum(unitSigma) ? [{ r: 1, s: unitSigma }] : [];
     for (const c of constraints) {
@@ -235,7 +257,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       const measured = d ? lenFn(d[0], d[1]) : null;
       const errorPct = isNum(measured) ? (100 * (measured - c.expectedFt)) / c.expectedFt : null;
       refResults.push({ refId: c.refId, label: c.label, expectedFt: c.expectedFt, measuredFt: isNum(measured) ? measured : null, errorPct });
-      if (isNum(measured) && measured > 0) items.push({ r: measured / c.expectedFt, s: constraintSigma(c) });
+      if (isNum(measured) && measured > 0) items.push({ r: measured / c.expectedFt, s: constraintSigma(c, tapSigma) });
     }
     let spread = null, z = null;
     if (items.length >= 2) {
@@ -256,7 +278,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
 
   // ================================================================ plane solutions
   // Tap precision used for honesty: every tapped coordinate is assumed to be off by about this much (1σ, stored-image
-  // pixels). Expected errors are 2σ, so "High" (±3%) needs 2σ ≤ 3% and "Medium" (±6%) needs 2σ ≤ 6%.
+  // pixels) unless a `tapErr` array says the taps were coarser (see planeTapSigma / featureTapSigma). Expected errors
+  // are 2σ, so "High" (±3%) needs 2σ ≤ 3% and "Medium" (±6%) needs 2σ ≤ 6%.
   const SIGMA_TAP_PX = 2.5;
   const U_HIGH_PCT = 3;
   const U_MEDIUM_PCT = 6;
@@ -265,6 +288,62 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
   const FOCAL_REL_SIGMA = { exif: 0.03, preset: 0.12, manual: 0.25, default: 0.25 };
   const POSE_TOL_MIN_PCT = 3;
 
+  /**
+   * Largest value of a `tapErr` array (SPEC §8.4: expected error of each tap, stored-image px, index for index with
+   * `points`). 0 when it carries no information: missing, not an array, not one finite number per point.
+   */
+  function tapErrMax(tapErr, points) {
+    if (!Array.isArray(tapErr) || !Array.isArray(points) || !tapErr.length || tapErr.length !== points.length) return 0;
+    let m = 0;
+    for (const v of tapErr) {
+      if (!isNum(v)) return 0;
+      if (v > m) m = v;
+    }
+    return m;
+  }
+
+  /**
+   * Tap precision of a plane's calibration taps: {sigma, what}. sigma (1σ, px) is the coarsest of its rectangle,
+   * references and eave/base line, never below 2.5. what names the coarse lists for the reason text (null when
+   * sigma is 2.5): 'rect' (rectangle corners, also a rectangle reference), 'ref' / 'refs' (one / several reference
+   * lengths), 'eave' or 'base' (the line of a roof or ground plane), joined with '+' when more than one was tapped
+   * about that coarsely (at least half of sigma).
+   */
+  function planeTapInfo(plane) {
+    if (!isObj(plane)) return { sigma: SIGMA_TAP_PX, what: null };
+    let rect = isObj(plane.rect) ? tapErrMax(plane.rect.tapErr, plane.rect.corners) : 0;
+    const refs = [];
+    for (const r of arr(plane.refs)) {
+      if (!isObj(r)) continue;
+      const m = tapErrMax(r.tapErr, r.points);
+      if (r.kind === 'rect') rect = Math.max(rect, m); else refs.push(m);
+    }
+    const line = isObj(plane.derived) ? tapErrMax(plane.derived.tapErr, plane.derived.line) : 0;
+    const sigma = Math.max(SIGMA_TAP_PX, rect, line, refs.reduce((m, v) => Math.max(m, v), 0));
+    if (!(sigma > SIGMA_TAP_PX)) return { sigma, what: null };
+    const coarse = (v) => v > SIGMA_TAP_PX && v >= sigma / 2;
+    const parts = [];
+    if (coarse(line)) parts.push(plane.kind === 'ground' ? 'base' : 'eave');
+    if (coarse(rect)) parts.push('rect');
+    const n = refs.filter(coarse).length;
+    if (n) parts.push(n > 1 ? 'refs' : 'ref');
+    return { sigma, what: parts.join('+') };
+  }
+
+  /** Tap precision (1σ, px) of a plane's calibration taps (SPEC §8.4). */
+  function planeTapSigma(plane) { return planeTapInfo(plane).sigma; }
+
+  /** Tap precision (1σ, px) of a feature's own points. */
+  function featureTapSigma(feature) {
+    return isObj(feature) ? Math.max(SIGMA_TAP_PX, tapErrMax(feature.tapErr, feature.points)) : SIGMA_TAP_PX;
+  }
+
+  /** Tap precision (1σ, px) of the rectangle a camera's focal length estimate was measured from. */
+  function focalTapSigma(K) {
+    const re = K && isObj(K.rectEstimate) ? K.rectEstimate : null;
+    return re && isNum(re.tapSigmaPx) && re.tapSigmaPx > SIGMA_TAP_PX ? re.tapSigmaPx : SIGMA_TAP_PX;
+  }
+
   function baseSolution(plane, kind) {
     return {
       ok: false, planeId: plane && plane.id != null ? plane.id : null, kind, mode: 'uncalibrated',
@@ -272,7 +351,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       scale: { sx: null, sy: null, anisotropic: false },
       refResults: [], disagreementPct: null, disagreementZ: null, checks: 0,
       viewAngleDeg: null, pose: null, K: null, pitch: null, pitchInfo: null, extent: null, gridExtent: null,
-      poseConsistencyPct: null, poseToleranceZ: null, focalMismatchPct: null,
+      poseConsistencyPct: null, poseToleranceZ: null, focalMismatchPct: null, tapSigmaPx: planeTapSigma(plane),
       calib: { scaleFrom: null, onlyMediumLowRefs: false, minCourses: null, rectProblem: null, refsBothDirections: false, anisotropic: false },
       warnings: [], notes: [], issues: [], reason: null, confidence: null,
     };
@@ -298,22 +377,25 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     return { minU: b.minX, minV: b.minY, maxU: b.maxX, maxV: b.maxY };
   }
 
-  /** Relative 1σ of the focal length for its source. A rectangle estimate's relStd is per ±2 px corner nudge. */
-  function focalRelSigma(K) {
+  /**
+   * Relative 1σ of the focal length for its source. A rectangle estimate's relStd is per ±2 px corner nudge;
+   * tapSigma is the tap precision (px) of the rectangle it was measured from.
+   */
+  function focalRelSigma(K, tapSigma) {
     if (!K) return FOCAL_REL_SIGMA.default;
-    if (K.source === 'rectangle') return Math.max(0.03, 3.5 * (isNum(K.relStd) ? K.relStd : 0.1) * (SIGMA_TAP_PX / 2));
+    if (K.source === 'rectangle') return Math.max(0.03, 3.5 * (isNum(K.relStd) ? K.relStd : 0.1) * (tapSigma / 2));
     return FOCAL_REL_SIGMA[K.source] || FOCAL_REL_SIGMA.default;
   }
 
   /** Relative 1σ of a rectangle's width/height ratio that comes from the focal length's uncertainty. */
-  function aspectSigma(quad, K) {
+  function aspectSigma(quad, K, focalSigma) {
     if (!K) return Infinity;
     const e = 0.05;
     const a = camera.rectAspectFromQuad(quad, K);
     const ap = camera.rectAspectFromQuad(quad, { f: K.f * (1 + e), cx: K.cx, cy: K.cy });
     const am = camera.rectAspectFromQuad(quad, { f: K.f * (1 - e), cx: K.cx, cy: K.cy });
     if (!a || !ap || !am) return Infinity;
-    return (Math.abs(ap - am) / (2 * e * a)) * focalRelSigma(K);
+    return (Math.abs(ap - am) / (2 * e * a)) * focalRelSigma(K, focalSigma);
   }
 
   /** Mean on-screen width and height (px) of an ordered quad [TL, TR, BR, BL]. */
@@ -328,6 +410,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     if (!image) return failSolution(sol, 'The photo for ' + name + ' is missing, so it cannot be measured.', 'missing-image');
     const Kok = !!(K && K.ok !== false && K.f > 0);
     sol.K = Kok ? { f: K.f, cx: K.cx, cy: K.cy, source: K.source, label: K.label, relStd: K.relStd } : null;
+    const tapSigma = sol.tapSigmaPx; // this wall's own taps
+    const focalSigma = focalTapSigma(K); // the taps of the rectangle the focal length was measured from
     const warnPct = isNum(config && config.refDisagreementWarnPct) ? config.refDisagreementWarnPct : 5;
 
     // ---- perspective rectangle
@@ -436,8 +520,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
         if (sol2 && sol2[0] > 0 && sol2[1] > 0) {
           const ax = Math.sqrt(sol2[0]), ay = Math.sqrt(sol2[1]);
           const sumSq = (list) => list.reduce((s, it) => s + it.px * it.px, 0);
-          const sigRefs = SIGMA_TAP_PX * Math.SQRT2 * Math.sqrt(1 / sumSq(hItems) + 1 / sumSq(vItems));
-          const sigK = aspectSigma(quad, sol.K);
+          const sigRefs = tapSigma * Math.SQRT2 * Math.sqrt(1 / sumSq(hItems) + 1 / sumSq(vItems));
+          const sigK = aspectSigma(quad, sol.K, focalSigma);
           const lnRatio = Math.log(ax / ay);
           const z = lnRatio === 0 ? 0 : Math.abs(lnRatio) / Math.hypot(sigRefs, isFinite(sigK) ? sigK : 0);
           const diffPct = Math.abs(ax / ay - 1) * 100;
@@ -466,8 +550,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
 
     // ---- checks and disagreement
     const sides = quad ? quadSidesPx(quad) : null;
-    const unitSigma = mode === 'rect-known' && sides ? SIGMA_TAP_PX / Math.max(1e-9, Math.min(sides.w, sides.h)) : null;
-    const ev = evaluateConstraints(constraints, Himg2plane, Math.hypot, unitSigma);
+    const unitSigma = mode === 'rect-known' && sides ? tapSigma / Math.max(1e-9, Math.min(sides.w, sides.h)) : null;
+    const ev = evaluateConstraints(constraints, Himg2plane, Math.hypot, unitSigma, tapSigma);
     sol.refResults = ev.refResults;
     const used = ev.refResults.filter((r) => isNum(r.measuredFt)).length;
     if (mode === 'rect-known') sol.checks = used;
@@ -520,7 +604,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
           if (cons) {
             // How far the rectangle and the lens disagree, against what ±σ taps on this rectangle could explain.
             sol.poseConsistencyPct = 100 * Math.max(Math.abs(cons.normRatio - 1), Math.abs(cons.cosAngle));
-            const tapPct = sides ? 100 * SIGMA_TAP_PX * Math.SQRT2 * Math.hypot(1 / sides.w, 1 / sides.h) : 0;
+            const tapPct = sides ? 100 * tapSigma * Math.SQRT2 * Math.hypot(1 / sides.w, 1 / sides.h) : 0;
             sol.poseTolerancePct = Math.max(POSE_TOL_MIN_PCT, 2 * tapPct);
             if (Math.abs(cons.normRatio - 1) > 0.1 || Math.abs(cons.cosAngle) > 0.1) {
               addIssue(sol, 'pose-inconsistent', 'The rectangle on ' + name + " doesn't quite match the camera setting, so roof and ground lengths worked out from it may be off.", 'info');
@@ -666,7 +750,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     }
     const lenFn = segLengthFn(sol);
     const refit = sol.groundScale !== 1 && isNum(sol.groundScale);
-    const ev = evaluateConstraints(own, sol.Himg2plane, lenFn, refit ? null : 0.02);
+    const ev = evaluateConstraints(own, sol.Himg2plane, lenFn, refit ? null : 0.02, sol.tapSigmaPx);
     sol.refResults = ev.refResults;
     const ownChecks = ev.refResults.filter((r) => isNum(r.measuredFt)).length;
     sol.checks = refit ? Math.max(0, ownChecks - 1) : ownChecks;
@@ -768,6 +852,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       if (img.id == null) continue;
       let K;
       try { K = camera.resolveCamera(img, planes, opts); } catch (e) { K = null; }
+      // How precisely the rectangle behind the focal estimate was tapped (it scales how far that estimate can be off).
+      if (K && isObj(K.rectEstimate)) K.rectEstimate.tapSigmaPx = planeTapSigma(planes.find((pl) => pl.id === K.rectEstimate.planeId));
       cameras[img.id] = K || { ok: false, f: null, cx: null, cy: null, source: 'default', label: 'Camera unknown', relStd: null, rectEstimate: null, focalQuad: null, exifIgnored: null };
     }
     return cameras;
@@ -778,7 +864,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     if (!K || K.ok === false || !K.rectEstimate || !(K.f > 0) || (K.source !== 'exif' && K.source !== 'preset' && K.source !== 'manual')) return null;
     const re = K.rectEstimate;
     const pct = Math.abs(K.f / re.f - 1) * 100;
-    const tol = 100 * Math.max(0.15, 3 * (isNum(re.relStd) ? re.relStd : 0.1));
+    // relStd is per ±2 px corner nudge at the standard tap precision; coarser taps explain a larger difference.
+    const tol = 100 * Math.max(0.15, 3 * (isNum(re.relStd) ? re.relStd : 0.1) * (focalTapSigma(K) / SIGMA_TAP_PX));
     return { pct, significant: pct > tol, rect: re };
   }
 
@@ -890,7 +977,9 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
    * Re-solve the planes with every calibration tap nudged by ±σ (one coordinate at a time): rectangle corners and
    * reference ends of walls whose scale depends on them, the eave/base line of roof and ground planes, ground
    * references that re-fit the scale, and — when the focal length was measured from a rectangle — that
-   * rectangle's corners (the focal length moves with them). Returns {[planeId]: [{plus, minus}]}.
+   * rectangle's corners (the focal length moves with them). σ is the tap precision of the plane the tap belongs
+   * to (planeTapInfo). Returns {[planeId]: [{plus, minus, sigma, src}]}; src says what was tapped coarsely on
+   * that plane (planeTapInfo().what, prefixed with the plane id; null at the standard 2.5 px).
    */
   function perturbedSolutions(proj, cfg, cameras, solved, neededPlaneIds) {
     const planes = arr(proj.planes).filter(isObj);
@@ -937,8 +1026,12 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     }
     const out = {};
     const imageOf = (pl) => (pl ? pl.imageId : null);
+    const tapOf = {};
+    for (const pl of planes) tapOf[pl.id] = planeTapInfo(pl);
     for (const t of taps) {
       const owner = byId[t.planeId];
+      const sigma = tapOf[owner.id].sigma;
+      const src = tapOf[owner.id].what;
       // Which planes can this tap move?
       const affected = new Set();
       if (t.focalImage) { for (const pl of planes) if (pl.imageId === t.focalImage || (pl.derived && byId[pl.derived.parentPlaneId] && imageOf(byId[pl.derived.parentPlaneId]) === t.focalImage)) affected.add(pl.id); }
@@ -949,7 +1042,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       for (const id of affected) { const pl = byId[id]; if (pl && pl.derived && pl.derived.parentPlaneId != null) include.add(pl.derived.parentPlaneId); }
       const pair = {};
       for (const sign of [1, -1]) {
-        const moved = nudgedPlane(owner, t.path, t.k, t.axis, sign * SIGMA_TAP_PX);
+        const moved = nudgedPlane(owner, t.path, t.k, t.axis, sign * sigma);
         const sub = Object.assign({}, proj, { planes: planes.filter((pl) => include.has(pl.id)).map((pl) => (pl.id === owner.id ? moved : pl)) });
         let cams = cameras;
         let lensBroken = false;
@@ -970,7 +1063,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       }
       for (const id of affected) {
         if (!neededPlaneIds.has(id)) continue;
-        (out[id] = out[id] || []).push({ plus: pair.plus[id] || null, minus: pair.minus[id] || null });
+        (out[id] = out[id] || []).push({ plus: pair.plus[id] || null, minus: pair.minus[id] || null, sigma, src });
       }
     }
     return out;
@@ -1085,18 +1178,49 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
   }
 
   /**
-   * Expected error (2σ, % of the size) from tap precision: every calibration tap behind the plane and every point
-   * of the feature nudged by ±σ, one coordinate at a time. Infinity when a nudge breaks the measurement.
+   * Expected error (2σ, % of the size) from tap precision: every calibration tap behind the plane (nudged by its
+   * plane's tap precision, see perturbedSolutions) and every point of the feature (nudged by tapSigma, default
+   * 2.5 px), one coordinate at a time. Infinity when a nudge breaks the measurement.
+   * detail (optional object) is filled in for the reason text when coarse taps (σ above 2.5 px) are involved:
+   *   tapPx, tapWhat  precision and kind (planeTapInfo().what, or 'item' for the feature's own points) of the
+   *                   coarse taps that add the most to the expected error, or whose nudge broke the measurement;
+   *   basePct         what the expected error would be had every tap been good to 2.5 px (each coarse tap's share
+   *                   scaled down by (2.5/σ)², which is exact while the measurement responds linearly).
    */
-  function featureUncertaintyPct(geometry, pts, closed, sol, perturb) {
+  function featureUncertaintyPct(geometry, pts, closed, sol, perturb, tapSigma, detail) {
+    const own = isNum(tapSigma) && tapSigma > SIGMA_TAP_PX ? tapSigma : SIGMA_TAP_PX;
     const L = featureMetric(geometry, pts, closed, sol);
     if (!isNum(L) || !(L > 0)) return null;
     let sum = 0;
+    // Bookkeeping for coarse taps only; it never touches `sum`, so results without tapErr are what they always were.
+    let extra = 0; // variance added by taps being coarser than 2.5 px
+    const bySrc = {}; // src → {extra, sigma}
+    const coarse = (sigma, src, v) => {
+      if (!(sigma > SIGMA_TAP_PX)) return;
+      const e = v * (1 - (SIGMA_TAP_PX / sigma) ** 2);
+      extra += e;
+      const b = bySrc[src] || (bySrc[src] = { extra: 0, sigma: 0 });
+      b.extra += e;
+      if (sigma > b.sigma) b.sigma = sigma;
+    };
+    const broken = (sigma, src) => {
+      if (detail && sigma > SIGMA_TAP_PX) { detail.tapPx = sigma; detail.tapWhat = src; detail.basePct = null; }
+      return Infinity;
+    };
+    // Variance share of one tapped coordinate from the size changes da, db that nudging it by +σ and −σ causes.
+    // Half the difference is the slope; a coarse nudge is big enough for the measurement to bend (both nudges can
+    // move the size the same way, or away from a freak value), so there the larger one-sided change counts.
+    const share = (da, db, sigma) => {
+      const v = ((da - db) / 2) ** 2;
+      return sigma > SIGMA_TAP_PX ? Math.max(v, da * da, db * db) : v;
+    };
     for (const pr of arr(perturb)) {
       const a = pr.plus ? featureMetric(geometry, pts, closed, pr.plus) : null;
       const b = pr.minus ? featureMetric(geometry, pts, closed, pr.minus) : null;
-      if (!isNum(a) || !isNum(b)) return Infinity;
-      sum += ((a - b) / 2) ** 2;
+      if (!isNum(a) || !isNum(b)) return broken(pr.sigma, pr.src);
+      const v = pr.sigma > SIGMA_TAP_PX ? share(a - L, b - L, pr.sigma) : ((a - b) / 2) ** 2;
+      sum += v;
+      coarse(pr.sigma, pr.src, v);
     }
     const nudge = (k, axis, d) => (axis === 0 ? [pts[k][0] + d, pts[k][1]] : [pts[k][0], pts[k][1] + d]);
     if (geometry === 'polyline' || geometry === 'polygon') {
@@ -1111,11 +1235,13 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
         const next = k < n - 1 ? plane[k + 1] : (isClosed ? plane[0] : null);
         const base = (prev ? seg(prev, plane[k]) : 0) + (next ? seg(plane[k], next) : 0);
         for (const axis of [0, 1]) {
-          const qa = g.applyH(H, nudge(k, axis, SIGMA_TAP_PX)), qb = g.applyH(H, nudge(k, axis, -SIGMA_TAP_PX));
-          if (!qa || !qb) return Infinity;
+          const qa = g.applyH(H, nudge(k, axis, own)), qb = g.applyH(H, nudge(k, axis, -own));
+          if (!qa || !qb) return broken(own, 'item');
           const la = (prev ? seg(prev, qa) : 0) + (next ? seg(qa, next) : 0) - base;
           const lb = (prev ? seg(prev, qb) : 0) + (next ? seg(qb, next) : 0) - base;
-          sum += ((la - lb) / 2) ** 2;
+          const v = share(la, lb, own);
+          sum += v;
+          coarse(own, 'item', v);
         }
       }
     } else {
@@ -1123,12 +1249,21 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       for (const k of idx) {
         for (const axis of [0, 1]) {
           const mv = (d) => pts.map((p, i) => (i === k ? nudge(k, axis, d) : p));
-          const a = featureMetric(geometry, mv(SIGMA_TAP_PX), closed, sol);
-          const b = featureMetric(geometry, mv(-SIGMA_TAP_PX), closed, sol);
-          if (!isNum(a) || !isNum(b)) return Infinity;
-          sum += ((a - b) / 2) ** 2;
+          const a = featureMetric(geometry, mv(own), closed, sol);
+          const b = featureMetric(geometry, mv(-own), closed, sol);
+          if (!isNum(a) || !isNum(b)) return broken(own, 'item');
+          const v = own > SIGMA_TAP_PX ? share(a - L, b - L, own) : ((a - b) / 2) ** 2;
+          sum += v;
+          coarse(own, 'item', v);
         }
       }
+    }
+    if (detail && extra > 0) {
+      let top = null;
+      for (const src of Object.keys(bySrc)) if (!top || bySrc[src].extra > bySrc[top].extra) top = src;
+      detail.tapPx = bySrc[top].sigma;
+      detail.tapWhat = top;
+      detail.basePct = (200 * Math.sqrt(Math.max(0, sum - extra))) / L;
     }
     return (200 * Math.sqrt(sum)) / L;
   }
@@ -1308,9 +1443,10 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       const dOff = OFF_PLANE_DIST_FT[type.id] || 5;
       offPlaneBiasPct = (100 * dOff) / (sol.pose.C[2] + dOff);
     }
+    const tapDetail = {}; // coarse (zoomed-out) taps behind the expected error, if any
     if (canMeasure && c.perturb && sol && sol.planeId != null) {
       const perturb = c.perturb[sol.planeId] || [];
-      out.uncertaintyPct = featureUncertaintyPct(type.geometry, pts, closed, sol, perturb);
+      out.uncertaintyPct = featureUncertaintyPct(type.geometry, pts, closed, sol, perturb, featureTapSigma(f), tapDetail);
     }
     out.confidence = scoreConfidence({
       mode: effMode,
@@ -1339,6 +1475,9 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       extrapolation,
       pixelLength: out.pixelLength,
       uncertaintyPct: out.uncertaintyPct,
+      uncertaintyBasePct: tapDetail.basePct,
+      tapPx: tapDetail.tapPx,
+      tapWhat: tapDetail.tapWhat,
       extraReasons,
       thresholds,
     });
@@ -1346,6 +1485,20 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
   }
 
   const LEVELS = ['low', 'medium', 'high'];
+  // What to re-tap when taps placed zoomed out limit a rating (ends "zoom in and re-tap …"). Keys as in
+  // planeTapInfo().what, plus 'item' for a feature's own points; several are joined with '+'.
+  const TAP_WHAT = {
+    rect: 'the corners of the rectangle',
+    ref: 'the two ends of the reference length',
+    refs: 'the ends of the reference lengths',
+    eave: 'the two ends of the eave line',
+    base: 'the two ends of the wall base line',
+    item: 'the points of this item',
+  };
+  function tapWhatText(key) {
+    const parts = (typeof key === 'string' ? key : '').split('+').map((k) => (Object.prototype.hasOwnProperty.call(TAP_WHAT, k) ? TAP_WHAT[k] : null)).filter(Boolean);
+    return parts.length ? parts.join(' and ') : 'the points';
+  }
 
   /**
    * Confidence score: start at 100 and subtract (SPEC §5.5). Every deduction adds a plain-language reason.
@@ -1357,7 +1510,11 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
    *           viewAngleDeg, focalSource, focalRelStd, focalMismatchPct, poseConsistencyPct, poseTolerancePct,
    *           pitchSource, pitchOnEave, pitchSpread, rectProblem, refsBothDirections, anisotropic, scaleFrom,
    *           offPlane (type id or bool), offPlaneBiasPct, assumedDiameterIn, extrapolation, pixelLength,
-   *           uncertaintyPct, extraReasons, thresholds: {highMin, mediumMin}, reason}
+   *           uncertaintyPct, uncertaintyBasePct, tapPx, tapWhat, extraReasons, thresholds: {highMin, mediumMin},
+   *           reason}
+   * Coarse taps (SPEC §8.4): when taps placed zoomed out (tapPx above 2.5 px) are what pushes the expected error
+   * over a level limit, or are the larger part of it, the reason names them ("Tapped zoomed out (about ±N px on the
+   * photo): zoom in and re-tap …") instead of the surface-specific advice. The level follows uncertaintyPct either way.
    */
   function scoreConfidence(factors) {
     const fx = isObj(factors) ? factors : {};
@@ -1462,7 +1619,17 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       take(10, 'This item is short on screen, so a small tap error is a large share of its length. Zoom in to place points.');
     }
     const u = fx.uncertaintyPct;
-    if (u === Infinity) cap('low', 'A small tap error changes this measurement a lot. Re-tap the rectangle and references, zoomed in.');
+    const capOf = (x) => (x > U_MEDIUM_PCT ? 'low' : x > U_HIGH_PCT ? 'medium' : null);
+    let zoomWhy = null;
+    if (isNum(fx.tapPx) && fx.tapPx > SIGMA_TAP_PX && (u === Infinity || isNum(u)) && capOf(u)) {
+      const u0 = fx.uncertaintyBasePct; // the expected error had every tap been good to 2.5 px
+      const pushesOver = isNum(u0) && capOf(u0) !== capOf(u);
+      const largerPart = !isNum(u0) || u === Infinity || u * u > 2 * u0 * u0;
+      if (pushesOver || largerPart) {
+        zoomWhy = 'Tapped zoomed out (about ±' + Math.round(fx.tapPx) + ' px on the photo): zoom in and re-tap ' + tapWhatText(fx.tapWhat) + '.';
+      }
+    }
+    if (u === Infinity) cap('low', zoomWhy || 'A small tap error changes this measurement a lot. Re-tap the rectangle and references, zoomed in.');
     else if (isNum(u)) {
       // The fix depends on the surface: ground and roof lengths hinge on the camera pose worked out from the wall,
       // so zooming in on taps helps far less than a tape-measured length or a better vantage point.
@@ -1471,7 +1638,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
         : (mode === 'roof-3d' || mode === 'roof-ortho')
           ? 'roof lengths depend on the camera angle worked out from the wall. Type a tape-measured length if you can, or rely on the 10% waste.'
           : 'zoom in or use a larger rectangle.';
-      const why = 'Expected error about ±' + (u < 10 ? u.toFixed(1) : Math.round(u)) + '% from tap precision; ' + fix;
+      const about = 'Expected error about ±' + (u < 10 ? u.toFixed(1) : Math.round(u)) + '%';
+      const why = zoomWhy ? zoomWhy + ' ' + about + ' as tapped.' : about + ' from tap precision; ' + fix;
       if (u > U_MEDIUM_PCT) cap('low', why);
       else if (u > U_HIGH_PCT) cap('medium', why);
     }
@@ -1515,10 +1683,11 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
   }
 
   /** Plane-level confidence (no feature-specific factors): shown on the plane's pill. */
-  function planeConfidence(sol, thresholds, uncertaintyPct) {
+  function planeConfidence(sol, thresholds, uncertaintyPct, tapDetail) {
     if (!sol || !sol.ok) return null;
+    const td = isObj(tapDetail) ? tapDetail : {};
     return scoreConfidence({
-      uncertaintyPct,
+      uncertaintyPct, uncertaintyBasePct: td.basePct, tapPx: td.tapPx, tapWhat: td.tapWhat,
       mode: sol.mode, kind: sol.kind, checks: sol.checks, disagreementPct: sol.disagreementPct, disagreementZ: sol.disagreementZ,
       onlyMediumLowRefs: !!(sol.calib && sol.calib.onlyMediumLowRefs), minCourses: sol.calib ? sol.calib.minCourses : null,
       viewAngleDeg: sol.viewAngleDeg, focalSource: sol.K ? sol.K.source : null, focalRelStd: sol.K ? sol.K.relStd : null,
@@ -1601,12 +1770,14 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     for (const pid of Object.keys(solved.planes)) {
       const sol = solved.planes[pid];
       let u = null;
+      const tapDetail = {};
       if (sol.ok && sol.mode !== 'roof-ortho') {
+        // The typical item itself counts as carefully tapped (2.5 px): the pill rates the calibration.
         const seg = representativeSegment(sol);
-        try { u = seg ? featureUncertaintyPct('polyline', seg, false, sol, perturb[pid] || []) : null; } catch (e) { u = null; }
+        try { u = seg ? featureUncertaintyPct('polyline', seg, false, sol, perturb[pid] || [], SIGMA_TAP_PX, tapDetail) : null; } catch (e) { u = null; }
       }
       sol.uncertaintyPct = isNum(u) || u === Infinity ? u : null;
-      sol.confidence = planeConfidence(sol, thresholds, sol.uncertaintyPct);
+      sol.confidence = planeConfidence(sol, thresholds, sol.uncertaintyPct, tapDetail);
     }
 
     const features = {};

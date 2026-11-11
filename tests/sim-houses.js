@@ -4,6 +4,11 @@
 //
 // Every tap (rectangle corners, reference ends, derived eave/base lines, feature points) gets independent
 // N(0, sigma²) noise in x and y, in stored-image pixels. sigma per house is drawn from opts.sigmas.
+//
+// Finger taps at fit zoom (SPEC §8.4): opts.featureSigmas draws a separate sigma for the traced items (the
+// calibration keeps opts.sigmas), and opts.tapErr stores a matching `tapErr` array beside every tapped point list,
+// the way the app records how coarse each tap was. Without opts.tapErr the project carries no tap precision, which
+// is what measure assumed for every project before §8.4 (every tap good to 2.5 px).
 const LP = require('./loader');
 const g = LP.require('geometry');
 const measure = LP.require('measure');
@@ -81,29 +86,38 @@ function gaussian(rnd) {
 
 const SETUPS = ['facade-known', 'garage-known', 'door-rect', 'facade-door', 'facade-door-width', 'refs-only', 'facade-door-auto'];
 
-function buildProject(house, setup, noisy) {
-  const P = (k) => noisy(house.px[k]);
+/**
+ * The project for one house and setup. noisy(points, role) returns the tapped points (role 'calib' | 'feature').
+ * taps (optional) {calib, feature}: tap precision in px stored as `tapErr` beside each point list (null = none).
+ */
+function buildProject(house, setup, noisy, taps) {
+  const P = (k) => noisy(house.px[k], 'calib');
+  const PF = (k) => noisy(house.px[k], 'feature');
+  const tc = taps && taps.calib > 0 ? taps.calib : null, tf = taps && taps.feature > 0 ? taps.feature : null;
+  // Adds tapErr (one value per point) beside the point list stored under `key`, when a precision is recorded.
+  const withTap = (obj, key, sigma) => { if (sigma) obj.tapErr = obj[key].map(() => sigma); return obj; };
   const image = { id: 'img', name: 'h.jpg', width: IMG_W, height: IMG_H, exif: setup === 'facade-door-auto' ? null : { focal35: 26 }, camera: { mode: 'auto', presetId: 'phone1x', focalPx: null }, storageKey: 'img' };
-  const line = (id, k, lengthFt, presetId) => ({ id, kind: 'line', points: P(k), lengthFt, presetId: presetId || 'custom-line', courses: null, quality: 'high' });
+  const line = (id, k, lengthFt, presetId) => withTap({ id, kind: 'line', points: P(k), lengthFt, presetId: presetId || 'custom-line', courses: null, quality: 'high' }, 'points', tc);
   let rect = null; const refs = [];
   if (setup === 'garage-known') rect = { corners: P('garage'), widthFt: 16, heightFt: 7, presetId: 'garage-double' };
   else if (setup === 'door-rect') rect = { corners: P('door'), widthFt: DOOR_W, heightFt: DOOR_H, presetId: 'door-rect' };
   else if (setup === 'facade-known') rect = { corners: P('facade'), widthFt: house.W, heightFt: house.Hw, presetId: 'custom-rect' }; // tape-measured house corners
   else if (setup !== 'refs-only') rect = { corners: P('facade'), widthFt: null, heightFt: null, presetId: 'unknown' };
+  if (rect) withTap(rect, 'corners', tc);
   if (setup !== 'garage-known' && setup !== 'door-rect' && setup !== 'facade-known') refs.push(line('r_dh', 'doorHeight', DOOR_H, 'door-height'));
   if (setup === 'facade-door-width') refs.push(line('r_dw', 'doorWidth', DOOR_W, 'door-width'));
   const planes = [{ id: 'pl_w', imageId: 'img', name: 'Front wall', kind: 'wall', rect, refs, derived: null }];
-  const feature = (id, type, k, planeId) => ({
-    id, imageId: 'img', planeId: planeId || 'pl_w', type, label: id, points: P(k), closed: !!catalog.FEATURE_TYPES[type].closedDefault,
+  const feature = (id, type, k, planeId) => withTap({
+    id, imageId: 'img', planeId: planeId || 'pl_w', type, label: id, points: PF(k), closed: !!catalog.FEATURE_TYPES[type].closedDefault,
     overrideFt: null, productId: null, color: null, params: {},
-  });
+  }, 'points', tf);
   // The eave runs along the top of the facade rectangle; a tape-measured facade would give it exactly, so it is
   // only traced where the rectangle's size is not known.
   const features = [feature('window', 'window', 'window'), feature('wallEdge', 'railing', 'wallEdge')];
   if (setup !== 'facade-known') features.unshift(feature('eave', 'roofline', 'eave'));
   if (setup === 'facade-door' || setup === 'facade-door-auto' || setup === 'garage-known' || setup === 'facade-known') {
-    planes.push({ id: 'pl_g', imageId: 'img', name: 'Yard', kind: 'ground', rect: null, refs: [], derived: { parentPlaneId: 'pl_w', line: P('base'), pitch: null } });
-    planes.push({ id: 'pl_r', imageId: 'img', name: 'Roof', kind: 'roof', rect: null, refs: [], derived: { parentPlaneId: 'pl_w', line: P('eave'), pitch: { rise: house.rise, run: 12 } } });
+    planes.push({ id: 'pl_g', imageId: 'img', name: 'Yard', kind: 'ground', rect: null, refs: [], derived: withTap({ parentPlaneId: 'pl_w', line: P('base'), pitch: null }, 'line', tc) });
+    planes.push({ id: 'pl_r', imageId: 'img', name: 'Roof', kind: 'roof', rect: null, refs: [], derived: withTap({ parentPlaneId: 'pl_w', line: P('eave'), pitch: { rise: house.rise, run: 12 } }, 'line', tc) });
     features.push(feature('walkway', 'walkway', 'walkway', 'pl_g'), feature('sideRake', 'rake', 'sideRake', 'pl_r'));
   }
   return {
@@ -114,11 +128,13 @@ function buildProject(house, setup, noisy) {
 }
 
 /**
- * Run the simulation. opts: {houses, seed, sigmas, setups}. Returns rows
- * {setup, feature, planeKind, sigma, level, score, err (relative, signed), reasons}.
+ * Run the simulation. opts: {houses, seed, sigmas, setups, featureSigmas, tapErr}. Returns rows
+ * {setup, feature, planeKind, sigma, featureSigma, level, score, err (relative, signed), reasons}.
+ * featureSigmas (optional): tap noise of the traced items, drawn per house (default: the house's sigma).
+ * tapErr (default false): record each tap's precision in the project (`tapErr` arrays equal to the noise used).
  */
 function simulate(opts) {
-  const o = Object.assign({ houses: 200, seed: 1, sigmas: [1.5, 2, 3], setups: SETUPS }, opts || {});
+  const o = Object.assign({ houses: 200, seed: 1, sigmas: [1.5, 2, 3], setups: SETUPS, featureSigmas: null, tapErr: false }, opts || {});
   const rnd = g.rng(o.seed);
   const rows = [];
   let made = 0, tries = 0;
@@ -128,17 +144,22 @@ function simulate(opts) {
     if (!house) continue;
     made++;
     const sigma = o.sigmas[Math.floor(rnd() * o.sigmas.length)];
-    const noisy = (list) => list.map((p) => [p[0] + sigma * gaussian(rnd), p[1] + sigma * gaussian(rnd)]);
+    const featureSigma = o.featureSigmas ? o.featureSigmas[Math.floor(rnd() * o.featureSigmas.length)] : sigma;
+    const noisy = (list, role) => {
+      const sg = role === 'feature' ? featureSigma : sigma;
+      return list.map((p) => [p[0] + sg * gaussian(rnd), p[1] + sg * gaussian(rnd)]);
+    };
+    const taps = o.tapErr ? { calib: sigma, feature: featureSigma } : null;
     for (const setup of o.setups) {
       if (setup === 'garage-known' && !house.px.garage) continue;
-      const proj = buildProject(house, setup, noisy);
+      const proj = buildProject(house, setup, noisy, taps);
       const r = measure.measureProject(proj);
       for (const f of proj.features) {
         const m = r.features[f.id];
         if (!m || !m.ok) continue;
         const truth = house.truth[f.id];
         rows.push({
-          setup, feature: f.id, planeKind: r.planes[f.planeId].kind, sigma,
+          setup, feature: f.id, planeKind: r.planes[f.planeId].kind, sigma, featureSigma,
           level: m.confidence.level, score: m.confidence.score, err: (m.measuredFt - truth) / truth, reasons: m.confidence.reasons,
         });
       }
