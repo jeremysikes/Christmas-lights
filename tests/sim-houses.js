@@ -7,8 +7,9 @@
 //
 // Finger taps at fit zoom (SPEC §8.4): opts.featureSigmas draws a separate sigma for the traced items (the
 // calibration keeps opts.sigmas), and opts.tapErr stores a matching `tapErr` array beside every tapped point list,
-// the way the app records how coarse each tap was. Without opts.tapErr the project carries no tap precision, which
-// is what measure assumed for every project before §8.4 (every tap good to 2.5 px).
+// the way the app records how coarse each tap was (never below 2.5 px). Without opts.tapErr the project carries no
+// tap precision, which is what measure assumed for every project before §8.4 (every tap good to 2.5 px).
+// garageDoorScene / simulateGarageDoor are the UX-01 scene: one small rectangle, tapped with a finger.
 const LP = require('./loader');
 const g = LP.require('geometry');
 const measure = LP.require('measure');
@@ -84,6 +85,9 @@ function gaussian(rnd) {
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * rnd());
 }
 
+/** What the app stores for a tap that is good to `sigma` px: never below 2.5 (a careful tap) or above 80 (SPEC §8.4). */
+const storedTapErr = (sigma) => Math.min(80, Math.max(2.5, sigma));
+
 const SETUPS = ['facade-known', 'garage-known', 'door-rect', 'facade-door', 'facade-door-width', 'refs-only', 'facade-door-auto'];
 
 /**
@@ -149,7 +153,7 @@ function simulate(opts) {
       const sg = role === 'feature' ? featureSigma : sigma;
       return list.map((p) => [p[0] + sg * gaussian(rnd), p[1] + sg * gaussian(rnd)]);
     };
-    const taps = o.tapErr ? { calib: sigma, feature: featureSigma } : null;
+    const taps = o.tapErr ? { calib: storedTapErr(sigma), feature: storedTapErr(featureSigma) } : null;
     for (const setup of o.setups) {
       if (setup === 'garage-known' && !house.px.garage) continue;
       const proj = buildProject(house, setup, noisy, taps);
@@ -175,4 +179,57 @@ function honesty(rows, level, tol) {
   return { n: sel.length, within: sel.length ? ok / sel.length : null };
 }
 
-module.exports = { simulate, honesty, SETUPS, randomHouse, buildProject, IMG_W, IMG_H, F26 };
+/**
+ * The UX-01 scene (SPEC §8.4): a 52 ft ranch photographed straight on, whose only calibration is its 16 x 7 ft
+ * garage door, about 400 x 175 px in the stored photo. On a 390 px phone at fit zoom that door is about
+ * 75 x 33 screen px and a 3 px slip of the finger is about 16 photo px.
+ * Returns {door (corners in px, [TL, TR, BR, BL]), doorPx {w, h}, eave (2 points, px), eaveFt, project(corners,
+ * eave, tapErr)}; project() builds the project for the given tapped points, with `tapErr` px stored beside the
+ * corners and the eave's points when tapErr is a number (none when it is null).
+ */
+function garageDoorScene() {
+  const eaveFt = 52;
+  const cam = makeCamera({ yawDeg: 0, tiltDeg: 3, dist: 62, height: 5, target: [eaveFt / 2, 5, 0], f: F26 });
+  const P = (list) => list.map((X) => project3(cam, X));
+  const door = P([[32, 7, 0], [48, 7, 0], [48, 0, 0], [32, 0, 0]]);
+  const eave = P([[0, 9, 0], [eaveFt, 9, 0]]);
+  const project = (corners, eavePts, tapErr) => {
+    const rect = { corners, widthFt: 16, heightFt: 7, presetId: 'garage-double' };
+    const feature = { id: 'eave', imageId: 'img', planeId: 'pl_w', type: 'roofline', label: 'Eave', points: eavePts, closed: false, overrideFt: null, productId: null, color: null, params: {} };
+    if (tapErr != null) { rect.tapErr = corners.map(() => tapErr); feature.tapErr = eavePts.map(() => tapErr); }
+    return {
+      schema: 'lightplan/project', version: 1, id: 'p', name: 'UX-01',
+      settings: { wastePct: 10, roofPitch: null, colorMode: 'warmWhite', customColors: [], lengthFormat: 'ft-in' },
+      images: [{ id: 'img', name: 'h.jpg', width: IMG_W, height: IMG_H, exif: { focal35: 26 }, camera: { mode: 'auto', presetId: 'phone1x', focalPx: null }, storageKey: 'img' }],
+      activeImageId: 'img', planes: [{ id: 'pl_w', imageId: 'img', name: 'Front wall', kind: 'wall', rect, refs: [], derived: null }],
+      features: [feature], outlets: [], circuits: [], library: { products: null, config: null },
+    };
+  };
+  return { door, doorPx: { w: g.dist(door[0], door[1]), h: g.dist(door[0], door[3]) }, eave, eaveFt, project };
+}
+
+/**
+ * Tap the garage-door scene `trials` times: the 4 corners and the 2 ends of the eave each get N(0, sigma²) noise.
+ * opts: {trials, seed, sigma, tapErr}. tapErr true (default) stores the precision the app would store for such
+ * taps; false stores none (what every project looked like before §8.4).
+ * Returns rows {err (eave, relative, signed), level, reasons, planeLevel, planeReasons, viewAngleDeg}.
+ */
+function simulateGarageDoor(opts) {
+  const o = Object.assign({ trials: 200, seed: 1, sigma: 16, tapErr: true }, opts || {});
+  const scene = garageDoorScene();
+  const rnd = g.rng(o.seed);
+  const noisy = (list) => list.map((p) => [p[0] + o.sigma * gaussian(rnd), p[1] + o.sigma * gaussian(rnd)]);
+  const rows = [];
+  for (let i = 0; i < o.trials; i++) {
+    const r = measure.measureProject(scene.project(noisy(scene.door), noisy(scene.eave), o.tapErr ? storedTapErr(o.sigma) : null));
+    const m = r.features.eave, pl = r.planes.pl_w;
+    if (!m || !m.ok) continue;
+    rows.push({
+      err: (m.measuredFt - scene.eaveFt) / scene.eaveFt, level: m.confidence.level, reasons: m.confidence.reasons,
+      planeLevel: pl.confidence ? pl.confidence.level : null, planeReasons: pl.confidence ? pl.confidence.reasons : [], viewAngleDeg: pl.viewAngleDeg,
+    });
+  }
+  return rows;
+}
+
+module.exports = { simulate, honesty, SETUPS, randomHouse, buildProject, garageDoorScene, simulateGarageDoor, storedTapErr, IMG_W, IMG_H, F26 };

@@ -978,8 +978,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
    * reference ends of walls whose scale depends on them, the eave/base line of roof and ground planes, ground
    * references that re-fit the scale, and — when the focal length was measured from a rectangle — that
    * rectangle's corners (the focal length moves with them). σ is the tap precision of the plane the tap belongs
-   * to (planeTapInfo). Returns {[planeId]: [{plus, minus, sigma, src}]}; src says what was tapped coarsely on
-   * that plane (planeTapInfo().what, prefixed with the plane id; null at the standard 2.5 px).
+   * to (planeTapInfo). Returns {[planeId]: [{plus, minus, sigma, src}]}; sigma is the nudge used and src says what
+   * was tapped coarsely on the plane the tap belongs to (planeTapInfo().what; null at the standard 2.5 px).
    */
   function perturbedSolutions(proj, cfg, cameras, solved, neededPlaneIds) {
     const planes = arr(proj.planes).filter(isObj);
@@ -1639,7 +1639,10 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
           ? 'roof lengths depend on the camera angle worked out from the wall. Type a tape-measured length if you can, or rely on the 10% waste.'
           : 'zoom in or use a larger rectangle.';
       const about = 'Expected error about ±' + (u < 10 ? u.toFixed(1) : Math.round(u)) + '%';
-      const why = zoomWhy ? zoomWhy + ' ' + about + ' as tapped.' : about + ' from tap precision; ' + fix;
+      // Coarse taps on a small rectangle can give an expected error of several hundred percent; past ±50% the
+      // number says nothing a person can use, so it is put in words.
+      const asTapped = u > 50 ? 'As tapped, this measurement could be off by more than half.' : about + ' as tapped.';
+      const why = zoomWhy ? zoomWhy + ' ' + asTapped : about + ' from tap precision; ' + fix;
       if (u > U_MEDIUM_PCT) cap('low', why);
       else if (u > U_HIGH_PCT) cap('medium', why);
     }

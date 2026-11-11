@@ -341,6 +341,49 @@ test('scoreConfidence deductions follow the spec table', () => {
   assert.equal(measure.scoreConfidence({ mode: 'refs-only', checks: 0, onlyMediumLowRefs: true, minCourses: 4 }).level, 'low');
 });
 
+test('8.4 scoreConfidence: taps placed zoomed out change the reason, never the level or the score', () => {
+  const sc = (fx) => measure.scoreConfidence(Object.assign({ mode: 'rect-known', checks: 1 }, fx));
+  const zoom = (px, what) => 'Tapped zoomed out (about ±' + px + ' px on the photo): zoom in and re-tap ' + what + '.';
+  const usual = (u) => 'Expected error about ±' + u + '% from tap precision; zoom in or use a larger rectangle.';
+  // Coarse taps are most of the expected error: say so, and say what to re-tap.
+  assert.deepEqual(sc({ uncertaintyPct: 7, uncertaintyBasePct: 2.2, tapPx: 16, tapWhat: 'rect' }),
+    { level: 'low', score: 49, reasons: [zoom(16, 'the corners of the rectangle') + ' Expected error about ±7.0% as tapped.'] });
+  assert.deepEqual(sc({ uncertaintyPct: 4, uncertaintyBasePct: 1, tapPx: 12.82, tapWhat: 'item' }),
+    { level: 'medium', score: 74, reasons: [zoom(13, 'the points of this item') + ' Expected error about ±4.0% as tapped.'] });
+  // Coarse taps are the smaller part, but they are what pushes the expected error over a limit (3% or 6%).
+  assert.equal(sc({ uncertaintyPct: 3.4, uncertaintyBasePct: 2.9, tapPx: 5, tapWhat: 'ref' }).reasons[0], zoom(5, 'the two ends of the reference length') + ' Expected error about ±3.4% as tapped.');
+  assert.equal(sc({ uncertaintyPct: 6.5, uncertaintyBasePct: 5.8, tapPx: 5, tapWhat: 'refs' }).reasons[0], zoom(5, 'the ends of the reference lengths') + ' Expected error about ±6.5% as tapped.');
+  // Neither: the usual advice stays, word for word.
+  assert.equal(sc({ uncertaintyPct: 7, uncertaintyBasePct: 6.5, tapPx: 4, tapWhat: 'item' }).reasons[0], usual('7.0'));
+  assert.equal(sc({ uncertaintyPct: 4, uncertaintyBasePct: 3.5, tapPx: 4, tapWhat: 'rect' }).reasons[0], usual('4.0'));
+  // The surface-specific advice stays as well when coarse taps are not the cause.
+  assert.match(sc({ mode: 'ground-3d', uncertaintyPct: 30, uncertaintyBasePct: 27, tapPx: 4, tapWhat: 'item' }).reasons[0], /^Expected error about ±30% from tap precision; from street level the ground is seen almost edge-on\./);
+  assert.match(sc({ mode: 'roof-3d', uncertaintyPct: 20, uncertaintyBasePct: 18, tapPx: 15, tapWhat: 'eave' }).reasons[0], /^Expected error about ±20% from tap precision; roof lengths depend on the camera angle/);
+  // ... and gives way to the zoom reason when they are, on any surface.
+  assert.equal(sc({ mode: 'roof-3d', uncertaintyPct: 40, uncertaintyBasePct: 18, tapPx: 15, tapWhat: 'eave' }).reasons[0], zoom(15, 'the two ends of the eave line') + ' Expected error about ±40% as tapped.');
+  assert.equal(sc({ mode: 'ground-3d', uncertaintyPct: 45, uncertaintyBasePct: 27, tapPx: 9, tapWhat: 'base' }).reasons[0], zoom(9, 'the two ends of the wall base line') + ' Expected error about ±45% as tapped.');
+  assert.equal(sc({ uncertaintyPct: 12, uncertaintyBasePct: 2, tapPx: 16, tapWhat: 'rect+ref' }).reasons[0], zoom(16, 'the corners of the rectangle and the two ends of the reference length') + ' Expected error about ±12% as tapped.');
+  // Past ±50% the number is put in words; a measurement that a nudge breaks altogether needs no number.
+  assert.equal(sc({ mode: 'ground-3d', uncertaintyPct: 244, uncertaintyBasePct: 27, tapPx: 16, tapWhat: 'rect' }).reasons[0], zoom(16, 'the corners of the rectangle') + ' As tapped, this measurement could be off by more than half.');
+  assert.equal(sc({ uncertaintyPct: Infinity, tapPx: 16, tapWhat: 'rect' }).reasons[0], zoom(16, 'the corners of the rectangle'));
+  assert.equal(sc({ uncertaintyPct: Infinity }).reasons[0], 'A small tap error changes this measurement a lot. Re-tap the rectangle and references, zoomed in.');
+  // An unknown source still reads as a sentence; no base figure means the coarse taps are taken as the cause.
+  assert.equal(sc({ uncertaintyPct: 9, tapPx: 20, tapWhat: 'something-new' }).reasons[0], zoom(20, 'the points') + ' Expected error about ±9.0% as tapped.');
+  // Nothing to say when the expected error is within the High limit, or when the taps were not coarse.
+  assert.ok(!sc({ uncertaintyPct: 2.8, uncertaintyBasePct: 1, tapPx: 8, tapWhat: 'rect' }).reasons.some((s) => /zoomed out/.test(s)));
+  for (const tapPx of [2.5, 2, 0, -5, NaN, Infinity, null, undefined, '16']) {
+    assert.equal(sc({ uncertaintyPct: 7, uncertaintyBasePct: 2, tapPx, tapWhat: 'rect' }).reasons[0], usual('7.0'), 'tapPx ' + String(tapPx));
+  }
+  // The level and the score follow the expected error exactly as before, whatever the taps were.
+  for (const mode of ['rect-known', 'rect-refs', 'refs-only', 'roof-3d', 'ground-3d']) {
+    for (const u of [1, 2.9, 3.1, 5.9, 6.1, 25, 300, Infinity]) {
+      const plain = measure.scoreConfidence({ mode, checks: 1, uncertaintyPct: u });
+      const coarse = measure.scoreConfidence({ mode, checks: 1, uncertaintyPct: u, uncertaintyBasePct: u / 4, tapPx: 16, tapWhat: 'rect' });
+      assert.deepEqual([coarse.level, coarse.score, coarse.reasons.length], [plain.level, plain.score, plain.reasons.length], mode + ' ±' + u);
+    }
+  }
+});
+
 test('ridge off-plane penalty applies only on a wall plane', () => {
   const cam = makeCamera();
   const p = projectOf({ images: [image()], planes: [wall(cam)], features: [feature(cam, 'ridge', 'ridge', 'pl_front', [[12, 15, 0], [28, 15, 0]])] });
@@ -377,30 +420,38 @@ test('spiral wrap: 8 ft tall, 10 in diameter, 4 in spacing is about 63.3 ft', ()
   assert.equal(m3.lengthFt, 8);
 });
 
-test('bush rule: 3 ft wide x 4 ft tall gives 800 lights; totals exclude bushes from feet', () => {
+test('bush rule: 3 ft wide x 4 ft tall gives 267 lights (100 per 1.5 ft of height per 3 ft of width); totals exclude bushes from feet', () => {
   const cam = makeCamera();
   const bush = feature(cam, 'bush', 'bush', 'pl_front', [[5, 0, 0], [8, 0, 0], [8, 4, 0], [5, 4, 0]]);
   const bushOv = feature(cam, 'bush2', 'bush', 'pl_front', [[20, 0, 0], [21, 0, 0], [21, 1, 0]], { overrideFt: 99 });
   bushOv.params = Object.assign({}, bushOv.params, { overrideWidthFt: 3, overrideHeightFt: 4 });
   const p = projectOf({ images: [image()], planes: [wall(cam)], features: [bush, bushOv, feature(cam, 'eave', 'roofline', 'pl_front', S.eave)] });
   const r = measure.measureProject(p);
+  // The rule of thumb in the library: lightsPerUnit for every heightUnitFt of height and every widthUnitFt of width.
+  assert.deepEqual([catalog.DEFAULT_CONFIG.bush.lightsPerUnit, catalog.DEFAULT_CONFIG.bush.heightUnitFt, catalog.DEFAULT_CONFIG.bush.widthUnitFt], [100, 1.5, 3]);
   const m = r.features.bush;
   assert.ok(Math.abs(m.widthFt - 3) < 0.01 && Math.abs(m.heightFt - 4) < 0.01);
-  assert.ok(Math.abs(m.lights - 800) <= 2, String(m.lights));
+  assert.ok(Math.abs(m.lights - 267) <= 1, String(m.lights)); // 100 × (4 / 1.5) × (3 / 3) = 266.7
   assert.equal(m.lengthFt, null);
   assert.ok(Math.abs(m.measuredFt - 14) < 0.02, 'perimeter');
   const m2 = r.features.bush2;
-  assert.equal(m2.lights, 800);
+  assert.equal(m2.lights, 267);
   assert.equal(m2.overridden, true);
   assert.equal(m2.method, 'override');
   assert.equal(m2.lengthFt, null, 'overrideFt is ignored for bushes');
   const bt = r.totals.byType.bush;
   assert.equal(bt.count, 2);
   assert.equal(bt.lengthFt, 0);
-  assert.ok(Math.abs(bt.lights - 1600) <= 2);
+  assert.ok(Math.abs(bt.lights - 534) <= 2);
   assert.ok(Math.abs(r.totals.totalFt - r.features.eave.lengthFt) < 1e-9);
   assert.ok(Math.abs(r.totals.totalWithWasteFt - r.features.eave.withWasteFt) < 1e-9);
   assert.equal(r.totals.byType.roofline.count, 1);
+  // The count follows the library's numbers: a denser rule (100 lights per 1.5 ft of height per 1 ft of width,
+  // the Phase 1 default) gives 800 for the same bush.
+  const dense = Object.assign({}, catalog.DEFAULT_CONFIG, { bush: Object.assign({}, catalog.DEFAULT_CONFIG.bush, { widthUnitFt: 1 }) });
+  const rd = measure.measureProject(p, dense);
+  assert.ok(Math.abs(rd.features.bush.lights - 800) <= 2, String(rd.features.bush.lights));
+  assert.equal(rd.features.bush2.lights, 800);
 });
 
 // ================================================================== robustness
@@ -534,11 +585,50 @@ test('refFromPreset and presets', () => {
   assert.equal(brick.quality, 'medium');
   const custom = measure.refFromPreset('custom-line', [[0, 0], [0, 10]], { lengthFt: 12.5 });
   assert.equal(custom.lengthFt, 12.5);
-  assert.equal(measure.REF_PRESETS.length, 11);
+  // The whole list, in the order the reference picker shows it (SPEC §5.5 plus the §8.4 garage door widths).
+  assert.deepEqual(measure.REF_PRESETS.map((p) => [p.id, p.label, p.kind, p.quality]), [
+    ['door-height', 'Entry door height (80 in)', 'line', 'high'],
+    ['door-width', 'Entry door width (36 in)', 'line', 'high'],
+    ['door-rect', 'Entry door (36 × 80 in)', 'rect', 'high'],
+    ['garage-single', 'Single garage door (9 × 7 ft)', 'rect', 'high'],
+    ['garage-double', 'Double garage door (16 × 7 ft)', 'rect', 'high'],
+    ['garage-height', 'Garage door height (7 ft)', 'line', 'high'],
+    ['garage-width-16', 'Garage door width (16 ft)', 'line', 'high'],
+    ['garage-width-9', 'Garage door width (9 ft)', 'line', 'high'],
+    ['garage-width-8', 'Garage door width (8 ft)', 'line', 'high'],
+    ['siding-4', 'Vinyl siding, 4 in courses', 'courses', 'medium'],
+    ['siding-5', 'Vinyl siding, 5 in courses', 'courses', 'medium'],
+    ['brick', 'Brick courses (3 ≈ 8 in)', 'courses', 'medium'],
+    ['custom-line', 'Custom length', 'line', 'high'],
+    ['custom-rect', 'Custom rectangle', 'rect', 'high'],
+  ]);
+  assert.equal(new Set(measure.REF_PRESETS.map((p) => p.id)).size, measure.REF_PRESETS.length, 'preset ids are unique');
   assert.deepEqual(measure.WALL_RECT_PRESETS.map((p) => p.id), ['door-rect', 'garage-single', 'garage-double', 'custom-rect', 'unknown']);
   const pts = [[0, 0], [0, 1]];
   measure.refFromPreset('door-height', pts);
   assert.deepEqual(pts, [[0, 0], [0, 1]], 'input not mutated');
+});
+
+test('8.4 two taps across a garage door are a reference: width 16, 9 and 8 ft', () => {
+  for (const [id, ft] of [['garage-width-16', 16], ['garage-width-9', 9], ['garage-width-8', 8]]) {
+    const preset = measure.getRefPreset(id);
+    assert.equal(preset.lengthIn, ft * 12, id);
+    const ref = measure.refFromPreset(id, [[100, 500], [500, 500]]);
+    assert.deepEqual([ref.kind, ref.lengthFt, ref.presetId, ref.quality, ref.courses], ['line', ft, id, 'high', null], id);
+    assert.equal(ref.points.length, 2, 'two taps');
+    assert.equal(measure.refLabel(ref), 'Garage door width (' + ft + ' ft)');
+  }
+  // On a straight-on photo the two taps set the scale of the wall: 16 ft across 400 px is 25 px per foot.
+  const ref = measure.refFromPreset('garage-width-16', [[1000, 900], [1400, 900]], { id: 'ref_gw' });
+  const p = projectOf({
+    images: [image()],
+    planes: [{ id: 'pl_front', imageId: 'img_1', name: 'Front wall', kind: 'wall', rect: null, refs: [ref], derived: null }],
+    features: [{ id: 'eave', imageId: 'img_1', planeId: 'pl_front', type: 'roofline', label: 'Eave', points: [[150, 700], [1450, 700]], closed: false, overrideFt: null, productId: null, color: null, params: {} }],
+  });
+  const r = measure.measureProject(p);
+  assert.equal(r.planes.pl_front.mode, 'refs-only');
+  assert.deepEqual(r.planes.pl_front.refResults.map((x) => x.label), ['Garage door width (16 ft)']);
+  assert.ok(Math.abs(r.features.eave.measuredFt - 52) < 1e-9, String(r.features.eave.measuredFt));
 });
 
 test('a rect reference becomes the plane rectangle when the wall has none', () => {
