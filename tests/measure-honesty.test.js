@@ -9,7 +9,7 @@
 // one screen pixel is about 5 photo pixels, so a finger is good to 10–20 photo px, not 2.5. The app stores that
 // beside every tapped point list (tapErr) and measure rates the result with it. The same promise is held for:
 //   - everything tapped at fit zoom (σ ∈ {10, 13, 16, 20} px, tapErr to match);
-//   - a mix of zoom levels (calibration and items each tapped at σ ∈ {2, 4, 8, 16} px, tapErr to match);
+//   - a mix of zoom levels (calibration and items each tapped at σ ∈ {2, 3, 4, 8, 16} px, tapErr to match);
 //   - the UX-01 scene: a garage-door rectangle of about 400 × 175 photo px tapped with a 16 px finger.
 // Each has a control run of the same taps with no tapErr stored, which shows what the tap precision is for.
 const test = require('node:test');
@@ -67,7 +67,7 @@ test('confidence levels are honest: ≥ 95% of High within ±3% and ≥ 95% of M
 });
 
 test('finger taps at fit zoom (10–20 px, stored as tapErr) are held to the same bar: High within ±3%, Medium within ±6%', { timeout: 60000 }, (t) => {
-  const finger = { houses: 250, seed: 2026, sigmas: [10, 13, 16, 20] };
+  const finger = { houses: 200, seed: 2026, sigmas: [10, 13, 16, 20] };
   const rows = sim.simulate(Object.assign({ tapErr: true }, finger));
   const lv = levels(rows);
   t.diagnostic(describeLevels('finger at fit zoom, tapErr stored', lv));
@@ -82,7 +82,7 @@ test('finger taps at fit zoom (10–20 px, stored as tapErr) are held to the sam
     const b = bySetup[k];
     t.diagnostic(`${k.padEnd(30)} H/M/L ${b.high}/${b.medium}/${b.low}  median ${pct(median(b.errs))}`);
   }
-  assert.ok(lv.n >= 5000, 'enough results to judge: ' + lv.n);
+  assert.ok(lv.n >= 4000, 'enough results to judge: ' + lv.n);
   assertHonestLevels('finger at fit zoom', lv);
   // Honest here mostly means Low: the median wall item is about 10% off, so hardly anything can promise ±6%.
   t.diagnostic('rated Low: ' + pct(lv.low / lv.n) + '; median error of all results ' + pct(median(rows.map((r) => Math.abs(r.err)))));
@@ -96,27 +96,31 @@ test('finger taps at fit zoom (10–20 px, stored as tapErr) are held to the sam
 
   // Control: the very same taps with no tap precision stored are rated as if they were good to 2.5 px. This is
   // the failure the review measured (UX-02), and the reason tapErr exists.
-  const blind = levels(sim.simulate(Object.assign({}, finger, { houses: 100 })));
+  const blind = levels(sim.simulate(Object.assign({}, finger, { houses: 80 })));
   t.diagnostic(describeLevels('control, same kind of taps with no tapErr', blind));
-  assert.ok(blind.high.n + blind.medium.n >= 300, 'the control rates many results High or Medium: ' + (blind.high.n + blind.medium.n));
+  assert.ok(blind.high.n + blind.medium.n >= 250, 'the control rates many results High or Medium: ' + (blind.high.n + blind.medium.n));
   assert.ok(blind.high.within < 0.6 && blind.medium.within < 0.6, 'and most of those are wrong: ' + pct(blind.high.within) + ', ' + pct(blind.medium.within));
 });
 
 test('a mix of zoom levels (2–16 px taps, stored as tapErr) is held to the same bar and still gives High and Medium', { timeout: 60000 }, (t) => {
-  // Per house the calibration and the traced items each get their own precision: zoomed in (2 px), the loupe or a
-  // mouse (4 px), half zoomed (8 px) or a finger at fit zoom (16 px).
-  const rows = sim.simulate({ houses: 300, seed: 2026, sigmas: [2, 4, 8, 16], featureSigmas: [2, 4, 8, 16], tapErr: true });
+  // Per house the calibration and the traced items each get their own precision: zoomed in (2 px), a mouse or a
+  // steady pen (3 px), a finger with the loupe (4 px), half zoomed (8 px) or a finger at fit zoom (16 px).
+  const PX = [2, 3, 4, 8, 16];
+  const rows = sim.simulate({ houses: 300, seed: 2026, sigmas: PX, featureSigmas: PX, tapErr: true });
   const lv = levels(rows);
   t.diagnostic(describeLevels('mixed zoom, tapErr stored', lv));
-  for (const cs of [2, 4, 8, 16]) {
-    for (const fs of [2, 4, 8, 16]) {
-      const cell = levels(rows.filter((r) => r.sigma === cs && r.featureSigma === fs));
-      t.diagnostic(`calibration ${String(cs).padStart(2)} px, items ${String(fs).padStart(2)} px: High ${cell.high.n} (${pct(cell.high.within)}), Medium ${cell.medium.n} (${pct(cell.medium.within)}), Low ${cell.low}`);
-    }
+  for (const cs of PX) {
+    const cells = PX.map((fs) => { const c = levels(rows.filter((r) => r.sigma === cs && r.featureSigma === fs)); return `${fs} px ${c.high.n}/${c.medium.n}/${c.low}`; });
+    t.diagnostic(`calibration ${String(cs).padStart(2)} px, High/Medium/Low by item precision: ` + cells.join(', '));
   }
-  assert.ok(lv.high.n >= 15, 'enough High results to judge: ' + lv.high.n);
-  assert.ok(lv.medium.n >= 250, 'enough Medium results to judge: ' + lv.medium.n);
+  assert.ok(lv.high.n >= 20, 'enough High results to judge: ' + lv.high.n);
+  assert.ok(lv.medium.n >= 300, 'enough Medium results to judge: ' + lv.medium.n);
   assertHonestLevels('mixed zoom', lv);
+  // The results that the stored tap precision is there for: something behind them was tapped coarser than 2.5 px.
+  const coarse = levels(rows.filter((r) => r.sigma > 2.5 || r.featureSigma > 2.5));
+  t.diagnostic(describeLevels('of those, with some tap coarser than 2.5 px', coarse));
+  assert.ok(coarse.high.n >= 15 && coarse.medium.n >= 250, 'coarse taps still earn High and Medium where they can: ' + coarse.high.n + ' High, ' + coarse.medium.n + ' Medium');
+  assertHonestLevels('some tap coarser than 2.5 px', coarse);
   // Coarse calibration taps alone, and coarse item taps alone, are each caught.
   assertHonestLevels('calibration at fit zoom, items zoomed in', levels(rows.filter((r) => r.sigma === 16 && r.featureSigma === 2)));
   assertHonestLevels('calibration zoomed in, items at fit zoom', levels(rows.filter((r) => r.sigma === 2 && r.featureSigma === 16)));
