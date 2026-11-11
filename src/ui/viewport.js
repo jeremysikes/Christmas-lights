@@ -41,8 +41,14 @@
  *    length that is bought ("25 ft cord" / "6 ft jumper"). A cord label sits beside a stretch of its own cord that
  *    is on screen, or is left out: it never covers an outlet, an outlet label or another label, and never slides
  *    along the edge of the photo. Short jumpers get their label once the view is zoomed in.
+ *  - Tap precision (SPEC §8.4): every point placed or dragged here is passed to the actions with its expected
+ *    error in stored-image px, tapErrorPx(scale, pointerType, loupeZoom) = clamp(k / s, 2.5, 80) (k = 3 for a
+ *    finger, 1.5 for a mouse or pen; s = CSS px per image px, times the loupe's 2.5 when the press was held at least
+ *    300 ms, long enough to aim with the loupe: a quick tap does not get the loupe's benefit). A point snapped onto
+ *    an existing vertex takes that vertex's stored value instead (none when it has none).
  *  - Module extras for tests: selectionHandles(project, sel), snapCandidates(project, imageId), layersFor(step, mode),
- *    cordLabelText(feed), cordPieces(feed), tapMarkers(power), cordLabelSpots(screenPath, w, h), clipSegment.
+ *    cordLabelText(feed), cordPieces(feed), tapMarkers(power), cordLabelSpots(screenPath, w, h), clipSegment,
+ *    tapErrorPx.
  */
 LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], function (g, catalog, measure, preview) {
   'use strict';
@@ -63,6 +69,10 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
   const LOUPE_SIZE = 110;
   const LOUPE_ZOOM = 2.5;
   const LOUPE_GAP = 34;
+  const LOUPE_AIM_MS = 300;       // a press held this long was aimed with the loupe (a quick tap was not)
+  const TAP_K = { touch: 3, pen: 1.5, mouse: 1.5 };   // how far off a tap lands, in CSS px (1 sigma)
+  const TAP_ERR_MIN = 2.5;        // image px: the precision assumed when nothing is known (measure.js)
+  const TAP_ERR_MAX = 80;
   const MAX_ZOOM = 12;          // CSS px per image px
   const FIT_MARGIN = 0.96;
   const AMBER = '#ffbf5a';
@@ -198,21 +208,34 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     const m = candMemo.get(project);
     if (m && m.imageId === imageId) return m.list;
     const list = [];
+    // Each candidate carries the tap precision stored for that point (tapErr), when there is one: a point snapped
+    // onto it is exactly as good as it is.
+    const errAt = (holder, n, i) => {
+      const t = holder && Array.isArray(holder.tapErr) && holder.tapErr.length === n ? holder.tapErr[i] : null;
+      return isNum(t) && t > 0 ? t : null;
+    };
     for (const f of arr(project.features)) {
       if (!onImage(f, imageId)) continue;
       const planes = f.planeId ? [f.planeId] : [];
-      arr(f.points).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'feature:' + f.id, index: i, planes }); });
+      const n = arr(f.points).length;
+      arr(f.points).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'feature:' + f.id, index: i, planes, tapErr: errAt(f, n, i) }); });
     }
     for (const pl of arr(project.planes)) {
       if (!onImage(pl, imageId)) continue;
       const own = [pl.id];
-      if (pl.rect) arr(pl.rect.corners).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'planeRect:' + pl.id, index: i, planes: own }); });
+      if (pl.rect) {
+        const n = arr(pl.rect.corners).length;
+        arr(pl.rect.corners).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'planeRect:' + pl.id, index: i, planes: own, tapErr: errAt(pl.rect, n, i) }); });
+      }
       if (pl.derived) {
         const both = pl.derived.parentPlaneId ? [pl.id, pl.derived.parentPlaneId] : own;
-        arr(pl.derived.line).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'planeLine:' + pl.id, index: i, planes: both }); });
+        const n = arr(pl.derived.line).length;
+        arr(pl.derived.line).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'planeLine:' + pl.id, index: i, planes: both, tapErr: errAt(pl.derived, n, i) }); });
       }
       for (const ref of arr(pl.refs)) {
-        if (ref) arr(ref.points).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'ref:' + pl.id + ':' + ref.id, index: i, planes: own }); });
+        if (!ref) continue;
+        const n = arr(ref.points).length;
+        arr(ref.points).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'ref:' + pl.id + ':' + ref.id, index: i, planes: own, tapErr: errAt(ref, n, i) }); });
       }
     }
     for (const o of arr(project.outlets)) {
@@ -247,6 +270,18 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     pts.forEach((p, i) => { const d = g.dist(p, start); if (d < bd) { bd = d; best = i; } });
     if (closed) return pts.slice(best).concat(pts.slice(0, best));
     return best === pts.length - 1 ? pts.slice().reverse() : pts;
+  }
+
+  /**
+   * Expected error (1 sigma) of a point placed on the photo, in stored-image px (SPEC §8.4):
+   * e = clamp(k / s, 2.5, 80), with s = CSS px per image px (times the loupe's magnification when the point was
+   * aimed with the loupe) and k = 3 for a finger, 1.5 for a mouse or pen. At fit zoom on a phone one CSS px is
+   * about 4 to 5 photo px, so a finger tap is good to about 13 px, not the 2.5 px measure.js assumes otherwise.
+   */
+  function tapErrorPx(scale, pointerType, loupeZoom) {
+    const k = TAP_K[pointerType] || TAP_K.mouse;
+    const s = (isNum(scale) && scale > 0 ? scale : 1) * (isNum(loupeZoom) && loupeZoom > 1 ? loupeZoom : 1);
+    return Math.round(clamp(k / s, TAP_ERR_MIN, TAP_ERR_MAX) * 100) / 100;
   }
 
   /**
@@ -543,9 +578,21 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     }
 
     /**
+     * The tap precision to record for a point just placed or dragged: the snapped-onto point's own value (null when
+     * it has none), else what this pointer manages at this zoom. heldMs is how long the press lasted: a finger held
+     * down long enough to aim with the loupe gets the loupe's magnification.
+     */
+    function tapErrFor(snap, pointerType, heldMs) {
+      if (snap && snap.kind === 'vertex') return isNum(snap.tapErr) ? snap.tapErr : null;
+      const aimed = pointerType === 'touch' && heldMs >= LOUPE_AIM_MS;
+      return tapErrorPx(view.scale, pointerType, aimed ? LOUPE_ZOOM : 1);
+    }
+
+    /**
      * Snap image point ip. opt: {exclude: {key, index}, excludeKeys: [key], anchors: [img pts], planeId,
      * surface: plane id whose points may be snapped to (null = any), noAxis, closeFirst: img pt|null}.
-     * Returns {pt, kind: null|'vertex'|'close'|'axis', anchor?, axis?}.
+     * Returns {pt, kind: null|'vertex'|'close'|'axis', anchor?, axis?}; a vertex snap also carries tapErr, the
+     * precision stored for the point snapped onto (null when it has none).
      */
     function snapPoint(ip, opt) {
       const op = opt || {};
@@ -563,10 +610,10 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
           if (op.excludeKeys && op.excludeKeys.includes(c.key)) continue;
           if (op.surface && c.planes && c.planes.length && !c.planes.includes(op.surface)) continue;
           const d = g.dist(ip, c.p);
-          if (d <= rv && (!best || d < best.d)) best = { d, p: c.p };
+          if (d <= rv && (!best || d < best.d)) best = { d, p: c.p, tapErr: c.tapErr };
         }
       }
-      if (best) return { pt: best.p.slice(), kind: 'vertex' };
+      if (best) return { pt: best.p.slice(), kind: 'vertex', tapErr: isNum(best.tapErr) ? best.tapErr : null };
       if (op.noAxis) return { pt: ip, kind: null };
       const sol = planeSolution(safePlan(), op.planeId);
       let axisBest = null;
@@ -883,7 +930,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         }
         try { store.beginGesture(); } catch (err) { /* ignore */ }
         const ip = screenToImage(sp);
-        drag = { type: 'handle', id: e.pointerId, handle: h, grab: [h.p[0] - ip[0], h.p[1] - ip[1]], pointerType: type, opts: dragSnapOptions(h), moved: false };
+        drag = { type: 'handle', id: e.pointerId, handle: h, grab: [h.p[0] - ip[0], h.p[1] - ip[1]], pointerType: type, opts: dragSnapOptions(h), moved: false, t0: e.timeStamp || performance.now() };
         if (type === 'touch') loupe = { screen: sp, img: h.p.slice() };
         hover = null;
         requestRedraw();
@@ -950,7 +997,9 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         drag.current = pt;
         drag.moved = true;
         if (drag.pointerType === 'touch') loupe = { screen: sp, img: pt };
-        try { actions.moveVertex(drag.handle.target, drag.handle.index, pt, { gesture: true }); } catch (err) { /* actions toast their own errors */ }
+        // The dragged point is as good as this pointer at this zoom (SPEC §8.4); actions keep the tapErr list aligned.
+        const tapErr = tapErrFor(snap, drag.pointerType, (e.timeStamp || performance.now()) - drag.t0);
+        try { actions.moveVertex(drag.handle.target, drag.handle.index, pt, { gesture: true, tapErr }); } catch (err) { /* actions toast their own errors */ }
         requestRedraw();
         return;
       }
@@ -1004,14 +1053,14 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         const elapsed = (e.timeStamp || performance.now()) - d.t0;
         const moved = Math.hypot(sp[0] - d.start[0], sp[1] - d.start[1]);
         const placing = PLACING_MODES[modeOf(uiState()).name];
-        if (moved <= TAP_SLOP && (elapsed < TAP_MS || placing)) handleTap(sp, d.pointerType, e.timeStamp || performance.now());
+        if (moved <= TAP_SLOP && (elapsed < TAP_MS || placing)) handleTap(sp, d.pointerType, e.timeStamp || performance.now(), elapsed);
       }
       loupe = null;
       if (d.pointerType === 'touch') hover = null;
       requestRedraw();
     }
 
-    function handleTap(sp, type, t) {
+    function handleTap(sp, type, t, heldMs) {
       const ui = uiState();
       const mode = modeOf(ui);
       const draftLen = draftPoints(ui).length;
@@ -1033,7 +1082,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       if (DRAFT_MODES[mode.name]) {
         const snap = snapPoint(raw, draftSnapOptions(ui));
         const pt = clampToImage(snap.pt);
-        if (typeof actions.addDraftPoint === 'function') actions.addDraftPoint(pt);
+        if (typeof actions.addDraftPoint === 'function') actions.addDraftPoint(pt, { tapErr: tapErrFor(snap, type, heldMs || 0) });
         hover = type === 'touch' ? null : { raw, img: pt, snap };
         return;
       }
@@ -2051,6 +2100,6 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
 
   return {
     createViewport, selectionHandles, snapCandidates, layersFor, targetKey, midpointHandles, isDoubleTap, snapRadiusImg,
-    cordLabelText, cordPieces, tapMarkers, cordLabelSpots, clipSegment,
+    cordLabelText, cordPieces, tapMarkers, cordLabelSpots, clipSegment, tapErrorPx,
   };
 });

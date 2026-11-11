@@ -22,6 +22,12 @@
  *    {featureId, type}: the hint bar then shows the item's length and offers what to trace next. It is cleared by
  *    starting any tool, picking something else, changing step, or finishTracing().
  *  - loadImageFile opens step 2 (set the scale) once the photo is in, and says so.
+ *  - Tap precision (SPEC §8.4): addDraftPoint(p, {tapErr}), moveVertex(target, index, p, {gesture, tapErr}) and
+ *    insertVertex(featureId, afterIndex, p, {tapErr}) take the point's expected tap error in stored-image px from
+ *    the viewport. It is stored index for index beside the points as rect.tapErr, ref.tapErr, feature.tapErr and
+ *    plane.derived.tapErr, and kept aligned through insert, delete, move, type changes, undo and redo. Points made
+ *    by code carry none: an item gets a list only once a person tapped one of its points, and its other points
+ *    then hold 2.5 (the precision measure.js assumes when it knows nothing).
  *  - deletePlane(id) returns a Promise<bool> (it asks first when traced items would be deleted with it).
  *  - addCircuit() returns the new circuit id; addPlane('wall') returns the new plane id.
  *  - loadSample({traced, confirm}) asks before replacing the user's work (confirm:false skips) and is undoable.
@@ -41,6 +47,48 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
     const isPt = (p) => Array.isArray(p) && p.length >= 2 && Number.isFinite(p[0]) && Number.isFinite(p[1]);
     const pt = (p) => [p[0], p[1]];
     const posOrNull = (v) => (Number.isFinite(v) && v > 0 ? v : null);
+
+    // ---------------------------------------------------------------- tap precision (SPEC §8.4)
+    // Beside every tapped point list (rect.corners, ref.points, feature.points, derived.line) an optional tapErr
+    // list holds each point's expected tap error in stored-image px, index for index. The viewport supplies the
+    // value when a point is placed or dragged; a point with no information holds TAP_ERR_FLOOR, which is what
+    // measure.js assumes anyway. Lists exist only where at least one point was tapped by a person.
+    const TAP_ERR_FLOOR = 2.5;
+    const TAP_ERR_CEIL = 80;
+    const isTapErr = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+    const fitTapErr = (v) => Math.round(Math.min(TAP_ERR_CEIL, Math.max(TAP_ERR_FLOOR, v)) * 100) / 100;
+    /** n values (TAP_ERR_FLOOR where unknown), or null when none of the first n is known. */
+    function tapErrList(list, n) {
+      const src = arr(list);
+      const out = [];
+      let any = false;
+      for (let i = 0; i < n; i++) {
+        if (isTapErr(src[i])) { out.push(fitTapErr(src[i])); any = true; } else out.push(TAP_ERR_FLOOR);
+      }
+      return any ? out : null;
+    }
+    /** holder.tapErr as a clean list aligned with its n points, or null when it is missing or misaligned. */
+    function alignedTapErr(holder, n) {
+      const t = holder && holder.tapErr;
+      return Array.isArray(t) && t.length === n ? t.map((v) => (isTapErr(v) ? fitTapErr(v) : TAP_ERR_FLOOR)) : null;
+    }
+    /**
+     * Record the precision of point `index` of a holder with n points after it was placed or dragged.
+     * opts.tapErr: a number = how well it was placed; null = it was snapped onto a point with no value; absent =
+     * moved by code (the list is left alone).
+     */
+    function putTapErr(holder, n, index, opts) {
+      if (!holder || !opts || !Object.prototype.hasOwnProperty.call(opts, 'tapErr')) return;
+      const cur = alignedTapErr(holder, n);
+      if (isTapErr(opts.tapErr)) {
+        const next = cur || new Array(n).fill(TAP_ERR_FLOOR);
+        next[index] = fitTapErr(opts.tapErr);
+        holder.tapErr = next;
+      } else if (cur) {
+        cur[index] = TAP_ERR_FLOOR;
+        holder.tapErr = cur;
+      } else if (holder.tapErr !== undefined) delete holder.tapErr;
+    }
     const nowIso = () => new Date().toISOString();
 
     // ---------------------------------------------------------------- length parsing
@@ -277,7 +325,11 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       };
       actions.cancelDraft = () => store.setUI(SELECT());
 
-      actions.addDraftPoint = (p) => {
+      /**
+       * Add a tapped point to the tool in use. meta.tapErr (optional): the point's expected tap error in image px
+       * (SPEC §8.4), kept beside the draft points and stored with the finished item.
+       */
+      actions.addDraftPoint = (p, meta) => {
         const ui = U();
         const mode = ui.mode || {};
         if (!['rect', 'line', 'trace'].includes(mode.name) || !isPt(p)) return;
@@ -292,7 +344,10 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           }
         }
         const next = pts.concat([pt(p)]);
-        store.setUI({ draft: { points: next } });
+        const errs = arr(ui.draft && ui.draft.tapErr).slice(0, pts.length);
+        while (errs.length < pts.length) errs.push(null);
+        errs.push(meta && isTapErr(meta.tapErr) ? fitTapErr(meta.tapErr) : null);
+        store.setUI({ draft: { points: next, tapErr: errs } });
         if (mode.name === 'rect' && next.length >= 4) actions.completeDraft();
         else if (mode.name === 'line' && next.length >= 2) actions.completeDraft();
         else if (mode.name === 'trace') {
@@ -317,7 +372,7 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       actions.canUndo = () => !!actions.undoLabel() && (store.canUndo() || actions.undoLabel() === 'Undo point');
       actions.removeLastDraftPoint = () => {
         const pts = arr(U().draft && U().draft.points);
-        if (pts.length) store.setUI({ draft: { points: pts.slice(0, -1) } });
+        if (pts.length) store.setUI({ draft: { points: pts.slice(0, -1), tapErr: arr(U().draft.tapErr).slice(0, pts.length - 1) } });
       };
 
       /** Finish the current drawing tool. Returns true when something was created. */
@@ -326,6 +381,7 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
         const mode = ui.mode || {};
         const o = mode.opts || {};
         const pts = arr(ui.draft && ui.draft.points).map(pt);
+        const errs = (n) => tapErrList(ui.draft && ui.draft.tapErr, n);   // null when no point was tapped by a person
         const p = P();
         if (mode.name === 'rect') {
           if (pts.length < 4) { actions.toast('Tap all 4 corners first.', 'warn'); return false; }
@@ -335,6 +391,7 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
             const ref = measure.refFromPreset(o.presetId || 'custom-rect', pts.slice(0, 4), {
               widthFt: o.widthFt, heightFt: o.heightFt, id: schema.uid('ref'),
             });
+            if (errs(4)) ref.tapErr = errs(4);
             store.commit('Add reference', (d) => { const pl = findPlane(d, plane.id); if (!pl) return false; pl.refs.push(ref); });
             store.setUI(Object.assign(SELECT(), { selection: { kind: 'ref', id: ref.id, planeId: plane.id }, activePlaneId: plane.id }));
             return true;
@@ -347,6 +404,7 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
             const pl = findPlane(d, plane.id);
             if (!pl) return false;
             pl.rect = { corners: pts.slice(0, 4), widthFt: known ? widthFt : null, heightFt: known ? heightFt : null, presetId: o.presetId || 'unknown' };
+            if (errs(4)) pl.rect.tapErr = errs(4);
           });
           store.setUI(Object.assign(SELECT(), { selection: { kind: 'plane', id: plane.id }, activePlaneId: plane.id }));
           return true;
@@ -366,6 +424,7 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
               kind, imageId: plane.imageId, name,
               derived: { parentPlaneId: plane.id, line, pitch: kind === 'roof' && o.pitch ? o.pitch : null },
             });
+            if (errs(2) && np.derived) np.derived.tapErr = errs(2);
             store.commit(kind === 'roof' ? 'Add roof slope' : 'Add ground plane', (d) => { d.planes.push(np); });
             store.setUI(Object.assign(SELECT(), { activePlaneId: np.id, selection: { kind: 'plane', id: np.id } }));
             // Made on the way to tracing a walkway (startTrace): carry on with that trace on the new ground.
@@ -377,6 +436,7 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
               const pl = findPlane(d, plane.id);
               if (!pl || !pl.derived) return false;
               pl.derived.line = line;
+              if (errs(2)) pl.derived.tapErr = errs(2); else delete pl.derived.tapErr;
             });
             store.setUI(Object.assign(SELECT(), { selection: { kind: 'plane', id: plane.id }, activePlaneId: plane.id }));
             return true;
@@ -384,6 +444,7 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           const ref = measure.refFromPreset(o.presetId || 'custom-line', line, {
             lengthFt: o.lengthFt, courses: o.courses, id: schema.uid('ref'),
           });
+          if (errs(2)) ref.tapErr = errs(2);
           store.commit('Add reference', (d) => { const pl = findPlane(d, plane.id); if (!pl) return false; pl.refs.push(ref); });
           store.setUI(Object.assign(SELECT(), { selection: { kind: 'ref', id: ref.id, planeId: plane.id }, activePlaneId: plane.id }));
           return true;
@@ -404,6 +465,7 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
             imageId: img ? img.id : null, planeId, points: ft.maxPoints ? pts.slice(0, ft.maxPoints) : pts, closed,
             label: nextFeatureLabel(p, o.type),
           });
+          if (errs(feature.points.length)) feature.tapErr = errs(feature.points.length);
           store.commit('Trace ' + ft.short.toLowerCase(), (d) => { d.features.push(feature); });
           // The tool is put down: the new item is picked (its points can be dragged) and the hint bar shows its
           // length and offers what to trace next (ui.afterTrace) instead of an empty trace with a disabled Finish.
@@ -564,6 +626,11 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
         return outlet.id;
       };
 
+      /**
+       * Move one point of a traced item, a rectangle, a reference, an eave / base line or an outlet. mopts:
+       * {gesture} (part of an open drag) and, from the viewport, {tapErr}: how well the point was placed (image px;
+       * null = snapped onto a point with no value), stored at the same index of the item's tapErr list.
+       */
       actions.moveVertex = (target, index, p, mopts) => {
         if (!target || !isPt(p)) return;
         // A drag move outside an open gesture would push one undo entry per pointer move: skip it.
@@ -575,18 +642,21 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
               const f = byId(d.features, target.id);
               if (!f || !f.points[index]) return false;
               f.points[index] = q;
+              putTapErr(f, f.points.length, index, mopts);
               return undefined;
             }
             case 'planeRect': {
               const pl = findPlane(d, target.planeId);
               if (!pl || !pl.rect || !pl.rect.corners[index]) return false;
               pl.rect.corners[index] = q;
+              putTapErr(pl.rect, pl.rect.corners.length, index, mopts);
               return undefined;
             }
             case 'planeLine': {
               const pl = findPlane(d, target.planeId);
               if (!pl || !pl.derived || !Array.isArray(pl.derived.line) || !pl.derived.line[index]) return false;
               pl.derived.line[index] = q;
+              putTapErr(pl.derived, pl.derived.line.length, index, mopts);
               return undefined;
             }
             case 'ref': {
@@ -594,6 +664,7 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
               const r = pl ? byId(pl.refs, target.refId) : null;
               if (!r || !r.points[index]) return false;
               r.points[index] = q;
+              putTapErr(r, r.points.length, index, mopts);
               return undefined;
             }
             case 'outlet': {
@@ -614,7 +685,7 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
         if (cur && cur.featureId === featureId && cur.index === index) return;
         store.setUI({ activeVertex: { featureId, index } });
       };
-      actions.insertVertex = (featureId, afterIndex, p) => {
+      actions.insertVertex = (featureId, afterIndex, p, iopts) => {
         if (!isPt(p)) return;
         let at = null;
         const ok = store.commit('Add point', (d) => {
@@ -622,7 +693,13 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           const ft = f && FEATURE_TYPES[f.type];
           if (!f || (ft && ft.maxPoints && f.points.length >= ft.maxPoints)) return false;
           const i = Math.max(0, Math.min(f.points.length - 1, Math.round(afterIndex)));
+          // Keep the tap-precision list in step: the new point takes the value given, else "no information".
+          const errs = alignedTapErr(f, f.points.length);
+          const given = iopts && isTapErr(iopts.tapErr) ? fitTapErr(iopts.tapErr) : null;
           f.points.splice(i + 1, 0, pt(p));
+          if (errs) { errs.splice(i + 1, 0, given === null ? TAP_ERR_FLOOR : given); f.tapErr = errs; }
+          else if (given !== null) { f.tapErr = new Array(f.points.length).fill(TAP_ERR_FLOOR); f.tapErr[i + 1] = given; }
+          else if (f.tapErr !== undefined) delete f.tapErr;
           at = i + 1;
         });
         if (ok) store.setUI({ activeVertex: { featureId, index: at } });
@@ -639,7 +716,9 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
         const ok = store.commit('Delete point', (d) => {
           const g = byId(d.features, featureId);
           if (!g || !g.points[index]) return false;
+          const errs = alignedTapErr(g, g.points.length);
           g.points.splice(index, 1);
+          if (errs) { errs.splice(index, 1); g.tapErr = errs; } else if (g.tapErr !== undefined) delete g.tapErr;
         });
         if (ok) store.setUI({ activeVertex: null });
       };
@@ -707,7 +786,12 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           g.label = label;
           g.productId = null;
           g.params.mount = null;
-          if (ft.geometry === 'vertical') { g.points = [g.points[0], g.points[g.points.length - 1]]; g.closed = false; }
+          if (ft.geometry === 'vertical') {
+            const errs = alignedTapErr(g, g.points.length);
+            g.points = [g.points[0], g.points[g.points.length - 1]];
+            if (errs) g.tapErr = [errs[0], errs[errs.length - 1]]; else if (g.tapErr !== undefined) delete g.tapErr;
+            g.closed = false;
+          }
           else if (ft.geometry === 'polygon' || ft.geometry === 'area') g.closed = true;
           else g.closed = !!ft.closedDefault;
         });
