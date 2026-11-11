@@ -93,7 +93,7 @@ test('M1: a garage-door rectangle with ±2 px corner errors cannot rate a 10%-of
   console.log(`  eave ${m.measuredFt.toFixed(2)} ft vs 50 (${(100 * err).toFixed(1)}%), ${m.confidence.level} ${m.confidence.score}`);
   assert.ok(Math.abs(err) > 0.03, 'precondition: the corner errors throw the eave off');
   assertHonest('eave', m, err);
-  assert.ok(m.confidence.reasons.some((s) => /Expected error about ±\d+(\.\d)?% from tap precision/.test(s)), m.confidence.reasons.join(' | '));
+  assert.ok(m.confidence.reasons.some((s) => /Expected error about ±\d+(\.\d)?% from how exactly the points could be tapped/.test(s)), m.confidence.reasons.join(' | '));
   assert.ok(m.uncertaintyPct > 3, 'uncertaintyPct ' + m.uncertaintyPct);
 });
 
@@ -420,13 +420,26 @@ test('UX-02: a tapErr that is missing, malformed, the wrong length or no coarser
   const junk = [null, 'coarse', 16, true, { 0: 16, 1: 16, length: 2 }, [], [16], [16, 16, 16], [16, 16, 16, 16, 16]];
   // Built for the list's own length: right length, but one entry is not a finite number.
   const almost = [NaN, Infinity, -Infinity, '16', null, undefined, [16]].map((bad) => (n) => { const a = new Array(n).fill(16); a[n - 1] = bad; return a; });
-  // Valid, and no coarser than what measure already assumes (the app stores 2.5 for a point tapped zoomed in).
-  const fine = [(n) => new Array(n).fill(2.5), (n) => new Array(n).fill(0), (n) => new Array(n).fill(1).map((v, i) => 2.5 - i / 10), (n) => new Array(n).fill(-40)];
-  const variants = junk.map((j) => () => j).concat(almost, fine);
+  // Numbers that say nothing (zero or below): no information either.
+  const empty = [(n) => new Array(n).fill(0), (n) => new Array(n).fill(-40)];
+  const variants = junk.map((j) => () => j).concat(almost, empty);
   variants.forEach((make, i) => {
     // On every list at once ...
     const all = tapMeasured((p) => { for (const [holder, points] of tapLists(p)) holder.tapErr = make(points.length); });
     assert.deepEqual(all, base, 'variant ' + i + ' on every list');
+  });
+  // Valid, and no coarser than what measure already assumes (the app stores 2.5 for a point tapped zoomed in):
+  // every number is unchanged. The only difference is the advice: a point known to have been tapped zoomed in
+  // is not told to "zoom in" (review finding U14), and each surface says its taps were recorded.
+  const ZOOMED_IN = 'use a larger rectangle (the points were already tapped zoomed in, so zooming in further will not help).';
+  const plain = (r) => JSON.parse(JSON.stringify(r, (k, v) => (k === 'tapsRecorded' ? undefined : typeof v === 'string' ? v.split(ZOOMED_IN).join('zoom in or use a larger rectangle.') : v)));
+  const fine = [(n) => new Array(n).fill(2.5), (n) => new Array(n).fill(1).map((v, i) => 2.5 - i / 10)];
+  fine.forEach((make, i) => {
+    const all = tapMeasured((p) => { for (const [holder, points] of tapLists(p)) holder.tapErr = make(points.length); });
+    assert.deepEqual(plain(all), plain(base), 'fine variant ' + i + ': the same numbers');
+    assert.ok(Object.keys(all.planes).every((id) => all.planes[id].tapsRecorded === true) && Object.keys(base.planes).every((id) => base.planes[id].tapsRecorded === false));
+    assert.ok(JSON.stringify(all).includes(ZOOMED_IN) && !JSON.stringify(base).includes(ZOOMED_IN), 'only the advice differs');
+    assert.ok(!/zoom in or use a larger rectangle/.test(JSON.stringify(all)));
   });
   // ... and one list at a time, with the kind of value most likely to slip through (wrong length).
   const count = tapLists(tapHouse()).length;
@@ -517,8 +530,8 @@ test('UX-02: when taps placed zoomed out are what limits a rating, the reason sa
 
 test('UX-02: when coarse taps are not what limits a rating, the advice for that surface stays', () => {
   const base = tapMeasured();
-  const roofWhy = /^Expected error about ±\d+% from tap precision; roof lengths depend on the camera angle worked out from the wall\./;
-  const groundWhy = /^Expected error about ±\d+% from tap precision; from street level the ground is seen almost edge-on\./;
+  const roofWhy = /^Expected error about ±\d+% from how exactly the points could be tapped; roof lengths depend on the camera angle worked out from the wall\./;
+  const groundWhy = /^Expected error about ±\d+% from how exactly the points could be tapped; from street level the ground is seen almost edge-on\./;
   assert.match(base.features.rake.confidence.reasons[0], roofWhy);
   assert.match(base.features.walk.confidence.reasons[0], groundWhy);
   // A coarsely tapped eave line barely moves a roof length (the camera angle from the wall is what matters).

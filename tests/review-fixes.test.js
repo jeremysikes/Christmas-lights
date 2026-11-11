@@ -682,3 +682,47 @@ test('U16: a cord that stops at the door jamb just inside a walkway edge does no
   const steps = bom.buildChecklist(p, planner.mergeRunInfo(r.runs, r.power), r.power, r.measured).flatMap((g) => g.steps).join('\n');
   assert.match(steps, /Keep the cord tight against the doorstep where it runs in front of Front door and lay a cord cover over it there\./);
 });
+
+// ================================================================ U14: advice that fits how the points were tapped
+test('U14: points already tapped zoomed in are not told to "zoom in"; an item tapped zoomed out always says so', () => {
+  const measure = LP.require('measure');
+  const sc = (f) => measure.scoreConfidence(Object.assign({ mode: 'rect-known', checks: 1 }, f));
+  // Nothing recorded (older plans, the sample): the advice is the old one.
+  assert.equal(sc({ uncertaintyPct: 9 }).reasons[0], 'Expected error about ±9.0% from how exactly the points could be tapped; zoom in or use a larger rectangle.');
+  // Every tap known to be at the 2.5 px floor: only a larger rectangle helps.
+  const fine = sc({ uncertaintyPct: 9, tapsFine: true });
+  assert.equal(fine.level, sc({ uncertaintyPct: 9 }).level);
+  assert.equal(fine.reasons[0], 'Expected error about ±9.0% from how exactly the points could be tapped; use a larger rectangle (the points were already tapped zoomed in, so zooming in further will not help).');
+  // The item's own points were tapped zoomed out, but the surface's error is the larger part: the level still
+  // follows the expected error, and a second reason says to re-tap the item.
+  const own = sc({ uncertaintyPct: 18, uncertaintyBasePct: 16, tapPx: 16.4, tapWhat: 'item', ownTapPx: 16.4 });
+  assert.equal(own.level, 'low');
+  assert.match(own.reasons[0], /^Expected error about ±18% from how exactly the points could be tapped/);
+  assert.ok(own.reasons.includes('Tapped zoomed out (about ±16 px on the photo): zoom in and re-tap the points of this item too.'), own.reasons.join(' | '));
+  // When the coarse item is already the reason given, it is said once.
+  const main = sc({ uncertaintyPct: 18, uncertaintyBasePct: 4, tapPx: 16.4, tapWhat: 'item', ownTapPx: 16.4 });
+  assert.equal(main.reasons.filter((r) => /^Tapped zoomed out/.test(r)).length, 1);
+  assert.match(main.reasons[0], /^Tapped zoomed out \(about ±16 px on the photo\): zoom in and re-tap the points of this item\./);
+  // A long item that is rated High despite coarse taps gets no nagging.
+  assert.ok(!sc({ uncertaintyPct: 1.5, ownTapPx: 16 }).reasons.some((r) => /Tapped zoomed out/.test(r)));
+  // End to end on the sample: record every tap as placed zoomed in (2.5 px), then one eave as placed zoomed out.
+  const p = sample.createSample().project;
+  const lists = [];
+  for (const pl of p.planes) {
+    if (pl.rect) lists.push([pl.rect, pl.rect.corners]);
+    for (const r of pl.refs || []) lists.push([r, r.points]);
+    if (pl.derived && pl.derived.line) lists.push([pl.derived, pl.derived.line]);
+  }
+  for (const f of p.features) lists.push([f, f.points]);
+  for (const [holder, pts] of lists) holder.tapErr = pts.map(() => 2.5);
+  const all = measure.measureProject(p);
+  const texts = JSON.stringify(all);
+  assert.ok(!/zoom in or use a larger rectangle/.test(texts), 'no "zoom in" advice when every tap was zoomed in');
+  assert.ok(Object.keys(all.planes).every((id) => all.planes[id].tapsRecorded === true));
+  const eave = p.features.find((f) => f.id === 'ft_eave');
+  eave.tapErr = eave.points.map(() => 16.41);
+  const coarse = measure.measureProject(p).features.ft_eave.confidence;
+  assert.ok(coarse.reasons.some((r) => /^Tapped zoomed out \(about ±16 px on the photo\): zoom in and re-tap the points of this item/.test(r)), coarse.reasons.join(' | '));
+  // The sample as shipped records nothing, so its wording is unchanged.
+  assert.ok(Object.values(measure.measureProject(sample.createSample().project).planes).every((s) => s.tapsRecorded === false));
+});

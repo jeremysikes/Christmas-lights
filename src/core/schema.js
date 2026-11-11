@@ -1349,6 +1349,14 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
     if (!isObj(data)) throw new Error(NOT_A_PROJECT);
     let rawProject = data;
     let rawImages = {};
+    // What the file said the plan came to when it was saved (materials cost, quote total). The plan is always
+    // worked out again; these two numbers are only kept so the app can say when the totals have moved.
+    let saved = null;
+    if (isObj(data.derived) && isObj(data.derived.summary)) {
+      const sm = data.derived.summary;
+      const numOrNull = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+      if (numOrNull(sm.cost) !== null) saved = { cost: numOrNull(sm.cost), quoteTotal: numOrNull(sm.quoteTotal) };
+    }
     if (data.schema === EXPORT_SCHEMA_ID || (data.schema === undefined && isObj(data.project))) {
       // Read the wrapper version the way migrateProject reads a project version: numeric strings count.
       let v = data.version === undefined || data.version === null ? EXPORT_VERSION : data.version;
@@ -1374,7 +1382,7 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
       const v = im.storageKey ? rawImages[im.storageKey] : undefined;
       if (typeof v === 'string' && /^data:image\//i.test(v)) images[im.storageKey] = v;
     }
-    return { project, images };
+    return { project, images, saved };
   }
 
   return {

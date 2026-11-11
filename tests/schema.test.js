@@ -418,9 +418,16 @@ test('importProject round-trips an export and accepts a bare project or JSON tex
   const images = { img_1: 'data:image/jpeg;base64,AAAA' };
   const e = schema.exportProject(sampleProject(), { summary: {} }, images, '2026-11-08T18:00:00.000Z');
   const r = schema.importProject(JSON.parse(JSON.stringify(e)));
-  assert.deepEqual(r, { project: sampleProject(), images });
+  // `saved` is what the file said the plan cost when it was saved (review finding U07): null when it says nothing.
+  assert.deepEqual(r, { project: sampleProject(), images, saved: null });
   assert.deepEqual(schema.importProject(JSON.stringify(e)), r);
-  assert.deepEqual(schema.importProject(sampleProject()), { project: sampleProject(), images: {} });
+  assert.deepEqual(schema.importProject(sampleProject()), { project: sampleProject(), images: {}, saved: null });
+  const withTotals = schema.exportProject(sampleProject(), { summary: { cost: 1131.29, quoteTotal: null }, bom: { subtotal: 1131.29 } }, {}, null);
+  assert.deepEqual(schema.importProject(withTotals).saved, { cost: 1131.29, quoteTotal: null });
+  assert.deepEqual(schema.importProject(schema.exportProject(sampleProject(), { summary: { cost: 900, quoteTotal: 2424.56 } }, {}, null)).saved, { cost: 900, quoteTotal: 2424.56 });
+  for (const junk of [{ summary: { cost: 'lots' } }, { summary: null }, { summary: { cost: -3 } }, 'x']) {
+    assert.equal(schema.importProject(schema.exportProject(sampleProject(), junk, {}, null)).saved, null);
+  }
   const partial = schema.importProject({ planes: [], features: [{ type: 'gutter', points: [[0, 0], [5, 0]] }] });
   assert.equal(partial.project.features[0].type, 'gutter');
   const withDerived = schema.importProject({ ...sampleProject(), derived: { summary: { cost: 1e9 } } });

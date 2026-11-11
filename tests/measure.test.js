@@ -344,7 +344,7 @@ test('scoreConfidence deductions follow the spec table', () => {
 test('8.4 scoreConfidence: taps placed zoomed out change the reason, never the level or the score', () => {
   const sc = (fx) => measure.scoreConfidence(Object.assign({ mode: 'rect-known', checks: 1 }, fx));
   const zoom = (px, what) => 'Tapped zoomed out (about ±' + px + ' px on the photo): zoom in and re-tap ' + what + '.';
-  const usual = (u) => 'Expected error about ±' + u + '% from tap precision; zoom in or use a larger rectangle.';
+  const usual = (u) => 'Expected error about ±' + u + '% from how exactly the points could be tapped; zoom in or use a larger rectangle.';
   // Coarse taps are most of the expected error: say so, and say what to re-tap.
   assert.deepEqual(sc({ uncertaintyPct: 7, uncertaintyBasePct: 2.2, tapPx: 16, tapWhat: 'rect' }),
     { level: 'low', score: 49, reasons: [zoom(16, 'the corners of the rectangle') + ' Expected error about ±7.0% as tapped.'] });
@@ -357,8 +357,8 @@ test('8.4 scoreConfidence: taps placed zoomed out change the reason, never the l
   assert.equal(sc({ uncertaintyPct: 7, uncertaintyBasePct: 6.5, tapPx: 4, tapWhat: 'item' }).reasons[0], usual('7.0'));
   assert.equal(sc({ uncertaintyPct: 4, uncertaintyBasePct: 3.5, tapPx: 4, tapWhat: 'rect' }).reasons[0], usual('4.0'));
   // The surface-specific advice stays as well when coarse taps are not the cause.
-  assert.match(sc({ mode: 'ground-3d', uncertaintyPct: 30, uncertaintyBasePct: 27, tapPx: 4, tapWhat: 'item' }).reasons[0], /^Expected error about ±30% from tap precision; from street level the ground is seen almost edge-on\./);
-  assert.match(sc({ mode: 'roof-3d', uncertaintyPct: 20, uncertaintyBasePct: 18, tapPx: 15, tapWhat: 'eave' }).reasons[0], /^Expected error about ±20% from tap precision; roof lengths depend on the camera angle/);
+  assert.match(sc({ mode: 'ground-3d', uncertaintyPct: 30, uncertaintyBasePct: 27, tapPx: 4, tapWhat: 'item' }).reasons[0], /^Expected error about ±30% from how exactly the points could be tapped; from street level the ground is seen almost edge-on\./);
+  assert.match(sc({ mode: 'roof-3d', uncertaintyPct: 20, uncertaintyBasePct: 18, tapPx: 15, tapWhat: 'eave' }).reasons[0], /^Expected error about ±20% from how exactly the points could be tapped; roof lengths depend on the camera angle/);
   // ... and gives way to the zoom reason when they are, on any surface.
   assert.equal(sc({ mode: 'roof-3d', uncertaintyPct: 40, uncertaintyBasePct: 18, tapPx: 15, tapWhat: 'eave' }).reasons[0], zoom(15, 'the two ends of the eave line') + ' Expected error about ±40% as tapped.');
   assert.equal(sc({ mode: 'ground-3d', uncertaintyPct: 45, uncertaintyBasePct: 27, tapPx: 9, tapWhat: 'base' }).reasons[0], zoom(9, 'the two ends of the wall base line') + ' Expected error about ±45% as tapped.');

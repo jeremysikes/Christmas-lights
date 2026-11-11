@@ -330,6 +330,23 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     return { sigma, what: parts.join('+') };
   }
 
+  /**
+   * Was the precision of every calibration tap of this plane recorded (a valid tapErr beside its rectangle, each
+   * reference and its eave or base line)? Only then does "2.5 px" mean "tapped zoomed in" and not "unknown".
+   */
+  function planeTapsRecorded(plane) {
+    if (!isObj(plane)) return false;
+    let lists = 0;
+    if (isObj(plane.rect)) { if (!(tapErrMax(plane.rect.tapErr, plane.rect.corners) > 0)) return false; lists += 1; }
+    for (const r of arr(plane.refs)) {
+      if (!isObj(r)) continue;
+      if (!(tapErrMax(r.tapErr, r.points) > 0)) return false;
+      lists += 1;
+    }
+    if (isObj(plane.derived) && Array.isArray(plane.derived.line)) { if (!(tapErrMax(plane.derived.tapErr, plane.derived.line) > 0)) return false; lists += 1; }
+    return lists > 0;
+  }
+
   /** Tap precision (1σ, px) of a plane's calibration taps (SPEC §8.4). */
   function planeTapSigma(plane) { return planeTapInfo(plane).sigma; }
 
@@ -1478,6 +1495,10 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       uncertaintyBasePct: tapDetail.basePct,
       tapPx: tapDetail.tapPx,
       tapWhat: tapDetail.tapWhat,
+      // The item's own points, when they were tapped zoomed out; and whether every tap behind this number is
+      // known to have been placed zoomed in (then "zoom in" is no advice).
+      ownTapPx: featureTapSigma(f),
+      tapsFine: !!(sol && sol.tapsRecorded) && tapErrMax(f.tapErr, f.points) > 0 && !(tapDetail.tapPx > SIGMA_TAP_PX),
       extraReasons,
       thresholds,
     });
@@ -1510,8 +1531,11 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
    *           viewAngleDeg, focalSource, focalRelStd, focalMismatchPct, poseConsistencyPct, poseTolerancePct,
    *           pitchSource, pitchOnEave, pitchSpread, rectProblem, refsBothDirections, anisotropic, scaleFrom,
    *           offPlane (type id or bool), offPlaneBiasPct, assumedDiameterIn, extrapolation, pixelLength,
-   *           uncertaintyPct, uncertaintyBasePct, tapPx, tapWhat, extraReasons, thresholds: {highMin, mediumMin},
-   *           reason}
+   *           uncertaintyPct, uncertaintyBasePct, tapPx, tapWhat, ownTapPx, tapsFine, extraReasons,
+   *           thresholds: {highMin, mediumMin}, reason}
+   * ownTapPx: precision of the item's own points; when they were tapped zoomed out and that is not already the
+   * reason given, a "Tapped zoomed out ... re-tap the points of this item too" reason is added. tapsFine: every tap
+   * behind the number is known to have been placed zoomed in, so the advice is "use a larger rectangle" only.
    * Coarse taps (SPEC §8.4): when taps placed zoomed out (tapPx above 2.5 px) are what pushes the expected error
    * over a level limit, or are the larger part of it, the reason names them ("Tapped zoomed out (about ±N px on the
    * photo): zoom in and re-tap …") instead of the surface-specific advice. The level follows uncertaintyPct either way.
@@ -1577,7 +1601,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     }
     const usesLens = mode === 'rect-refs' || threeD;
     if (fx.focalSource === 'default' && usesLens) {
-      take(10, 'The camera focal length is assumed (phone main camera). Choose the camera that took the photo.');
+      take(10, 'How wide the camera sees (its focal length) is assumed: a phone main camera. Choose the camera that took the photo.');
       if (threeD) cap('low', 'Roof and ground lengths need the real focal length, and it is only assumed here. Choose the camera that took the photo.');
       else if (!fx.anisotropic) cap('medium', 'The wall\'s proportions come from an assumed focal length. Add a horizontal and a vertical reference, or choose the camera that took the photo.');
     }
@@ -1637,14 +1661,21 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
         ? 'from street level the ground is seen almost edge-on. Add a tape-measured reference on this ground surface, or take the photo from closer or higher.'
         : (mode === 'roof-3d' || mode === 'roof-ortho')
           ? 'roof lengths depend on the camera angle worked out from the wall. Type a tape-measured length if you can, or rely on the 10% waste.'
-          : 'zoom in or use a larger rectangle.';
+          : fx.tapsFine === true ? 'use a larger rectangle (the points were already tapped zoomed in, so zooming in further will not help).'
+            : 'zoom in or use a larger rectangle.';
       const about = 'Expected error about ±' + (u < 10 ? u.toFixed(1) : Math.round(u)) + '%';
       // Coarse taps on a small rectangle can give an expected error of several hundred percent; past ±50% the
       // number says nothing a person can use, so it is put in words.
       const asTapped = u > 50 ? 'As tapped, this measurement could be off by more than half.' : about + ' as tapped.';
-      const why = zoomWhy ? zoomWhy + ' ' + asTapped : about + ' from tap precision; ' + fix;
+      const why = zoomWhy ? zoomWhy + ' ' + asTapped : about + ' from how exactly the points could be tapped; ' + fix;
       if (u > U_MEDIUM_PCT) cap('low', why);
       else if (u > U_HIGH_PCT) cap('medium', why);
+    }
+    // The item's own points were tapped zoomed out, but something else is the larger part of the error: still say
+    // so, because re-tapping them zoomed in is the quickest thing the user can do.
+    const named = zoomWhy && typeof fx.tapWhat === 'string' && fx.tapWhat.split('+').includes('item');
+    if (!named && isNum(fx.ownTapPx) && fx.ownTapPx > SIGMA_TAP_PX && (u === Infinity || (isNum(u) && capOf(u)))) {
+      reasons.push('Tapped zoomed out (about ±' + Math.round(fx.ownTapPx) + ' px on the photo): zoom in and re-tap ' + TAP_WHAT.item + ' too.');
     }
     for (const r of arr(fx.extraReasons)) reasons.push(r);
     score = g.clamp(Math.round(score), 0, 100);
@@ -1661,7 +1692,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     score = Math.max(0, score);
     const all = limiting.concat(reasons.filter((r) => limiting.indexOf(r) < 0));
     if (!all.length) all.push('Measured on a known-size rectangle and cross-checked.');
-    if (isNum(u) && u <= U_HIGH_PCT && level === 'high') all.push('Expected error about ±' + u.toFixed(1) + '% from tap precision.');
+    if (isNum(u) && u <= U_HIGH_PCT && level === 'high') all.push('Expected error about ±' + u.toFixed(1) + '% from how exactly the points could be tapped.');
     return { level, score, reasons: all };
   }
 
@@ -1691,6 +1722,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     const td = isObj(tapDetail) ? tapDetail : {};
     return scoreConfidence({
       uncertaintyPct, uncertaintyBasePct: td.basePct, tapPx: td.tapPx, tapWhat: td.tapWhat,
+      tapsFine: sol.tapsRecorded === true && !(td.tapPx > SIGMA_TAP_PX),
       mode: sol.mode, kind: sol.kind, checks: sol.checks, disagreementPct: sol.disagreementPct, disagreementZ: sol.disagreementZ,
       onlyMediumLowRefs: !!(sol.calib && sol.calib.onlyMediumLowRefs), minCourses: sol.calib ? sol.calib.minCourses : null,
       viewAngleDeg: sol.viewAngleDeg, focalSource: sol.K ? sol.K.source : null, focalRelStd: sol.K ? sol.K.relStd : null,
@@ -1770,8 +1802,14 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     if (needed.size) {
       try { perturb = perturbedSolutions(proj, cfg, cameras, solvedAll, needed); } catch (e) { perturb = {}; }
     }
+    const planeObj = {};
+    for (const pl of arr(proj.planes)) if (isObj(pl) && pl.id != null) planeObj[pl.id] = pl;
     for (const pid of Object.keys(solved.planes)) {
       const sol = solved.planes[pid];
+      // Every tap behind this surface has a recorded precision: its own, and its parent wall's for a roof or ground.
+      const own = planeObj[pid];
+      const parentId = own && isObj(own.derived) ? own.derived.parentPlaneId : null;
+      sol.tapsRecorded = planeTapsRecorded(own) && (parentId == null || planeTapsRecorded(planeObj[parentId]));
       let u = null;
       const tapDetail = {};
       if (sol.ok && sol.mode !== 'roof-ortho') {
