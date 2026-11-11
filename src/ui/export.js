@@ -35,6 +35,9 @@
  *  - Extra exports: buildReportPdf, buildQuotePdf, parseJpeg, toWinAnsi, fromWinAnsi, textWidth, wrapText,
  *    base64ToBytes, dataUrlToBytes, slug, formatMoney, formatNumber, formatDate, quoteNumber, exportFilename,
  *    collectImages, HELVETICA_WIDTHS, HELVETICA_BOLD_WIDTHS, and _resetDownloads (tests only).
+ *  - describeCords(plan, project) puts the power plan into plain words, cord by cord, grouped by outlet and
+ *    supply tree (SPEC §8.2, §8.5). The PDF report and the Power step both read it, so they say the same thing.
+ *    gaugeText(awg) → "16-gauge".
  */
 LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModule, schema) {
   'use strict';
@@ -704,6 +707,130 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
       summary: isObj(p.summary) ? p.summary : {},
       config: isObj(p.library) && isObj(p.library.config) ? p.library.config : catalog.DEFAULT_CONFIG,
     };
+  }
+
+  // ================================================================ cords in plain words (PDF report and Power step)
+  /** "16-gauge": how a cord's thickness is said to a homeowner. The trade name (16 AWG) is kept for detail lines. */
+  function gaugeText(awg) { return isNum(awg) ? formatNumber(awg, 0) + '-gauge' : ''; }
+  function capFirst(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+
+  /**
+   * The power plan in the order it is put up, in plain words. One row per feed (the lights on one cord): a cord
+   * from an outlet, a jumper cord from one run to the next, or a run that plugs straight in. Rows are grouped by
+   * outlet and, under each outlet, by supply tree (the cord from the outlet first, then everything hanging off it,
+   * depth-first, as plan.power.groups lists them). Pure; tolerates partial plans.
+   *
+   * → { outlets: [{ id, label, cords (cords plugged into the outlet), runs (light runs it powers), feeds, watts,
+   *                 splitters, trees: [[row, …]] }],
+   *     loose: [row] (lights with no outlet yet), rows: [row] (everything, same order) }
+   * row = { feedId, outletId, depth, kind: 'home' | 'jumper' | 'plugIn' | 'unknown' | 'none',
+   *         names: [run labels], lights: 'Front eave, Ridge', featureIds, ownCord,
+   *         what: '25 ft cord' | '6 ft jumper cord' | 'Plugs straight in' | 'Cord length unknown' | 'No outlet yet',
+   *         source: 'Porch outlet' | 'the end of Front door' | 'the 3-way tap at the start of Walkway left edge' | '',
+   *         line: what + where it comes from, as one sentence part ('6 ft jumper cord from the end of Front door'),
+   *         route: cord.routeText | '', startLabel, pieces, boughtFt, neededFt (rounded up), awg, gauge: '16-gauge',
+   *         dropPct, pathDropPct, watts (its own lights), carriesW (everything on its cord), strings, unit, taps,
+   *         tapText: '' | '3-way tap at its start' | …, cover (needs a cord cover), doorway }
+   */
+  function describeCords(plan, project) {
+    const p = isObj(plan) ? plan : {};
+    const power = isObj(p.power) ? p.power : {};
+    const prj = isObj(project) ? project : {};
+    const feeds = arr(power.feeds).filter(isObj);
+    const feedById = new Map(feeds.map((f) => [f.id, f]));
+    const runById = new Map(arr(p.runs).filter(isObj).map((r) => [r.id, r]));
+    const featureById = new Map(arr(prj.features).filter(isObj).map((f) => [f.id, f]));
+    const outletLabel = (id) => { const o = byId(prj.outlets, id) || byId(power.outlets, id); return o ? str(o.label) || 'Outlet' : null; };
+    const runsOf = (f) => arr(f.runIds).map((id) => runById.get(id)).filter(Boolean);
+    const namesOf = (f) => runsOf(f).map((r) => str(r.label)).filter(Boolean);
+
+    const makeRow = (f) => {
+      const fruns = runsOf(f);
+      const names = namesOf(f);
+      const src = isObj(f.source) ? f.source : null;
+      const parent = src && src.kind === 'feed' ? feedById.get(src.feedId) || null : null;
+      const pn = parent ? namesOf(parent) : [];
+      const cord = isObj(f.cord) ? f.cord : null;
+      let kind;
+      if (!f.outletId && !src) kind = 'none';
+      else if (f.plugIn === true) kind = 'plugIn';
+      else if (cord) kind = cord.kind === 'jumper' || (src && src.kind === 'feed') ? 'jumper' : 'home';
+      else kind = 'unknown';
+      let source = '';
+      if (parent) source = src.port === 'start' ? 'the 3-way tap at the start of ' + (pn[0] || 'the run before it') : 'the end of ' + (pn[pn.length - 1] || 'the run before it');
+      else if (f.outletId || (src && src.kind === 'outlet')) source = outletLabel(src && src.outletId ? src.outletId : f.outletId) || 'the outlet';
+      const pieces = cord ? arr(cord.pieces).filter(isNum) : [];
+      const length = pieces.length ? pieces.map((x) => formatNumber(x, 0) + ' ft').join(' + ')
+        : cord && isNum(cord.lengthFt) ? formatNumber(Math.ceil(cord.lengthFt), 0) + ' ft' : '';
+      let what;
+      let line;
+      if (kind === 'home') { what = length + ' cord'; line = what + ' from ' + source; }
+      else if (kind === 'jumper') { what = length + ' jumper cord'; line = what + ' from ' + source; }
+      else if (kind === 'plugIn') { what = 'Plugs straight in'; line = 'Plugs straight into ' + (source || 'the run before it') + ' (no cord needed)'; }
+      else if (kind === 'unknown') { what = 'Cord length unknown'; line = 'Cord from ' + (source || 'the outlet') + ': length unknown (set the scale of its wall in step 2)'; }
+      else { what = 'No outlet yet'; line = 'No outlet yet'; }
+      const kids = feeds.filter((c) => isObj(c.source) && c.source.kind === 'feed' && c.source.feedId === f.id);
+      const atStart = kids.some((c) => c.source.port === 'start');
+      const atEnd = kids.filter((c) => c.source.port === 'end').length > 1;
+      const taps = isNum(f.taps) && f.taps > 0 ? f.taps : 0;
+      const tapWhere = atStart && atEnd ? 'its start and its end' : atEnd ? 'its end' : 'its start';
+      const units = Array.from(new Set(fruns.map((r) => r.unit)));
+      const featureIds = fruns.map((r) => r.featureId).filter(Boolean);
+      return {
+        feedId: f.id, outletId: f.outletId || null, depth: isNum(f.depth) ? f.depth : 0, kind,
+        names, lights: names.join(', ') || 'Lights', featureIds,
+        ownCord: featureIds.some((id) => { const ft = featureById.get(id); return !!(ft && isObj(ft.params) && ft.params.ownCord === true); }),
+        what, source, line, route: cord ? str(cord.routeText) : '', startLabel: isObj(f.start) ? str(f.start.label) : '',
+        pieces, boughtFt: cord && isNum(cord.boughtFt) ? cord.boughtFt : null,
+        neededFt: cord && isNum(cord.lengthFt) ? Math.ceil(cord.lengthFt) : null,
+        awg: cord && isNum(cord.awg) ? cord.awg : null, gauge: cord ? gaugeText(cord.awg) : '',
+        dropPct: cord && isNum(cord.voltageDropPct) ? cord.voltageDropPct : null,
+        pathDropPct: isNum(f.pathDropPct) ? f.pathDropPct : null,
+        watts: isNum(f.watts) ? f.watts : 0, carriesW: isNum(f.supplyW) ? f.supplyW : isNum(f.watts) ? f.watts : 0,
+        strings: isNum(f.strings) ? f.strings : null, unit: units.length === 1 ? units[0] : null,
+        taps, tapText: taps ? (taps === 1 ? '3-way tap' : formatNumber(taps, 0) + ' 3-way taps') + ' at ' + tapWhere : '',
+        cover: !!f.crossesWalkway, doorway: f.crossesDoorway ? str(f.doorway) || 'a doorway' : '',
+        cordOk: !(cord && cord.ok === false),
+      };
+    };
+
+    const rows = [];
+    const seen = new Set();
+    const groups = arr(power.groups).filter(isObj);
+    const outlets = [];
+    for (const o of arr(power.outlets).filter(isObj)) {
+      const trees = [];
+      for (const g of groups) {
+        if (g.outletId !== o.id) continue;
+        const tree = [];
+        for (const id of arr(g.feedIds)) {
+          const f = feedById.get(id);
+          if (!f || seen.has(id)) continue;
+          seen.add(id);
+          tree.push(makeRow(f));
+        }
+        if (tree.length) trees.push(tree);
+      }
+      // Feeds on this outlet that no supply tree lists (plans made before supply trees): one tree each.
+      for (const f of feeds) {
+        if (f.outletId !== o.id || seen.has(f.id)) continue;
+        seen.add(f.id);
+        trees.push([makeRow(f)]);
+      }
+      const all = trees.reduce((a, t) => a.concat(t), []);
+      rows.push(...all);
+      const runIds = new Set();
+      for (const id of arr(o.feedIds)) { const f = feedById.get(id); if (f) arr(f.runIds).forEach((r) => runIds.add(r)); }
+      outlets.push({
+        id: o.id, label: str(o.label) || outletLabel(o.id) || 'Outlet',
+        cords: Array.isArray(o.directFeedIds) ? o.directFeedIds.length : all.filter((r) => r.kind === 'home').length,
+        runs: runIds.size, feeds: arr(o.feedIds).length, watts: isNum(o.watts) ? o.watts : 0,
+        splitters: isNum(o.splitters) ? o.splitters : 0, trees,
+      });
+    }
+    const loose = feeds.filter((f) => !seen.has(f.id)).map(makeRow);
+    rows.push(...loose);
+    return { outlets, loose, rows };
   }
 
   // ================================================================ page layout
@@ -1801,5 +1928,6 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     PdfDoc, buildReportPdf, buildQuotePdf, parseJpeg, toWinAnsi, fromWinAnsi, textWidth, wrapText,
     base64ToBytes, dataUrlToBytes, slug, formatMoney, formatNumber, formatDate, quoteNumber, exportFilename,
     collectImages, HELVETICA_WIDTHS, HELVETICA_BOLD_WIDTHS, _resetDownloads,
+    describeCords, gaugeText,
   };
 });

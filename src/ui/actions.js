@@ -17,7 +17,7 @@
  *  - completeDraft({close}) accepts close:true (used when the first point is tapped again).
  *  - Extra actions: undo, undoLabel, canUndo (a draft point first), hasUserWork, setActiveVertex, setActivePlane, setView, setCalib, setSheet, startPlaneRect, startReference, startTrace,
  *    startOutlet, redrawPlaneLine, changeFeatureType, resetAutoPlan, setProjectName, dismissBanner,
- *    dismissToast, confirmReplace, hydrateImages, removePlaneRect.
+ *    dismissToast, confirmReplace, hydrateImages, removePlaneRect, setOwnCord(featureIds, on).
  *  - deletePlane(id) returns a Promise<bool> (it asks first when traced items would be deleted with it).
  *  - addCircuit() returns the new circuit id; addPlane('wall') returns the new plane id.
  *  - loadSample({traced, confirm}) asks before replacing the user's work (confirm:false skips) and is undoable.
@@ -647,6 +647,24 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           }
         });
       };
+      /**
+       * "Give this run its own cord" (params.ownCord, SPEC §8.2): the runs get a cord from an outlet and no jumper
+       * cord to or from another run. One undo step for all the given features (a cord can feed several runs).
+       */
+      actions.setOwnCord = (featureIds, on) => {
+        const ids = arr(featureIds);
+        if (!ids.length) return false;
+        return store.commit(on ? 'Give a run its own cord' : 'Let a run share a cord', (d) => {
+          let changed = false;
+          for (const id of ids) {
+            const f = byId(d.features, id);
+            if (!f) continue;
+            if (!f.params || typeof f.params !== 'object') f.params = {};
+            if ((f.params.ownCord === true) !== !!on) { f.params.ownCord = !!on; changed = true; }
+          }
+          return changed ? undefined : false;
+        });
+      };
       /** Change a feature's type, keeping its points where the geometry allows it. */
       actions.changeFeatureType = (id, type) => {
         const f = byId(P().features, id);
@@ -791,13 +809,16 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           im.camera = Object.assign({}, im.camera, catalog.deepClone(patch));
         });
       };
-      /** Undo every per-run choice (product, color, forced outlet, direction) so the auto-plan applies again. */
+      /** Undo every per-run choice (product, color, forced outlet, own cord, direction) so the auto-plan applies again. */
       actions.resetAutoPlan = () => {
         const changed = store.commit('Reset to auto-plan', (d) => {
           for (const f of d.features) {
             f.productId = null;
             f.color = null;
-            if (f.params) { f.params.outletId = null; f.params.reverse = false; f.params.mount = null; }
+            if (f.params) {
+              f.params.outletId = null; f.params.reverse = false; f.params.mount = null;
+              if (f.params.ownCord) f.params.ownCord = false;
+            }
           }
         });
         actions.toast(changed ? 'Every run is back on the automatic plan.' : 'Every run already uses the automatic plan.', 'ok');

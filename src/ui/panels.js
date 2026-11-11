@@ -1102,99 +1102,211 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
     }
 
     // ================================================================ step 5: Power
+    const exportModule = () => (typeof LP !== 'undefined' && LP.has('ui.export') ? LP.require('ui.export') : null);
+    /** The power plan in plain words, cord by cord (ui.export.describeCords); empty when that module is missing. */
+    function cordInfo(plan, project) {
+      const exp = exportModule();
+      return exp && typeof exp.describeCords === 'function' ? exp.describeCords(plan, project) : { outlets: [], loose: [], rows: [] };
+    }
+    const capFirst = (t) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
+    function pctText(share) {
+      if (!(share > 0)) return '0%';
+      const v = Math.round(share * 100);
+      return v < 1 ? 'under 1%' : fmtNum(v, 0) + '%';
+    }
+
+    /**
+     * The Power step's opening sentence: is the plan safe to plug in, and if not, what to fix first.
+     * → {level: 'ok' | 'info' | 'warn' | 'danger', lead: 'Good to go:', text: ' …', more: other problems below}
+     */
+    function powerVerdict(plan) {
+      const pw = (plan && plan.power) || {};
+      const runs = arr(plan && plan.runs);
+      const total = plan && plan.summary && isNum(plan.summary.watts) ? plan.summary.watts : pw.totals && isNum(pw.totals.watts) ? pw.totals.watts : 0;
+      if (!runs.length) return { level: 'info', lead: 'Nothing to power yet:', text: ' trace the lights in step 3 first, then mark an outlet here.', more: 0 };
+      const used = arr(pw.outlets).filter((o) => o && arr(o.feedIds).length > 0);
+      if (!used.length) {
+        return { level: 'warn', lead: 'Place an outlet:', text: ' these lights use ' + watts(total) + '. Tap Place outlet, then tap where the outlet is on the photo.', more: 0 };
+      }
+      const issues = arr(pw.warnings).filter((w) => w && w.code !== 'disclaimer' && (w.level === 'danger' || w.level === 'warn'));
+      const danger = issues.find((w) => w.level === 'danger');
+      if (danger) return { level: 'danger', lead: 'Not safe yet:', text: ' ' + danger.message, more: issues.length - 1 };
+      if (issues.length) {
+        return { level: 'warn', lead: issues.length === 1 ? 'One thing to fix first:' : issues.length + ' things to fix first:', text: ' ' + issues[0].message, more: issues.length - 1 };
+      }
+      const limit = Math.max.apply(null, used.map((o) => (isNum(o.limitW) && o.limitW > 0 ? o.limitW : 0))) || 1440;
+      if (total <= limit) {
+        return { level: 'ok', lead: 'Good to go:', text: ' these lights use ' + watts(total) + ', ' + pctText(total / limit) + ' of one outlet\'s safe limit.', more: 0 };
+      }
+      const busiest = Math.max.apply(null, used.map((o) => (isNum(o.limitW) && o.limitW > 0 && isNum(o.watts) ? o.watts / o.limitW : 0)));
+      return {
+        level: 'ok', lead: 'Good to go:', more: 0,
+        text: ' these lights use ' + watts(total) + ' across ' + plural(used.length, 'outlet', 'outlets') + '; the busiest is at ' + pctText(busiest) + ' of its safe limit.',
+      };
+    }
+
+    /** "1 cord at this outlet feeding 10 runs · 185 W" (the cords that plug into the outlet, not every run it powers). */
+    function outletSummaryText(o) {
+      if (!o || !(o.feeds > 0)) return 'Nothing plugged in yet';
+      return plural(o.cords, 'cord', 'cords') + ' at this outlet feeding ' + plural(o.runs, 'run', 'runs') + ' · ' + watts(o.watts) +
+        (o.splitters ? ' · ' + plural(o.splitters, 'power stake', 'power stakes') : '');
+    }
+
     function stepPower(ctx) {
       const { ui, project, plan, image } = ctx;
       const pw = plan.power;
-      const kids = [head(5, 'Mark the outdoor outlets. LightPlan chains the runs, sizes the cords and checks each circuit.')];
-      kids.push(callout('info', power.DISCLAIMER, { key: 'disclaimer' }));
+      const kids = [head(5, 'Mark the outlets you can use. LightPlan links the runs, picks the cords and checks that nothing is overloaded.')];
       if (!image) {
         kids.push(callout('info', 'Add a photo first.', { after: button('Go to Upload', { act: 'go-step', data: { step: 1 }, cls: 'small' }) }));
         return kids;
       }
+      // One sentence first: is it safe, and if not, what to fix.
+      const verdict = powerVerdict(plan);
+      kids.push(h('div', { class: 'verdict ' + verdict.level, role: verdict.level === 'danger' ? 'alert' : 'status', 'data-key': 'verdict' },
+        icon(verdict.level === 'ok' ? 'check' : verdict.level === 'info' ? 'info' : 'warning'),
+        h('div', { class: 'verdict-body' },
+          h('p', { class: 'verdict-text' }, h('strong', null, verdict.lead), verdict.text),
+          verdict.more > 0 ? h('p', { class: 'verdict-more' }, 'And ' + (verdict.more === 1 ? '1 more thing' : verdict.more + ' more things') + ' to check, listed under Warnings below.') : null)));
+
+      const cords = cordInfo(plan, project);
+      const cordsByOutlet = {};
+      for (const o of cords.outlets) cordsByOutlet[o.id] = o;
       const placing = ui.mode.name === 'outlet';
       const sel = ui.selection;
-      const outletInfo = (id) => byId(pw.outlets, id);
-      const circuitOpts = [['', 'Unknown circuit']].concat(project.circuits.map((c) => [c.id, c.name]));
+      const circuitOpts = [['', 'Not sure']].concat(project.circuits.map((c) => [c.id, c.name]));
       const outletItems = project.outlets.filter((o) => !image || o.imageId === image.id || o.imageId == null).map((o) => {
-        const info = outletInfo(o.id);
         const selected = !!(sel && sel.kind === 'outlet' && sel.id === o.id);
-        const nFeeds = info ? info.feedIds.length : 0;
-        const infoText = nFeeds ? plural(nFeeds, 'cord', 'cords') + ' · ' + watts(info.watts) + (info.splitters ? ' · ' + plural(info.splitters, 'power stake', 'power stakes') : '') : 'Nothing plugged in yet';
+        const opl = byId(ctx.planes, o.planeId);
         return h('li', { class: 'outlet-card' + (selected ? ' selected' : ''), 'data-key': o.id },
           h('div', { class: 'outlet-head' },
             h('button', { type: 'button', class: 'outlet-pick', data: { act: 'select-outlet', id: o.id }, 'aria-label': 'Show ' + o.label + ' on the photo' }, icon('plug')),
             textInput({ act: 'outlet-field', value: o.label, data: { id: o.id, field: 'label' }, aria: 'Outlet name', cls: 'grow', maxlength: 60 }),
             iconButton('trash', 'Delete ' + o.label, { act: 'delete-outlet', data: { id: o.id }, cls: 'small' })),
-          h('div', { class: 'row-2' },
-            field('Type', selectInput({ act: 'outlet-type', value: o.type, options: OUTLET_TYPES, data: { id: o.id } })),
-            field('Circuit', selectInput({ act: 'outlet-circuit', value: o.circuitId || '', options: circuitOpts, data: { id: o.id } }))),
-          field('Surface', selectInput({ act: 'outlet-plane', value: o.planeId || '', options: [['', 'None']].concat(ctx.planes.map((p) => [p.id, planeOptionLabel(p)])), data: { id: o.id } })),
-          (() => {
-            const opl = byId(ctx.planes, o.planeId);
-            return opl && opl.kind !== 'wall' ? callout('warn', 'This outlet is on \'' + opl.name + '\'. Outlets are on walls: pick the wall it is on, or the cord lengths come out wrong.', { key: 'op-' + o.id }) : null;
-          })(),
-          h('div', { class: 'row-2 align-center' },
-            toggle('GFCI protected', { act: 'outlet-gfci', data: { id: o.id }, checked: o.gfci }),
-            h('p', { class: 'outlet-info num' }, infoText)));
+          h('p', { class: 'outlet-info' }, outletSummaryText(cordsByOutlet[o.id])),
+          h('div', { class: 'row-2 align-end' },
+            field('Kind of outlet', selectInput({ act: 'outlet-type', value: o.type, options: OUTLET_TYPES, data: { id: o.id } })),
+            toggle('GFCI protected', { act: 'outlet-gfci', data: { id: o.id }, checked: o.gfci })),
+          opl && opl.kind !== 'wall' ? callout('warn', 'This outlet is on \'' + opl.name + '\'. Outlets are on walls: pick the wall it is on under More about this outlet, or the cord lengths come out wrong.', { key: 'op-' + o.id }) : null,
+          h('details', { class: 'outlet-more', 'data-key': 'more-' + o.id },
+            h('summary', null, h('span', null, 'More about this outlet'), icon('chevronDown', 'chev')),
+            h('div', { class: 'row-2' },
+              field('Breaker it is on', selectInput({ act: 'outlet-circuit', value: o.circuitId || '', options: circuitOpts, data: { id: o.id } })),
+              field('Wall it is on', selectInput({ act: 'outlet-plane', value: o.planeId || '', options: [['', 'None']].concat(ctx.planes.map((p) => [p.id, planeOptionLabel(p)])), data: { id: o.id } })))));
       });
       kids.push(section('Outlets', [
         h('div', { class: 'btn-row' }, button(placing ? 'Tap the photo to place it' : 'Place outlet', { act: 'place-outlet', icon: 'plug', cls: placing ? 'on' : 'primary', pressed: placing })),
         outletItems.length ? h('ul', { class: 'outlet-list' }, outletItems) : h('p', { class: 'hint' }, 'Place each outdoor outlet you can use. Garage outlets work too.'),
+        outletItems.length ? h('p', { class: 'hint' }, 'GFCI protected means the outlet (or its breaker) has TEST and RESET buttons. For an outlet without it, the shopping list adds a plug-in GFCI adapter.') : null,
       ], { key: 'outlets' }));
+      kids.push(callout('info', power.DISCLAIMER, { key: 'disclaimer' }));
+
+      // How the power runs: outlet → cord → run → jumper cord → run.
+      const daisy = !(ctx.config.power && ctx.config.power.daisyChain === false);
+      const treeKids = [
+        toggle('Link nearby runs with jumper cords', { act: 'power-daisy', checked: daisy }),
+        h('p', { class: 'hint' }, daisy
+          ? 'On: runs that sit close together are joined with a jumper cord (a short cord from one run to the next), so only a few cords go back to the outlets.'
+          : 'Off: every run gets its own cord from an outlet. Turn it on to join nearby runs with jumper cords (short cords from one run to the next).'),
+      ];
+      for (const o of cords.outlets) {
+        if (!o.trees.length) continue;
+        treeKids.push(h('div', { class: 'tree', 'data-key': 'tree-' + o.id },
+          h('p', { class: 'tree-head' }, icon('plug'), h('strong', null, o.label), h('span', { class: 'num' }, plural(o.cords, 'cord', 'cords') + ' · ' + watts(o.watts))),
+          h('ul', { class: 'feed-list' }, o.trees.map((tree) => tree.map((r) => cordRow(r, daisy))))));
+      }
+      if (cords.loose.length) {
+        treeKids.push(h('div', { class: 'tree', 'data-key': 'tree-none' },
+          h('p', { class: 'tree-head' }, icon('warning'), h('strong', null, 'No outlet yet'), h('span', { class: 'num' }, plural(cords.loose.length, 'run', 'runs'))),
+          h('ul', { class: 'feed-list' }, cords.loose.map((r) => cordRow(r, false)))));
+      }
+      if (!cords.rows.length) treeKids.push(h('p', { class: 'hint' }, 'Cords appear here once there are lights and an outlet.'));
+      else {
+        treeKids.push(h('p', { class: 'hint legend' },
+          h('span', { class: 'lg' }, h('i', { class: 'lg-line home', 'aria-hidden': 'true' }), 'cord from an outlet'),
+          h('span', { class: 'lg' }, h('i', { class: 'lg-line jumper', 'aria-hidden': 'true' }), 'jumper cord'),
+          h('span', { class: 'lg' }, h('i', { class: 'lg-tap', 'aria-hidden': 'true' }), '3-way tap (a plug with three outlets)')));
+        const detail = cords.rows.filter((r) => r.kind === 'home' || r.kind === 'jumper').map((r) => h('li', { 'data-key': 'cd-' + r.feedId },
+          h('strong', null, r.lights + ': '),
+          h('span', { class: 'num' }, [
+            r.pieces.length ? r.pieces.map((x) => fmtNum(x, 0) + ' ft').join(' + ') + ' bought' : null,
+            r.neededFt != null ? fmtNum(r.neededFt, 0) + ' ft needed' : null,
+            r.awg != null ? r.awg + ' AWG' : null,
+            'carries ' + watts(r.carriesW),
+            r.dropPct != null ? fmtNum(r.dropPct, 1) + '% voltage drop' + (r.pathDropPct != null && r.pathDropPct > r.dropPct + 0.05 ? ' (' + fmtNum(r.pathDropPct, 1) + '% back to the outlet)' : '') : null,
+          ].filter(Boolean).join(', '))));
+        if (detail.length) {
+          treeKids.push(disclosure('Cord details (wire gauge, voltage drop)', [
+            h('p', { class: 'hint' }, 'AWG is the wire gauge printed on the cord: a smaller number is a thicker cord. Voltage drop is how much the lights dim at the far end.'),
+            h('ul', { class: 'cord-detail' }, detail),
+          ], { key: 'cord-detail' }));
+        }
+      }
+      kids.push(section('How the power runs', treeKids, { key: 'feeds' }));
+
+      const c = pw.counts || {};
+      const n = (v) => fmtNum(isNum(v) ? v : 0, 0);
+      kids.push(section('Power parts to buy', h('div', { class: 'tiles small' },
+        tile('Cords to outlets', n(c.homeRuns)),
+        tile('Jumper cords', n(c.jumpers), 'short cords from one run to the next'),
+        tile('3-way taps', n(c.taps), 'plugs with three outlets'),
+        tile('Timers', n(c.timers)), tile('Power stakes', n(c.splitters)), tile('Cord covers', n(c.cordCovers)), tile('GFCI adapters', n(c.gfciAdapters))), { key: 'counts' }));
 
       // Circuits
-      const circuitItems = project.circuits.map((c) => {
-        const info = byId(pw.circuits, c.id);
+      const circuitItems = project.circuits.map((ci) => {
+        const info = byId(pw.circuits, ci.id);
         const sharePct = Math.round(power.continuousFactorOf(ctx.config.power.continuousFactor).factor * 100);
-        const limit = info ? info.limitW : power.limitW(c.breakerAmps, c.voltage || 120, ctx.config.power.continuousFactor);
-        const load = info ? info.loadW : c.existingLoadW || 0;
+        const limit = info ? info.limitW : power.limitW(ci.breakerAmps, ci.voltage || 120, ctx.config.power.continuousFactor);
+        const load = info ? info.loadW : ci.existingLoadW || 0;
         const pct = limit > 0 ? (load / limit) * 100 : 0;
         const cls = pct > 100 ? 'danger' : pct > 90 ? 'warn' : 'ok';
         const breakerOpts = [['15', '15 A'], ['20', '20 A']];
-        if (![15, 20].includes(c.breakerAmps)) breakerOpts.push([String(c.breakerAmps), c.breakerAmps + ' A']);
-        return h('li', { class: 'circuit-card', 'data-key': c.id },
+        if (![15, 20].includes(ci.breakerAmps)) breakerOpts.push([String(ci.breakerAmps), ci.breakerAmps + ' A']);
+        return h('li', { class: 'circuit-card', 'data-key': ci.id },
           h('div', { class: 'outlet-head' },
-            textInput({ act: 'circuit-field', value: c.name, data: { id: c.id, field: 'name' }, aria: 'Circuit name', cls: 'grow', maxlength: 60 }),
-            iconButton('trash', 'Delete ' + c.name, { act: 'delete-circuit', data: { id: c.id }, cls: 'small', disabled: project.circuits.length <= 1 })),
+            textInput({ act: 'circuit-field', value: ci.name, data: { id: ci.id, field: 'name' }, aria: 'Circuit name', cls: 'grow', maxlength: 60 }),
+            iconButton('trash', 'Delete ' + ci.name, { act: 'delete-circuit', data: { id: ci.id }, cls: 'small', disabled: project.circuits.length <= 1 })),
           h('div', { class: 'row-2' },
-            field('Breaker', selectInput({ act: 'circuit-breaker', value: String(c.breakerAmps), options: breakerOpts, data: { id: c.id } })),
-            field('Already on it (W)', numInput({ act: 'circuit-existing', value: c.existingLoadW, min: 0, step: 10, decimals: 0, data: { id: c.id } }))),
-          h('div', { class: 'meter ' + cls, role: 'meter', 'aria-valuemin': '0', 'aria-valuemax': String(Math.round(limit)), 'aria-valuenow': String(Math.round(load)), 'aria-label': c.name + ' load' },
+            field('Breaker', selectInput({ act: 'circuit-breaker', value: String(ci.breakerAmps), options: breakerOpts, data: { id: ci.id } })),
+            field('Already on it (W)', numInput({ act: 'circuit-existing', value: ci.existingLoadW, min: 0, step: 10, decimals: 0, data: { id: ci.id } }))),
+          h('div', { class: 'meter ' + cls, role: 'meter', 'aria-valuemin': '0', 'aria-valuemax': String(Math.round(limit)), 'aria-valuenow': String(Math.round(load)), 'aria-label': ci.name + ' load' },
             h('span', { class: 'meter-fill', style: 'width:' + Math.min(100, Math.max(0, pct)).toFixed(1) + '%' })),
-          h('p', { class: 'meter-text num' }, watts(load) + ' of ' + fmtNum(limit, 0) + ' W safe limit (' + sharePct + '% of ' + c.breakerAmps + ' A) · ' + fmtNum(pct, 0) + '%'));
+          h('p', { class: 'meter-text num' }, watts(load) + ' of ' + fmtNum(limit, 0) + ' W safe limit (' + sharePct + '% of ' + ci.breakerAmps + ' A) · ' + fmtNum(pct, 0) + '%'));
       });
-      kids.push(section('Circuits', [
+      kids.push(section('Breakers (circuits)', [
+        h('p', { class: 'hint' }, 'A circuit is everything on one breaker in the panel. Outlets on the same breaker share its limit: say which breaker each outlet is on under More about this outlet, and add what else runs on it (a garage freezer, porch lights) so the check is honest.'),
         h('ul', { class: 'circuit-list' }, circuitItems),
         h('div', { class: 'btn-row' }, button('Add circuit', { act: 'add-circuit', icon: 'plus', cls: 'small' })),
-        h('p', { class: 'hint' }, 'Outlets on the same breaker share one circuit. Add what else runs on it (a garage freezer, porch lights) so the check is honest.'),
       ], { key: 'circuits' }));
 
-      // Feeds
-      const runById = (id) => byId(plan.runs, id);
-      const outletLabel = (id) => { const o = byId(project.outlets, id); return o ? o.label : null; };
-      const feedItems = pw.feeds.map((f, i) => {
-        const fruns = arr(f.runIds).map(runById).filter(Boolean);
-        const names = fruns.map((r) => r.label);
-        const units = Array.from(new Set(fruns.map((r) => r.unit)));
-        const unitText = units.length === 1 ? fmtNum(f.strings, units[0] === 'foot' ? 1 : 0) + ' ' + unitWord(units[0], f.strings) : plural(f.strings, 'unit', 'units');
-        const cord = f.cord ? arr(f.cord.pieces).map((p) => p + ' ft').join(' + ') + ' cord, ' + f.cord.awg + ' AWG (needs ' + fmtNum(Math.ceil(f.cord.lengthFt), 0) + ' ft)'
-          : f.outletId ? 'Cord length unknown' : 'No outlet yet';
-        return h('li', { class: 'feed-item', 'data-key': f.id },
-          h('p', { class: 'feed-title' }, h('span', { class: 'num feed-num' }, String(i + 1)), h('span', null, names.join(', ') || 'Lights'),
-            icon('arrowRight', 'feed-arrow'), h('strong', null, outletLabel(f.outletId) || 'No outlet')),
-          h('p', { class: 'feed-meta num' }, watts(f.watts) + ' · ' + unitText + ' · ' + cord + (f.crossesWalkway ? ' · needs a cord cover' : '')));
-      });
-      kids.push(section('Cords (' + pw.feeds.length + ')', feedItems.length ? h('ul', { class: 'feed-list' }, feedItems) : h('p', { class: 'hint' }, 'Cords appear once there are lights and an outlet.'), { key: 'feeds' }));
-
-      const c = pw.counts;
-      kids.push(section('Power extras to buy', h('div', { class: 'tiles small' },
-        tile('Timers', fmtNum(c.timers, 0)), tile('Power stakes', fmtNum(c.splitters, 0)), tile('Cord covers', fmtNum(c.cordCovers, 0)), tile('GFCI adapters', fmtNum(c.gfciAdapters, 0))), { key: 'counts' }));
-
       const order = { danger: 0, warn: 1, info: 2 };
-      const warns = arr(pw.warnings).filter((w) => w.code !== 'disclaimer').slice().sort((a, b) => order[a.level] - order[b.level]);
-      kids.push(section('Warnings', warns.length ? warningList(warns, false) : h('p', { class: 'ok-line' }, icon('check'), h('span', null, 'No power problems found.')), { key: 'pwarn' }));
+      // With no outlet placed the sentence at the top already says so, in plainer words.
+      const noOutlet = verdict.level === 'warn' && verdict.lead === 'Place an outlet:';
+      const warns = arr(pw.warnings).filter((w) => w.code !== 'disclaimer' && !(noOutlet && w.code === 'no-outlets')).slice().sort((a, b) => order[a.level] - order[b.level]);
+      kids.push(section('Warnings', warns.length ? warningList(warns, false) : h('p', { class: 'ok-line' }, icon('check'), h('span', null, noOutlet ? 'Nothing else to check.' : 'No power problems found.')), { key: 'pwarn' }));
       kids.push(nextButton(5));
       return kids;
+    }
+
+    /** One row of the supply tree: the lights on one cord, where the cord comes from and how it runs. */
+    function cordRow(r, daisy) {
+      const unitText = r.strings != null && r.unit ? fmtNum(r.strings, r.unit === 'foot' ? 1 : 0) + ' ' + unitWord(r.unit, r.strings) : null;
+      const meta = [r.route ? capFirst(r.route) : null];
+      if (r.gauge && (r.kind === 'home' || r.kind === 'jumper')) meta.push(r.gauge + ' cord');
+      if (r.neededFt != null) meta.push('needs ' + fmtNum(r.neededFt, 0) + ' ft');
+      if (r.carriesW > r.watts + 0.5) meta.push('carries ' + fmtNum(r.carriesW, 0) + ' W in all');
+      const notes = [];
+      if (r.tapText) notes.push(capFirst(r.tapText) + ' (a plug with three outlets)');
+      if (r.cover) notes.push('Needs a cord cover where it crosses the walkway');
+      if (r.doorway) notes.push('Passes ' + r.doorway + ': keep it clear of the door');
+      const showOwn = daisy && r.featureIds.length > 0 && (r.kind === 'jumper' || r.kind === 'plugIn' || r.ownCord);
+      const depth = Math.max(0, Math.min(5, r.depth || 0));
+      return h('li', { class: 'feed-item ' + r.kind + (depth ? ' child' : ''), 'data-key': r.feedId, 'data-kind': r.kind, style: depth ? 'margin-left:' + depth * 12 + 'px' : null },
+        h('p', { class: 'feed-title' }, h('i', { class: 'lg-line ' + (r.kind === 'jumper' ? 'jumper' : r.kind === 'home' ? 'home' : 'none'), 'aria-hidden': 'true' }),
+          h('strong', null, r.lights), h('span', { class: 'num feed-w' }, (unitText ? unitText + ' · ' : '') + watts(r.watts))),
+        h('p', { class: 'feed-line' }, r.line),
+        meta.filter(Boolean).length ? h('p', { class: 'feed-meta' }, meta.filter(Boolean).join(' · ')) : null,
+        notes.length ? h('p', { class: 'feed-note' }, notes.join('. ') + '.') : null,
+        showOwn ? toggle('Give this run its own cord', { act: 'feed-own-cord', data: { ids: r.featureIds.join(',') }, checked: r.ownCord, cls: 'slim' }) : null);
     }
 
     function tile(label, value, sub) {
@@ -1716,6 +1828,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         'outlet-circuit': (el) => actions.updateOutlet(el.dataset.id, { circuitId: el.value || null }),
         'outlet-plane': (el) => actions.updateOutlet(el.dataset.id, { planeId: el.value || null }),
         'outlet-gfci': (el) => actions.updateOutlet(el.dataset.id, { gfci: !!el.checked }),
+        // Daisy chains on or off (config.power.daisyChain, default on), and one run kept off the chains.
+        'power-daisy': (el) => editConfig('power.daisyChain', !!el.checked),
+        'feed-own-cord': (el) => actions.setOwnCord(String(el.dataset.ids || '').split(',').filter(Boolean), !!el.checked),
         'circuit-field': (el) => { const v = el.value.trim(); if (v) actions.updateCircuit(el.dataset.id, { name: v.slice(0, 60) }); else schedule(); },
         'circuit-breaker': (el) => actions.updateCircuit(el.dataset.id, { breakerAmps: Number(el.value) || 15 }),
         'circuit-existing': (el) => { const v = num(el); actions.updateCircuit(el.dataset.id, { existingLoadW: v != null && v >= 0 ? v : 0 }); },
@@ -1784,5 +1899,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       };
     }
 
-    return { mount, icon, h, morph, pickFile, exportFile, stepWarnings, warningStep, STEPS, validateProducts, diffConfig, ICONS };
+    return {
+      mount, icon, h, morph, pickFile, exportFile, stepWarnings, warningStep, STEPS, validateProducts, diffConfig, ICONS,
+      powerVerdict, outletSummaryText,
+    };
   });

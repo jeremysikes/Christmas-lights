@@ -788,7 +788,48 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
 .outlet-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .outlet-head { display: flex; align-items: center; gap: 6px; }
 .outlet-pick { display: inline-flex; align-items: center; justify-content: center; width: var(--tap); height: var(--tap); flex: none; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); color: var(--accent-ink); cursor: pointer; }
-.outlet-info { margin: 0; font-size: 13px; color: var(--muted); text-align: right; }
+.outlet-info { margin: 0; font-size: 13.5px; color: var(--ink); }
+.outlet-more { border-top: 1px solid var(--line); }
+.outlet-more > summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: var(--tap); font-size: 14px; font-weight: 700; color: var(--muted); cursor: pointer; list-style: none; }
+.outlet-more > summary::-webkit-details-marker { display: none; }
+.outlet-more[open] > summary .chev { transform: rotate(180deg); }
+.outlet-more[open] { padding-bottom: 4px; }
+/* The one-sentence answer at the top of the Power step. */
+.verdict { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface-2); font-size: 16px; line-height: 1.4; }
+.verdict > .ic { width: 24px; height: 24px; margin-top: 1px; }
+.verdict-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.verdict p { margin: 0; overflow-wrap: anywhere; }
+.verdict-more { font-size: 14px; color: var(--muted); }
+.verdict.ok { background: var(--ok-soft); border-color: var(--ok); }
+.verdict.ok > .ic, .verdict.ok strong { color: var(--ok-ink); }
+.verdict.warn { background: var(--warn-soft); border-color: var(--warn); }
+.verdict.warn > .ic, .verdict.warn strong { color: var(--warn-ink); }
+.verdict.danger { background: var(--danger-soft); border-color: var(--danger); }
+.verdict.danger > .ic, .verdict.danger strong { color: var(--danger-ink); }
+.verdict.info > .ic { color: var(--focus); }
+/* Supply trees: outlet, then the cord from it, then what hangs off that cord (indented). */
+.tree { display: flex; flex-direction: column; gap: 6px; }
+.tree-head { display: flex; align-items: center; gap: 8px; margin: 4px 0 0; font-size: 15px; }
+.tree-head .ic { width: 18px; height: 18px; color: var(--accent-ink); }
+.tree-head .num { margin-left: auto; font-size: 13px; color: var(--muted); white-space: nowrap; }
+.feed-item.child { border-left: 3px solid var(--line); }
+.feed-item.home { border-left: 3px solid var(--accent); }
+.feed-line { margin: 0; font-size: 14px; }
+.feed-note { margin: 0; font-size: 13px; color: var(--accent-ink); }
+.feed-w { margin-left: auto; font-size: 13px; color: var(--muted); white-space: nowrap; }
+.feed-title strong { min-width: 0; overflow-wrap: anywhere; }
+.switch.slim { min-height: 40px; font-size: 14px; }
+.switch.slim .switch-track { width: 38px; height: 22px; border-radius: 11px; }
+.switch.slim .switch-track::after { width: 16px; height: 16px; }
+.switch.slim input:checked + .switch-track::after { transform: translateX(16px); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.lg { display: inline-flex; align-items: center; gap: 6px; }
+.lg-line { display: inline-block; flex: none; width: 22px; height: 0; border-top: 3px solid var(--ink); }
+.lg-line.jumper { border-top: 2px dashed var(--ink); }
+.lg-line.none { border-top: 2px dotted var(--muted); }
+.lg-tap { display: inline-block; flex: none; width: 9px; height: 9px; margin: 0 2px; border: 2px solid var(--ink); background: var(--surface); transform: rotate(45deg); }
+.cord-detail { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.cord-detail .num { color: var(--muted); }
 .meter { position: relative; height: 12px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--line); overflow: hidden; }
 .meter-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px; background: var(--ok); }
 .meter.warn .meter-fill { background: var(--warn); }
