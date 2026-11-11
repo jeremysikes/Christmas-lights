@@ -453,6 +453,8 @@ test('bulk BOM: wire is the cheapest mix that covers the feet, with feet needed 
   ]);
   assert.match(lights[0].notes, /^90 ft needed for A \(60 ft\), B \(30 ft\)\. 100 ft bought, 10 ft left over\./);
   assert.deepEqual(bom.cheapestMix(30, [{ lengthFt: 25, price: 10 }, { lengthFt: 50, price: 20 }]).map((m) => [m.size.lengthFt, m.count]), [[50, 1]], 'same cost: fewer pieces');
+  assert.deepEqual(bom.cheapestMix(25, [{ lengthFt: 12.5, price: 1 }, { lengthFt: 100, price: 50 }]).map((m) => [m.size.lengthFt, m.count]), [[12.5, 3]], 'a 12.5 ft piece only counts for 12 whole feet');
+  assert.deepEqual(bom.cheapestMix(0.2, [{ lengthFt: 25, price: 10 }]).map((m) => m.count), [1]);
 });
 
 test('bulk BOM: bulbs are counted per socket and split by each run\'s colour pattern', () => {
@@ -718,7 +720,7 @@ test('orderSheets: one sheet per supplier, then "Any store", with what is ordere
   // Text and CSV of one sheet.
   const text = bom.orderSheetToText(sheets[0]).split('\n');
   assert.equal(text[0], 'Order from Christmas Lights Etc (https://www.christmaslightsetc.com/)');
-  assert.ok(text.includes('6 packs - Part 72636: C9 OptiCore LED bulbs, warm white, faceted, box of 25 - $32.99 each = $197.94 (as of Nov 11, 2026 (check the price))'), text.join('\n'));
+  assert.ok(text.includes('6 × Part 72636: C9 OptiCore LED bulbs, warm white, faceted, box of 25 - $32.99 each = $197.94 (as of Nov 11, 2026 (check the price))'), text.join('\n'));
   assert.ok(text.includes('  https://www.christmaslightsetc.com/p/C9--Warm-White-OptiCore-LED-Replacement-Bulbs-13603.htm'));
   assert.equal(text[text.length - 2], 'Subtotal: $' + sheets[0].subtotal.toFixed(2));
   assert.equal(text[text.length - 1], 'Prices were last checked on Nov 11, 2026; confirm at checkout. Account (wholesale) prices differ: edit any price.');

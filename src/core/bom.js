@@ -532,17 +532,19 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
     const list = sizes.slice().sort((a, b) => b.lengthFt - a.lengthFt);
     if (list.length === 1 || need > 200000) return cheapestPerFoot(need, list);
     const cost = new Float64Array(need + 1), pieces = new Int32Array(need + 1), pick = new Int32Array(need + 1);
+    // Whole feet a piece is sure to cover (a 12.5 ft piece covers 12).
+    const covers = list.map((x) => Math.max(1, Math.floor(x.lengthFt + EPS)));
     for (let f = 1; f <= need; f++) {
       let best = Infinity, bestN = 0, bestI = 0;
       for (let i = 0; i < list.length; i++) {
-        const rest = Math.max(0, f - Math.ceil(list[i].lengthFt - EPS));
+        const rest = Math.max(0, f - covers[i]);
         const cst = list[i].price + cost[rest], n = pieces[rest] + 1;
         if (cst < best - 1e-9 || (Math.abs(cst - best) <= 1e-9 && n < bestN)) { best = cst; bestN = n; bestI = i; }
       }
       cost[f] = best; pieces[f] = bestN; pick[f] = bestI;
     }
     const countOf = list.map(() => 0);
-    for (let f = need; f > 0; f = Math.max(0, f - Math.ceil(list[pick[f]].lengthFt - EPS))) countOf[pick[f]] += 1;
+    for (let f = need; f > 0; f = Math.max(0, f - covers[pick[f]])) countOf[pick[f]] += 1;
     return list.map((size, i) => ({ size, count: countOf[i] })).filter((m) => m.count > 0);
   }
   /** One size only: the cheapest per foot (ties to the longer), as many as cover `feet`. For buyers who keep leftovers. */
@@ -1219,7 +1221,8 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
     for (const l of arr(s.lines).filter(isObj)) {
       const part = l.supplierSku ? 'Part ' + l.supplierSku + ': ' : '';
       const status = priceStatusText(l);
-      out.push(`${fmtNum(l.qty, 2)} ${unitWord(l.unit, l.qty)} - ${part}${l.name} - $${money(l.unitPrice)} each = $${money(l.total)}` + (status ? ' (' + status + ')' : ''));
+      const count = l.unit === 'foot' ? fmtNum(l.qty, 2) + ' ft of' : fmtNum(l.qty, 2) + ' ×';
+      out.push(`${count} ${part}${l.name} - $${money(l.unitPrice)} each = $${money(l.total)}` + (status ? ' (' + status + ')' : ''));
       const link = lineLink(l);
       if (link) out.push('  ' + link);
     }

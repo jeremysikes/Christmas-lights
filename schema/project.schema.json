@@ -1677,13 +1677,28 @@
           "description": "Id of the generic product whose job this one does, e.g. \"c9-led\": the planner swaps it in when the project buys from this supplier."
         },
         "kind": {
-          "enum": [
-            "bulk"
+          "anyOf": [
+            {
+              "enum": [
+                "bulk"
+              ]
+            },
+            {
+              "type": "null"
+            }
           ],
-          "description": "bulk = socket wire cut to length + bulbs + plugs, planned per foot (unit \"foot\"). Missing = a ready-made product."
+          "description": "bulk = socket wire cut to length + bulbs + plugs, planned per foot (unit \"foot\"). Missing or null = a ready-made product."
         },
         "components": {
-          "$ref": "#/$defs/bulkComponents"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/bulkComponents"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Bulk only: the parts it is bought as (wire, bulbs, plugs)."
         },
         "maxRunFt": {
           "type": "number",
