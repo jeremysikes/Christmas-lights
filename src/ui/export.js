@@ -37,7 +37,9 @@
  *    collectImages, HELVETICA_WIDTHS, HELVETICA_BOLD_WIDTHS, and _resetDownloads (tests only).
  *  - describeCords(plan, project) puts the power plan into plain words, cord by cord, grouped by outlet and
  *    supply tree (SPEC §8.2, §8.5). The PDF report and the Power step both read it, so they say the same thing.
- *    gaugeText(awg) → "16-gauge".
+ *    gaugeText(awg) → "16-gauge". roughMeasurements(plan, project) lists the Low-confidence items with the range
+ *    each could be ("about 38 ft, could be 33 to 44 ft"); the report prints them under the measurements table and
+ *    marks the materials cost "rough", and the Review step shows the same list with tape-measure fields.
  */
 LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModule, schema) {
   'use strict';
@@ -688,6 +690,7 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     const power = isObj(p.power) ? p.power : {};
     const bom = isObj(p.bom) ? p.bom : {};
     return {
+      plan: p,
       runs: arr(p.runs).filter(isObj),
       measuredFeatures: isObj(measured.features) ? measured.features : {},
       totals: isObj(measured.totals) ? measured.totals : {},
@@ -831,6 +834,68 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     const loose = feeds.filter((f) => !seen.has(f.id)).map(makeRow);
     rows.push(...loose);
     return { outlets, loose, rows };
+  }
+
+  // ================================================================ measurements worth a tape measure
+  const ROUGH_MEDIUM_PCT = 6;   // a Medium item is listed too when its expected error is above this
+  /** Feet for a rough length: whole feet from 10 ft up, half feet below ("38 ft", "6.5 ft"). */
+  function roughFeet(ft) {
+    if (!isNum(ft)) return '?';
+    const v = Math.abs(ft) >= 10 ? Math.round(ft) : Math.round(ft * 2) / 2;
+    return formatNumber(v, Number.isInteger(v) ? 0 : 1) + ' ft';
+  }
+  /**
+   * The traced items whose size should be checked with a tape before buying: every item rated Low and every
+   * Medium item whose expected error is above 6%. Items that already use a tape-measured size are left out.
+   * → [{ featureId, label, type, level, kind: 'length' | 'height' | 'bush', pct (expected error, % or null),
+   *      lengthFt, lowFt, highFt, widthFt, heightFt, lights,
+   *      text: 'about 38 ft, could be 33 to 44 ft' }]   (text never claims more precision than the photo gives)
+   */
+  function roughMeasurements(plan, project) {
+    const p = isObj(plan) ? plan : {};
+    const measured = isObj(p.measured) && isObj(p.measured.features) ? p.measured.features : {};
+    const out = [];
+    for (const f of arr(isObj(project) ? project.features : null)) {
+      if (!isObj(f)) continue;
+      const m = measured[f.id];
+      if (!isObj(m) || m.ok === false || m.overridden) continue;
+      const level = isObj(m.confidence) ? m.confidence.level : null;
+      const pct = isNum(m.uncertaintyPct) && m.uncertaintyPct >= 0 ? m.uncertaintyPct : m.uncertaintyPct === Infinity ? Infinity : null;
+      if (!(level === 'low' || (level === 'medium' && pct !== null && pct > ROUGH_MEDIUM_PCT))) continue;
+      const t = FEATURE_TYPES[f.type];
+      const label = str(f.label) || (t ? t.label : 'Item');
+      const item = { featureId: f.id, label, type: f.type, level, pct, kind: 'length', lengthFt: null, lowFt: null, highFt: null,
+        widthFt: null, heightFt: null, lights: isNum(m.lights) ? m.lights : null, text: '' };
+      const offBy = pct !== null && pct !== Infinity ? 'about ' + formatNumber(Math.max(1, Math.round(pct)), 0) + '%' : null;
+      if (f.type === 'bush') {
+        item.kind = 'bush';
+        item.widthFt = isNum(m.widthFt) ? m.widthFt : null;
+        item.heightFt = isNum(m.heightFt) ? m.heightFt : null;
+        if (item.widthFt === null || item.heightFt === null) continue;
+        item.text = 'about ' + roughFeet(item.widthFt) + ' wide by ' + roughFeet(item.heightFt) + ' tall' +
+          (offBy ? ', each side could be off by ' + offBy : ', a rough size');
+      } else {
+        const vertical = !!(t && t.geometry === 'vertical');
+        // A tree or column is checked by its height (the tape field sets the height; the wrap follows from it).
+        const base = vertical ? (isNum(m.heightFt) ? m.heightFt : m.measuredFt) : m.lengthFt;
+        if (!isNum(base) || base <= 0) continue;
+        item.kind = vertical ? 'height' : 'length';
+        item.lengthFt = base;
+        const tail = vertical ? ' tall' : '';
+        if (pct !== null && pct <= 60) {
+          item.lowFt = base * (1 - pct / 100);
+          item.highFt = base * (1 + pct / 100);
+          const lo = roughFeet(item.lowFt), hi = roughFeet(item.highFt);
+          item.text = 'about ' + roughFeet(base) + tail + (lo === hi ? ' (within ' + offBy + ')' : ', could be ' + lo.replace(/ ft$/, '') + ' to ' + hi);
+        } else if (pct !== null) {
+          item.text = 'about ' + roughFeet(base) + tail + ', but that is a rough guess: it could be far off';
+        } else {
+          item.text = 'about ' + roughFeet(base) + tail + ', a rough measurement';
+        }
+      }
+      out.push(item);
+    }
+    return out;
   }
 
   // ================================================================ page layout
@@ -1135,7 +1200,7 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     L.y += 16;
   }
 
-  function reportSummary(L, parts, fmtLen) {
+  function reportSummary(L, parts, fmtLen, rough) {
     const s = parts.summary;
     const bushLights = isObj(s.byType) && isObj(s.byType.bush) && isNum(s.byType.bush.lights) ? s.byType.bush.lights : 0;
     heading(L, 'Summary', 110);
@@ -1147,7 +1212,8 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
       { label: 'Timers', value: formatNumber(s.timers, 0) },
       { label: 'Total load', value: watts(s.watts), sub: isNum(s.amps) ? formatNumber(s.amps, 1) + ' A at 120 V' : null },
       { label: 'Circuits used', value: formatNumber(s.circuits, 0), sub: isNum(s.outletsUsed) ? plural(s.outletsUsed, 'outlet', 'outlets') : null },
-      { label: 'Materials cost', value: formatMoney(s.cost), sub: isNum(s.quoteTotal) ? 'Customer quote ' + formatMoney(s.quoteTotal) : null, accent: true },
+      { label: rough ? 'Materials cost (rough)' : 'Materials cost', value: formatMoney(s.cost),
+        sub: isNum(s.quoteTotal) ? 'Customer quote ' + formatMoney(s.quoteTotal) : rough ? plural(rough, 'length', 'lengths') + ' to double-check' : null, accent: true },
     ]);
   }
 
@@ -1172,6 +1238,17 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
       { title: 'With ' + formatNumber(wastePct, 0) + '% waste', w: 70, align: 'right' },
       { title: 'Confidence', w: 92 },
     ], rows, { empty: 'Nothing traced yet. Trace rooflines, windows and other features to measure them.' });
+  }
+
+  /** The Low-confidence measurements, each with the range it could be, right under the measurements table. */
+  function reportRough(L, list) {
+    if (!list.length) return;
+    L.ensure(64);
+    L.doc.text('Measurements to double-check (' + formatNumber(list.length, 0) + ')', L.left, L.y, { size: 10, bold: true, color: C.ink });
+    L.y += 15;
+    paragraph(L, 'The photo could not measure these well. Check each one with a tape measure before you buy, then type the tape length into LightPlan (step 6) so the shopping list and the cost follow it.', { size: 8.5, color: C.muted, after: 4 });
+    for (const it of list) paragraph(L, '-  ' + it.label + ': ' + it.text + '.', { size: 8.5, indent: 6, after: 1.5 });
+    L.y += 8;
   }
 
   function reportBom(L, parts) {
@@ -1247,10 +1324,16 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     L.ensure(60);
     L.doc.text('Outlets', L.left, L.y, { size: 10, bold: true, color: C.ink });
     L.y += 15;
+    let described = { outlets: [], loose: [], rows: [] };
+    try { described = describeCords(parts.plan, project); } catch (e) { /* the tables below fall back to plain counts */ }
+    const outletInfo = new Map(described.outlets.map((o) => [o.id, o]));
     const outletRows = pw.outlets.map((o) => {
       const src = byId(project.outlets, o.id) || {};
       const circuit = byId(project.circuits, o.circuitId) || byId(pw.circuits, o.circuitId);
+      const info = outletInfo.get(o.id);
       const feeds = arr(o.feedIds).length;
+      // The cords that plug into the outlet itself, and the light runs they feed (jumper cords carry on from run to run).
+      const cords = info ? info.cords : Array.isArray(o.directFeedIds) ? o.directFeedIds.length : feeds;
       const extras = [];
       if (o.timer) extras.push('Timer');
       if (isNum(o.splitters) && o.splitters > 0) extras.push(plural(o.splitters, 'power stake', 'power stakes'));
@@ -1259,68 +1342,85 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
         { text: str(o.label) || str(src.label) || 'Outlet', bold: true },
         circuit ? str(circuit.name) || 'Circuit' : 'Not set',
         src.gfci === false ? { text: 'No', color: C.danger } : src.gfci === true ? 'Yes' : '—',
-        formatNumber(feeds, 0),
+        formatNumber(cords, 0),
+        info ? formatNumber(info.runs, 0) : '—',
         watts(o.watts),
         extras.join(', ') || (feeds ? '—' : 'Not used'),
       ];
     });
     table(L, [
-      { title: 'Outlet', w: 128 },
-      { title: 'Circuit', w: 108 },
-      { title: 'GFCI', w: 38 },
-      { title: 'Cords', w: 42, align: 'right' },
-      { title: 'Load', w: 60, align: 'right' },
-      { title: 'Also needs', w: 156 },
+      { title: 'Outlet', w: 120 },
+      { title: 'Circuit', w: 100 },
+      { title: 'GFCI', w: 36 },
+      { title: 'Cords here', w: 44, align: 'right' },
+      { title: 'Runs fed', w: 40, align: 'right' },
+      { title: 'Load', w: 56, align: 'right' },
+      { title: 'Also needs', w: 136 },
     ], outletRows, { empty: 'No outlets placed yet. Place each outdoor outlet you can use on the photo.' });
 
-    L.ensure(60);
-    L.doc.text('Cords and feeds', L.left, L.y, { size: 10, bold: true, color: C.ink });
+    L.ensure(74);
+    L.doc.text('Cords', L.left, L.y, { size: 10, bold: true, color: C.ink });
     L.y += 15;
-    const runById = new Map(parts.runs.map((r) => [r.id, r]));
-    const feedRows = pw.feeds.map((f, i) => {
-      const fruns = arr(f.runIds).map((id) => runById.get(id)).filter(Boolean);
-      const names = fruns.map((r) => str(r.label)).filter(Boolean);
-      const units = Array.from(new Set(fruns.map((r) => r.unit)));
-      const outlet = byId(project.outlets, f.outletId) || byId(pw.outlets, f.outletId);
-      let cord = f.outletId ? 'Length unknown' : 'No outlet yet';
+    if (described.rows.length) {
+      paragraph(L, 'Listed in the order they are put up: a cord from an outlet first, then what plugs into it. A jumper cord is a short cord from one run of lights to the next. A 3-way tap is a plug with three outlets.', { size: 8, color: C.muted, after: 5 });
+    }
+    const feedRows = described.rows.map((r, i) => {
+      let cord = r.what;
       let cordSub = null;
-      if (isObj(f.cord) && arr(f.cord.pieces).length) {
-        cord = arr(f.cord.pieces).map((p) => formatNumber(p, 0) + ' ft').join(' + ') + ', ' + f.cord.awg + ' AWG';
+      if (r.kind === 'home' || r.kind === 'jumper') {
+        cord = (r.pieces.length ? r.pieces.map((x) => formatNumber(x, 0) + ' ft').join(' + ') : formatNumber(r.neededFt, 0) + ' ft') +
+          (r.kind === 'jumper' ? ' jumper cord' : ' cord') + (r.awg !== null ? ', ' + r.awg + ' AWG' : '');
         // Rounded up, like the install checklist ("about N ft needed"), so one report gives one length per cord.
-        cordSub = 'Needs ' + formatNumber(Math.ceil(f.cord.lengthFt), 0) + ' ft' + (isNum(f.cord.voltageDropPct) ? ', ' + formatNumber(f.cord.voltageDropPct, 1) + '% voltage drop' : '');
+        // A voltage drop that rounds to 0.0% is left out: it says nothing a buyer needs.
+        cordSub = (r.route ? capFirst(r.route) + '. ' : '') + 'Needs ' + formatNumber(r.neededFt, 0) + ' ft' +
+          (r.dropPct !== null && r.dropPct >= 0.05 ? ', ' + formatNumber(r.dropPct, 1) + '% voltage drop' : '') + '.';
+      } else if (r.kind === 'plugIn') {
+        cord = 'Plugs straight in';
+        cordSub = 'No cord needed.';
+      } else if (r.kind === 'unknown') {
+        cord = 'Length unknown';
+        cordSub = 'Set the scale of its wall to size this cord.';
       }
       const notes = [];
-      if (f.crossesWalkway) notes.push('Cord cover');
-      if (isObj(f.cord) && f.cord.ok === false) notes.push('Check cord');
+      if (r.tapText) notes.push(capFirst(r.tapText));
+      if (r.cover) notes.push('Cord cover');
+      if (!r.cordOk) notes.push('Check cord');
+      const loadSub = [];
+      if (r.strings !== null && r.unit) loadSub.push(qtyText(r.strings, r.unit));
+      if (r.carriesW > r.watts + 0.5) loadSub.push('cord carries ' + watts(r.carriesW));
       return [
         { text: String(i + 1), color: C.muted },
-        { text: names.join(', ') || 'Lights', sub: f.start && str(f.start.label) ? 'Starts at the ' + f.start.label : null },
-        outlet ? str(outlet.label) || 'Outlet' : { text: 'None', color: C.danger },
-        { text: watts(f.watts), sub: isNum(f.strings) && units.length === 1 ? qtyText(f.strings, units[0]) : null },
-        { text: cord, sub: cordSub },
-        notes.length ? { text: notes.join(', '), color: C.warn } : '',
+        { text: r.lights, bold: r.kind === 'home', sub: r.startLabel ? 'Starts at the ' + r.startLabel : null },
+        r.kind === 'none' ? { text: 'No outlet yet', color: C.danger } : capFirst(r.source) || '—',
+        { text: watts(r.watts), sub: loadSub.join('; ') || null },
+        { text: cord, sub: cordSub, color: r.kind === 'unknown' ? C.warn : undefined },
+        notes.length ? { text: notes.join('. '), color: C.warn } : '',
       ];
     });
     table(L, [
-      { title: '#', w: 20, align: 'right' },
-      { title: 'Lights on this cord', w: 168 },
-      { title: 'Outlet', w: 86 },
+      { title: '#', w: 22, align: 'right' },
+      { title: 'Lights on this cord', w: 114 },
+      { title: 'Plugs into', w: 104 },
       { title: 'Load', w: 58, align: 'right' },
-      { title: 'Cord', w: 136 },
+      { title: 'Cord and route', w: 170 },
       { title: 'Note', w: 64 },
     ], feedRows, { empty: 'Cords appear once there are lights and an outlet.' });
 
     const c = pw.counts;
+    const cnt = (v) => formatNumber(isNum(v) ? v : 0, 0);
     const cordsToBuy = pw.cords.slice().sort((a, b) => (a.awg - b.awg) || (a.lengthFt - b.lengthFt))
       .map((x) => formatNumber(x.count, 0) + ' × ' + formatNumber(x.lengthFt, 0) + ' ft ' + x.awg + ' AWG');
-    L.ensure(70);
+    L.ensure(110);
     tiles(L, [
-      { label: 'Timers', value: formatNumber(isNum(c.timers) ? c.timers : 0, 0) },
-      { label: 'Power stakes (3-outlet)', value: formatNumber(isNum(c.splitters) ? c.splitters : 0, 0) },
-      { label: 'Walkway cord covers', value: formatNumber(isNum(c.cordCovers) ? c.cordCovers : 0, 0) },
-      { label: 'GFCI adapters', value: formatNumber(isNum(c.gfciAdapters) ? c.gfciAdapters : 0, 0) },
+      { label: 'Cords to outlets', value: cnt(c.homeRuns) },
+      { label: 'Jumper cords', value: cnt(c.jumpers) },
+      { label: '3-way taps', value: cnt(c.taps) },
+      { label: 'Timers', value: cnt(c.timers) },
+      { label: 'Power stakes (3-outlet)', value: cnt(c.splitters) },
+      { label: 'Walkway cord covers', value: cnt(c.cordCovers) },
+      { label: 'GFCI adapters', value: cnt(c.gfciAdapters) },
     ], { height: 40, valueSize: 13 });
-    if (cordsToBuy.length) paragraph(L, 'Extension cords to buy: ' + cordsToBuy.join(', ') + '.', { size: 8.5, after: 8 });
+    if (cordsToBuy.length) paragraph(L, 'Extension cords to buy (cords to outlets and jumper cords together): ' + cordsToBuy.join(', ') + '.', { size: 8.5, after: 8 });
   }
 
   const WARN_LABEL = { danger: 'DANGER', warn: 'WARNING', info: 'NOTE' };
@@ -1429,8 +1529,11 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     L.newPage();
     section(L, () => reportHeader(L, project, name, date));
     section(L, () => reportPreview(L, project, pictureOf(o.image)));
-    section(L, () => reportSummary(L, parts, fmtLen));
+    let roughList = [];
+    try { roughList = roughMeasurements(o.plan, project); } catch (e) { roughList = []; }
+    section(L, () => reportSummary(L, parts, fmtLen, roughList.length));
     section(L, () => reportMeasurements(L, project, parts, fmtLen));
+    section(L, () => reportRough(L, roughList));
     section(L, () => reportBom(L, parts));
     section(L, () => reportPower(L, project, parts));
     section(L, () => reportWarnings(L, parts));
@@ -1928,6 +2031,6 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     PdfDoc, buildReportPdf, buildQuotePdf, parseJpeg, toWinAnsi, fromWinAnsi, textWidth, wrapText,
     base64ToBytes, dataUrlToBytes, slug, formatMoney, formatNumber, formatDate, quoteNumber, exportFilename,
     collectImages, HELVETICA_WIDTHS, HELVETICA_BOLD_WIDTHS, _resetDownloads,
-    describeCords, gaugeText,
+    describeCords, gaugeText, roughMeasurements, roughFeet,
   };
 });
