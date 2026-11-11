@@ -37,6 +37,20 @@ test('focal length helpers and presets', () => {
   assert.equal(camera.CAMERA_PRESETS.length, 6);
 });
 
+test('8.4 the 90° lens preset keeps its id and is called "Screenshot (wide view)"; no lens label names Street View', () => {
+  assert.deepEqual(camera.CAMERA_PRESETS.map((p) => p.id), ['phone1x', 'phone2x', 'phone3x', 'phone05x', 'streetview', 'camera50']);
+  const wide = camera.getPreset('streetview');
+  assert.ok(wide, 'a project saved with presetId "streetview" still finds its preset');
+  assert.equal(wide.label, 'Screenshot (wide view)');
+  assert.equal(wide.hfovDeg, 90);
+  for (const p of camera.CAMERA_PRESETS) assert.ok(!/street\s*view/i.test(p.label), p.id + ': ' + p.label);
+  // The label is what the lens line on screen and the lens-mismatch warning show.
+  const r = camera.resolveCamera({ id: 'img', width: 1600, height: 1200, exif: null, camera: { mode: 'preset', presetId: 'streetview' } }, []);
+  assert.equal(r.source, 'preset');
+  assert.equal(r.label, 'Screenshot (wide view)');
+  assert.ok(Math.abs(r.f - 800) < 1e-9, 'same focal length as before: 90° across a 1600 px photo');
+});
+
 test('estimateFocalFromQuad recovers f within 1% and is deterministic', () => {
   const cam = makeCamera();
   const quad = WALL.map((X) => project(cam, X));

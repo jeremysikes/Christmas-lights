@@ -22,6 +22,7 @@
  *    source, for lens-mismatch checks), `focalQuad` ({planeId, refId} of the rectangle the focal came from) and
  *    `exifIgnored` (why EXIF was not used: EXIF PixelX/YDimension do not fit the stored photo, i.e. it was cropped
  *    or resized, so the 35 mm focal no longer gives the right field of view).
+ *  - The 90° lens preset keeps its id 'streetview' but is labelled "Screenshot (wide view)" (SPEC §8.4).
  *  - Extra exports: getPreset, DEFAULT_PRESET_ID, FULL_FRAME_DIAGONAL_MM, Kmatrix, KinvMatrix,
  *    focalFromQuadQuick(quad, cx, cy) (focal from an ordered quad without the stability study; null if none).
  */
@@ -36,7 +37,11 @@ LP.define('camera', ['geometry'], function (g) {
     { id: 'phone2x', label: 'Phone 2× zoom', f35: 52 },
     { id: 'phone3x', label: 'Phone 3× telephoto', f35: 77 },
     { id: 'phone05x', label: 'Phone 0.5× ultra-wide', f35: 13 },
-    { id: 'streetview', label: 'Street View screenshot', hfovDeg: 90 },
+    // A wide screenshot (90° across) of a picture the user is allowed to use. The id is the Phase 1 one, kept so
+    // saved projects still load; the label no longer names Street View (SPEC §8.4). Google's Maps Platform terms
+    // prohibit creating content from Street View imagery, and tracing or measuring a house from it is exactly
+    // that. This holds everywhere, not only in some regions, so the app does not invite it.
+    { id: 'streetview', label: 'Screenshot (wide view)', hfovDeg: 90 },
     { id: 'camera50', label: 'Camera 50 mm', f35: 50 },
   ];
   const DEFAULT_PRESET_ID = 'phone1x';
