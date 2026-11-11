@@ -714,3 +714,201 @@ test('exports still work when the plan cannot be computed', async (t) => {
   checkXref(new Uint8Array(await calls.saves[0].data.arrayBuffer()));
   assert.equal(JSON.parse(await calls.saves[2].data.text()).derived, null);
 });
+
+// ---------------------------------------------------------------- suppliers in the exports (SPEC §8.3, §8.5)
+const suppliers = LP.require('suppliers');
+const bomModule = LP.require('bom');
+const SUPPLIER_IDS = suppliers.SUPPLIERS.map((s) => s.id).filter((id) => id !== suppliers.GENERIC_ID);
+const PRICE_DATE = suppliers.formatDate(suppliers.PRICE_AS_OF);   // "Nov 11, 2026"
+/** The sample planned for a supplier (installer mode as in sampleFixture unless `mutate` says otherwise). */
+function supplierFixture(supplierId, buying, mutate) {
+  return sampleFixture((p) => {
+    p.library = { products: null, config: buying ? { buying } : null, supplierId };
+    if (mutate) mutate(p);
+  });
+}
+/** RFC 4180 rows of a CSV text (quoted fields, doubled quotes, CRLF). */
+function csvRows(text) {
+  const rows = [];
+  let row = [], cell = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { cell += '"'; i += 1; } else if (ch === '"') quoted = false; else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ',') { row.push(cell); cell = ''; }
+    else if (ch === '\r' && text[i + 1] === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; i += 1; }
+    else cell += ch;
+  }
+  if (cell || row.length) { row.push(cell); rows.push(row); }
+  return rows;
+}
+const hostOfLink = (u) => (/^https:\/\/([^/:?#]+)/.exec(u) || [])[1] || '';
+
+test('PdfDoc.link adds a clickable area for a plain https address and ignores anything else', () => {
+  const doc = new exp.PdfDoc({ size: 'letter' });
+  doc.addPage();
+  assert.equal(doc.link(40, 100, 200, 12, 'https://www.christmaslightsetc.com/p/C9-(Warm)-White.htm'), true);
+  assert.equal(doc.link(40, 120, 200, 12, 'javascript:alert(1)'), false);
+  assert.equal(doc.link(40, 120, 200, 12, 'http://example.com/'), false);
+  assert.equal(doc.link(40, 120, 0, 12, 'https://example.com/'), false, 'an empty box is not a link');
+  assert.equal(doc.link(40, 120, 200, 12, 'https://example.com/é'), false, 'only printable ASCII goes into a link');
+  doc.addPage();
+  const bytes = doc.toBytes();
+  checkXref(bytes);
+  const text = Buffer.from(bytes).toString('latin1');
+  // Top-left (40, 100), 200 × 12 → PDF rectangle [40 680 240 692] on a letter page; parentheses are escaped.
+  assert.ok(text.includes('/Annots [<< /Type /Annot /Subtype /Link /Rect [40 680 240 692] /Border [0 0 0] /A << /S /URI /URI (https://www.christmaslightsetc.com/p/C9-\\(Warm\\)-White.htm) >> >>]'));
+  assert.equal(text.split('/Subtype /Link').length - 1, 1, 'one link, on the first page only');
+  if (HAS_PYPDF) assert.equal(pypdfCheck(writePdf('links.pdf', bytes)).pages, 2);
+});
+
+test('8.3 the shopping-list CSV gains Supplier, Part number, Price status and Link columns when a supplier is chosen', async (t) => {
+  const calls = captureSaves(t);
+  for (const sid of SUPPLIER_IDS) {
+    const { project, plan } = supplierFixture(sid);
+    assert.equal(await exp.exportCsv(fakeStore(project)), 'saved');
+    const text = new TextDecoder().decode(new Uint8Array(await calls.saves[calls.saves.length - 1].data.arrayBuffer())).replace(/^﻿/, '');
+    const rows = csvRows(text);
+    assert.deepEqual(rows[0], ['SKU', 'Item', 'Category', 'Qty', 'Unit', 'Unit Price', 'Line Total', 'Notes', 'Supplier', 'Part number', 'Price status', 'Link']);
+    const col = (name) => rows[0].indexOf(name);
+    plan.bom.lines.forEach((l, i) => {
+      const r = rows[i + 1];
+      assert.equal(r[col('Item')], l.name);
+      assert.equal(r[col('Qty')], String(l.qty));
+      assert.equal(r[col('Supplier')], l.supplierName);
+      assert.equal(r[col('Part number')], l.supplierSku || '');
+      assert.equal(r[col('Link')], l.url || l.findUrl || '');
+      if (l.supplierId) {
+        assert.equal(r[col('Supplier')], suppliers.getSupplier(sid).name);
+        assert.ok(r[col('Price status')].startsWith('as of ' + PRICE_DATE), 'a supplier price says when it was seen: ' + r[col('Price status')]);
+        assert.ok(suppliers.linkHosts().includes(hostOfLink(r[col('Link')])), 'the link is on the supplier\'s own site');
+      } else assert.equal(r[col('Supplier')], 'Any store');
+    });
+    assert.ok(plan.bom.lines.some((l) => l.supplierSku), 'the plan has part numbers to print');
+    assert.ok(text.includes('Prices were last checked on ' + PRICE_DATE + '; confirm at checkout.'));
+  }
+});
+
+test('8.5 exportOrderCsv saves one supplier\'s order sheet, with quantities equal to the shopping list', async (t) => {
+  const calls = captureSaves(t);
+  for (const sid of SUPPLIER_IDS) {
+    const { project, plan } = supplierFixture(sid, null, (p) => { p.name = 'Maple house'; });
+    const store = fakeStore(project);
+    assert.equal(await exp.exportOrderCsv(store, sid), 'saved');
+    const save = calls.saves[calls.saves.length - 1];
+    assert.equal(save.filename, 'lightplan-maple-house-order-' + exp.slug(suppliers.getSupplier(sid).name) + '.csv');
+    const bytes = new Uint8Array(await save.data.arrayBuffer());
+    assert.deepEqual(Array.from(bytes.slice(0, 3)), [0xef, 0xbb, 0xbf], 'a byte-order mark, like the shopping-list CSV');
+    const rows = csvRows(new TextDecoder().decode(bytes.slice(3)));
+    assert.deepEqual(rows[0], ['Part number', 'Item', 'Qty', 'Unit', 'Unit Price', 'Total', 'Price status', 'Link', 'Notes']);
+    const mine = plan.bom.lines.filter((l) => l.supplierId === sid);
+    assert.ok(mine.length > 3);
+    mine.forEach((l, i) => {
+      assert.deepEqual(rows[i + 1].slice(0, 3), [l.supplierSku, l.name, String(l.qty)], 'part number, item and quantity of ' + l.name);
+      assert.equal(rows[i + 1][7], l.url);
+    });
+    assert.equal(rows[mine.length + 1].join(''), '', 'a blank row after the lines');
+    assert.deepEqual(rows[mine.length + 2].slice(0, 2), ['Subtotal', mine.reduce((s, l) => s + l.buyTotal, 0).toFixed(2)]);
+    // The any-store sheet is everything else.
+    assert.equal(await exp.exportOrderCsv(store, 'generic'), 'saved');
+    const any = calls.saves[calls.saves.length - 1];
+    assert.equal(any.filename, 'lightplan-maple-house-order-any-store.csv');
+    const anyRows = csvRows(new TextDecoder().decode(new Uint8Array(await any.data.arrayBuffer()).slice(3)));
+    const rest = plan.bom.lines.filter((l) => !l.supplierId);
+    rest.forEach((l, i) => assert.deepEqual(anyRows[i + 1].slice(0, 3), ['', l.name, String(l.qty)]));
+    const other = SUPPLIER_IDS.find((x) => x !== sid);
+    await assert.rejects(exp.exportOrderCsv(store, other), /nothing to order from that supplier/);
+  }
+  await assert.rejects(exp.exportOrderCsv(fakeStore(null), 'cle'), /no project to export yet/);
+});
+
+test('8.5 the report\'s materials table shows supplier and part number, the price sentence, and a "Where to buy" block with every link', { skip: !HAS_PDFTOTEXT && 'pdftotext not installed' }, () => {
+  for (const sid of SUPPLIER_IDS) {
+    const { project, plan } = supplierFixture(sid, null, (p) => { p.quote.enabled = false; });
+    const s = suppliers.getSupplier(sid);
+    const doc = exp.buildReportPdf({ project, plan, image: null, date: DATE });
+    const bytes = doc.toBytes();
+    checkXref(bytes);
+    const file = writePdf('report-' + sid + '.pdf', bytes);
+    if (HAS_PYPDF) assert.equal(pypdfCheck(file).pages, doc.pageCount);
+    const all = pdfText(file);
+    const flat = all.replace(/\s+/g, ' ');
+    // A homeowner's report says "Shopping list"; the materials table names the supplier and the part number.
+    assert.ok(all.includes('Shopping list') && !all.includes('Bill of materials'));
+    assert.ok(all.includes('WHERE TO BUY') && !/\bSKU\b/.test(all), 'the column is "Where to buy", and no "SKU" anywhere');
+    const mine = plan.bom.lines.filter((l) => l.supplierId === sid);
+    for (const l of mine) assert.ok(all.includes('Part number ' + l.supplierSku), 'part number ' + l.supplierSku);
+    assert.ok(all.includes('as of ' + PRICE_DATE + ' · checked'));
+    assert.ok(all.includes('typical price'), 'any-store lines say their price is a typical one');
+    // Under the table.
+    assert.ok(flat.includes('Prices were last checked on ' + PRICE_DATE + '; confirm at checkout.'));
+    // Where to buy: site, phone, the sentence about the prices, and the link of every line.
+    const where = flat.slice(flat.indexOf('Where to buy'), flat.indexOf('Power plan'));
+    assert.ok(where.includes(s.name) && where.includes('Site: ' + s.url), 'the supplier and its site');
+    assert.ok(where.includes('Phone ' + s.wholesale.phone));
+    assert.ok(where.includes(exp.priceSentence(mine).replace(/\s+/g, ' ')), 'the price sentence for its lines');
+    assert.equal(where.includes('Business accounts: '), !!s.wholesale.url, 'an account link only when the supplier has an account page');
+    assert.ok(where.includes(plan.bom.lines.filter((l) => l.supplierId === sid).length + ' items'));
+    assert.ok(where.includes('Any store') && where.includes('No part number is on file for these at ' + s.name));
+    const raw = Buffer.from(bytes).toString('latin1');
+    const linked = Array.from(raw.matchAll(/\/S \/URI \/URI \(([^)]*)\)/g)).map((m) => m[1].replace(/\\([()\\])/g, '$1'));
+    for (const l of plan.bom.lines) {
+      const u = l.url || l.findUrl;
+      if (u) assert.ok(linked.includes(u), 'the report links to ' + u);
+    }
+    assert.ok(linked.includes(s.url));
+    assert.ok(linked.every((u) => suppliers.linkHosts().includes(hostOfLink(u))), 'every link in the report is on a supplier\'s own site');
+    // A search link that was never confirmed says so.
+    const unsure = plan.bom.lines.some((l) => !l.url && l.findUrl && s.searchUrlTemplate && l.findUrl.startsWith(s.searchUrlTemplate.split('{query}')[0])) && s.searchUrlWorks !== true;
+    assert.equal(where.includes('About the search links: '), unsure);
+    assert.ok(flat.includes('Supplier prices are the public prices seen on the date shown'), 'the About box no longer calls every price typical retail');
+  }
+  // Installer mode keeps "Bill of materials"; cost basis "used" explains the two totals.
+  const used = supplierFixture('cle', { costBasis: 'used' });
+  const t2 = pdfText(writePdf('report-used.pdf', exp.buildReportPdf({ project: used.project, plan: used.plan, image: null, date: DATE }).toBytes()));
+  assert.ok(t2.includes('Bill of materials') && !t2.includes('Shopping list'));
+  const share = used.plan.bom.lines.find((l) => l.usedQty < l.qty);
+  assert.ok(t2.includes('to order: ' + exp.formatMoney(share.buyTotal)) && t2.includes(exp.formatMoney(share.lineTotal)));
+  assert.ok(t2.replace(/\s+/g, ' ').includes('Line totals count only the share of the wire, bulbs and plugs that this job uses'));
+  // Any store: the Phase 1 report, with no supplier block and no links.
+  const plain = sampleFixture((p) => { p.quote.enabled = false; });
+  const plainBytes = exp.buildReportPdf({ project: plain.project, plan: plain.plan, image: null, date: DATE }).toBytes();
+  const t3 = pdfText(writePdf('report-plain.pdf', plainBytes));
+  assert.ok(t3.includes('Shopping list') && !t3.includes('Where to buy') && !t3.includes('Prices were last checked'));
+  assert.ok(!Buffer.from(plainBytes).toString('latin1').includes('/Subtype /Link'));
+  assert.ok(t3.includes('Prices are typical retail and change often.'));
+});
+
+test('8.5 the customer quote never shows a supplier, a part number, a link or a supplier unit price', () => {
+  for (const sid of SUPPLIER_IDS) {
+    for (const buying of [null, { style: 'strings' }, { costBasis: 'used' }]) {
+      const { project, plan } = supplierFixture(sid, buying);
+      const mine = plan.bom.lines.filter((l) => l.supplierId === sid);
+      assert.ok(mine.length > 3, 'the plan really buys from ' + sid);
+      const bytes = exp.buildQuotePdf({ project, plan, image: null, date: DATE }).toBytes();
+      checkXref(bytes);
+      const raw = Buffer.from(bytes).toString('latin1');
+      const text = HAS_PDFTOTEXT ? pdfText(writePdf('quote-' + sid + '.pdf', bytes)) : '';
+      for (const hay of [raw, text]) {
+        for (const s of suppliers.SUPPLIERS.filter((x) => x.id !== suppliers.GENERIC_ID)) {
+          assert.ok(!hay.includes(s.name), 'no supplier name (' + s.name + ')');
+          assert.ok(!hay.includes(s.short), 'no supplier short name (' + s.short + ')');
+          assert.ok(!hay.includes(hostOfLink(s.url).replace(/^www\./, '')), 'no supplier site');
+          if (s.wholesale) assert.ok(!hay.includes(s.wholesale.phone), 'no supplier phone');
+        }
+        assert.ok(!/Any store|Part number|part number|as of |checked|wholesale|https?:/i.test(hay), 'no supplier wording or link');
+        assert.ok(!hay.includes('/Subtype /Link'));
+        for (const l of mine) assert.ok(!hay.includes(l.supplierSku), 'no part number (' + l.supplierSku + ')');
+      }
+      if (text) {
+        // The only amounts are the quote's own lines: no supplier unit price leaks in.
+        const amounts = new Set(plan.quote.lines.map((l) => exp.formatMoney(l.amount)));
+        const shown = text.match(/\$[\d,]+\.\d\d/g) || [];
+        assert.ok(shown.length >= plan.quote.lines.length);
+        for (const a of shown) assert.ok(amounts.has(a), 'the quote shows ' + a + ', which is not one of its own lines');
+        assert.ok(text.includes(exp.formatMoney(plan.quote.total)));
+      }
+    }
+  }
+});

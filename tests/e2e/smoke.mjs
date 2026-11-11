@@ -5,14 +5,17 @@
 //                                        blocked storage)
 //   node tests/e2e/smoke.mjs             run against the existing dist/lightplan.html
 //   node tests/e2e/smoke.mjs --only=phone        one pass: phone | desktop | dark | storage | inputs | measure |
-//                                                review | landscape | v11-phone | v11-desktop
+//                                                review | landscape | v11-phone | v11-desktop | sup-phone | sup-desktop
 //                                                (storage = localStorage and IndexedDB blocked;
 //                                                inputs = safe share, tax, file version, damaged photo;
 //                                                review = UI review findings on a phone; landscape = 844x390;
 //                                                v11-* = the Phase 1.1 UI, SPEC 8.4 and 8.5: cords on the photo,
 //                                                the Power step, rough measurements, the flow, tap precision.
 //                                                They also write ui-finish-<phone|desktop>-step<2|3|5|6>.png,
-//                                                -step5-no-jumpers.png and dark-scheme copies of steps 5 and 6)
+//                                                -step5-no-jumpers.png and dark-scheme copies of steps 5 and 6;
+//                                                sup-* = suppliers, SPEC 8.3 and 8.5: "Buy from", pickers, part
+//                                                numbers and links, order sheets, cost basis, exports. They write
+//                                                ui-suppliers-<phone|desktop>-step<4|6>-<cle|1000bulbs>*.png)
 //   LP_APP=/path/to/lightplan.html node tests/e2e/smoke.mjs   run against another build
 //   LP_SECTIONS='UX-0[45]' node tests/e2e/smoke.mjs --only=review   run only the matching review sections
 //
@@ -44,7 +47,7 @@ const PASSES = {
 };
 
 const onlyArg = process.argv.find((a) => a.startsWith('--only='));
-const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES).concat('storage', 'inputs', 'measure', 'review', 'landscape', 'v11-phone', 'v11-desktop');
+const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES).concat('storage', 'inputs', 'measure', 'review', 'landscape', 'v11-phone', 'v11-desktop', 'sup-phone', 'sup-desktop');
 
 if (!fs.existsSync(APP)) {
   console.error('dist/lightplan.html is missing. Run "node build.js" first (npm run e2e does both).');
@@ -1909,6 +1912,480 @@ async function runPhase11(browser, name) {
   return t;
 }
 
+// ------------------------------------------------------------------ suppliers (SPEC §8.3 and §8.5)
+// "Buy from" in the Design step, the product pickers, the shopping list with part numbers and links, the order
+// sheets, the cost basis and the exports, on a 390 px phone and on a desktop. Expected numbers are read from the
+// plan and the supplier map in the page, never pinned. Writes ui-suppliers-<phone|desktop>-step<4|6>-<supplier>*.png.
+async function runSuppliers(browser, name) {
+  const cfg = PASSES[name === 'sup-phone' ? 'phone' : 'desktop'];
+  const phone = !!cfg.hasTouch;
+  const t = new Check(name);
+  console.log('\n== suppliers ' + cfg.viewport.width + 'x' + cfg.viewport.height);
+  const context = await browser.newContext({
+    viewport: cfg.viewport, isMobile: cfg.isMobile, hasTouch: cfg.hasTouch, colorScheme: 'light',
+    deviceScaleFactor: 1, acceptDownloads: true, reducedMotion: 'no-preference',
+  });
+  await context.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+  // A supplier link is for a person to follow: the page itself must never fetch one or open a window.
+  const fetched = [];
+  await context.route(/christmaslightsetc\.com|1000bulbs\.com/, (r) => { fetched.push(r.request().url()); r.abort(); });
+  await context.addInitScript(() => {
+    // A clipboard the test can read ('ok') or one that refuses, as inside a locked-down frame ('blocked').
+    window.__clip = { mode: 'ok', writes: [] };
+    const fake = { writeText: (text) => (window.__clip.mode === 'ok' ? (window.__clip.writes.push(String(text)), Promise.resolve()) : Promise.reject(new Error('blocked'))) };
+    try { Object.defineProperty(navigator, 'clipboard', { configurable: true, get: () => fake }); } catch (e) { /* keep the real one */ }
+    const real = document.execCommand ? document.execCommand.bind(document) : null;
+    document.execCommand = (cmd, ...rest) => (cmd === 'copy' ? false : real ? real(cmd, ...rest) : false);
+    window.__opened = 0;
+    window.open = () => { window.__opened += 1; return null; };
+  });
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push('page error: ' + e.message));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push('console error: ' + m.text()); });
+  const shot = (label) => page.screenshot({ path: path.join(OUT, 'ui-suppliers-' + (phone ? 'phone' : 'desktop') + '-' + label + '.png') });
+  const openSheet = async () => { if (phone) { await page.evaluate(() => window.LightPlanApp.store.setUI({ sheet: 'full' })); await sleep(250); } };
+  const goStep = async (n) => { await page.click('button.step[data-step="' + n + '"]'); await sleep(350); await openSheet(); };
+  /** Bring something in the panel to the middle of the panel (clear of the pinned button) and click it. */
+  const tap = async (selector) => {
+    const loc = page.locator(selector).first();
+    await loc.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    await sleep(150);
+    await loc.click({ timeout: 5000 });
+    await sleep(400);
+  };
+  const scrollTo = async (selector, block) => { await page.locator(selector).first().evaluate((el, b) => el.scrollIntoView({ block: b }), block || 'start'); await sleep(300); };
+  const hostOf = (u) => (/^https:\/\/([^/:?#]+)/.exec(u || '') || [])[1] || '';
+  const sameLines = (a, b) => JSON.stringify(a.map((l) => [l.sku, l.qty, l.unitPrice, l.lineTotal])) === JSON.stringify(b.map((l) => [l.sku, l.qty, l.unitPrice, l.lineTotal]));
+  const state = () => page.evaluate(() => {
+    const s = window.LightPlanApp.store; const p = s.project(); const plan = s.plan();
+    return {
+      supplierId: Object.prototype.hasOwnProperty.call(p.library, 'supplierId') ? p.library.supplierId : null, libSupplier: plan.library.supplierId,
+      config: p.library.config, buying: plan.library.config.buying, installer: p.quote.enabled,
+      subtotal: plan.bom.subtotal, cost: plan.summary.cost, watts: plan.summary.watts, quoteMaterials: plan.quote.materialsCost,
+      lines: plan.bom.lines.map((l) => ({ sku: l.sku, name: l.name, qty: l.qty, unit: l.unit, unitPrice: l.unitPrice, lineTotal: l.lineTotal, buyTotal: l.buyTotal, usedQty: l.usedQty,
+        supplierId: l.supplierId, supplierName: l.supplierName, supplierSku: l.supplierSku, url: l.url, findUrl: l.findUrl, priceStatus: l.priceStatus, priceAsOf: l.priceAsOf, overridden: l.overridden })),
+      runs: plan.runs.map((r) => ({ id: r.id, featureId: r.featureId, label: r.label, type: r.featureType, productId: r.productId, supplierId: r.supplierId || null, kind: r.productKind || null,
+        auto: !(p.features.find((f) => f.id === r.featureId) || {}).productId })),
+      undoLabel: s.undoLabel(), overrides: p.pricing.overrides,
+    };
+  });
+  /** What the supplier map holds, read in the page. */
+  const supplierData = (sid) => page.evaluate((id) => {
+    const S = window.LP.require('suppliers');
+    const s = S.getSupplier(id);
+    const mine = S.SUPPLIER_PRODUCTS.filter((p) => p.supplierId === id);
+    const offers = [];
+    for (const p of mine) { if (p.kind === 'bulk') for (const c of S.componentOffers(p)) offers.push(c.offer); else offers.push(p); }
+    for (const k of Object.keys(S.SUPPLIER_ACCESSORIES[id] || {})) offers.push(S.SUPPLIER_ACCESSORIES[id][k]);
+    const bySku = new Map(offers.map((o) => [o.sku, o]));
+    return {
+      id, name: s.name, url: s.url, wholesale: s.wholesale, date: S.formatDate(s.priceAsOf), hosts: S.linkHosts(),
+      equivs: mine.map((p) => p.equiv), observed: Array.from(bySku.values()).filter((o) => o.priceStatus === 'observed').length, items: bySku.size,
+      bulk: mine.filter((p) => p.kind === 'bulk').map((p) => ({ id: p.id, parts: S.componentOffers(p).map((c) => ({ part: String(c.offer.supplierSku), status: c.offer.priceStatus })), maxRunFt: p.maxRunFt, maxBulbs: p.maxBulbsPerRun, packQty: p.components.bulb.packQty })),
+    };
+  }, sid);
+  const bomRows = () => page.evaluate(() => Array.from(document.querySelectorAll('.bom-row')).map((li) => ({
+    sku: li.getAttribute('data-sku'), supplier: li.getAttribute('data-supplier'), status: li.getAttribute('data-status'),
+    from: (li.querySelector('.bom-from') || {}).textContent || '', badge: (li.querySelector('.bom-from .badge') || {}).textContent || '',
+    use: (li.querySelector('.bom-use') || {}).textContent || '', total: (li.querySelector('.bom-total') || {}).textContent || '',
+    links: Array.from(li.querySelectorAll('a')).map((a) => ({ href: a.getAttribute('href'), target: a.getAttribute('target'), rel: a.getAttribute('rel'), text: a.textContent.trim(), kind: a.getAttribute('data-link') })),
+    copy: li.querySelectorAll('[data-act="copy-link"]').length, price: (li.querySelector('[data-act="price"]') || {}).value,
+    tall: Array.from(li.querySelectorAll('a, button')).every((el) => el.getBoundingClientRect().height >= 40),
+  })));
+  const runCards = () => page.evaluate(() => Array.from(document.querySelectorAll('.run-card')).map((li) => {
+    const sel = li.querySelector('select[data-act="run-product"]');
+    const info = li.querySelector('.prod-info');
+    return {
+      runId: li.getAttribute('data-key'), featureId: sel.getAttribute('data-id'), value: sel.value, auto: sel.options[0].textContent,
+      groups: Array.from(sel.querySelectorAll('optgroup')).map((g) => ({ label: g.label, options: Array.from(g.querySelectorAll('option')).map((o) => ({ value: o.value, text: o.textContent })) })),
+      info: info ? {
+        supplier: info.getAttribute('data-supplier'), kind: info.getAttribute('data-kind'), status: info.getAttribute('data-status'), text: info.textContent,
+        head: Array.from(info.children).filter((el) => !el.matches('details')).map((el) => el.textContent).join(' | '),
+        badges: Array.from(info.children).filter((el) => !el.matches('details')).flatMap((el) => Array.from(el.querySelectorAll('.badge')).map((b) => ({ kind: b.getAttribute('data-status'), text: b.textContent }))),
+        links: Array.from(info.children).filter((el) => el.matches('.link-row')).flatMap((el) => Array.from(el.querySelectorAll('a')).map((a) => ({ href: a.getAttribute('href'), target: a.getAttribute('target'), rel: a.getAttribute('rel'), text: a.textContent.trim() }))),
+        parts: Array.from(info.querySelectorAll('.part-row')).map((r) => ({ status: r.getAttribute('data-status'), text: r.textContent, href: (r.querySelector('a') || { getAttribute: () => null }).getAttribute('href'), copy: r.querySelectorAll('[data-act="copy-link"]').length })),
+      } : null,
+    };
+  }));
+  const noOverflow = () => page.evaluate(() => {
+    const root = document.getElementById('panel-root');
+    const wide = Array.from(root.querySelectorAll('*')).filter((el) => el.getBoundingClientRect().right > root.getBoundingClientRect().right + 1 && getComputedStyle(el).position !== 'fixed').slice(0, 3).map((el) => el.className || el.tagName);
+    return { page: document.documentElement.scrollWidth - window.innerWidth, panel: root.scrollWidth - root.clientWidth, wide };
+  });
+  const csvRows = (text) => {
+    const rows = []; let row = []; let cell = ''; let quoted = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const ch = text[i];
+      if (quoted) { if (ch === '"' && text[i + 1] === '"') { cell += '"'; i += 1; } else if (ch === '"') quoted = false; else cell += ch; }
+      else if (ch === '"') quoted = true;
+      else if (ch === ',') { row.push(cell); cell = ''; }
+      else if (ch === '\r' && text[i + 1] === '\n') { row.push(cell); rows.push(row); row = []; cell = ''; i += 1; }
+      else cell += ch;
+    }
+    if (cell || row.length) { row.push(cell); rows.push(row); }
+    return rows;
+  };
+  const linkOk = (l) => l.target === '_blank' && /\bnoopener\b/.test(l.rel || '') && /\bnoreferrer\b/.test(l.rel || '');
+
+  /** Steps 4 and 6 with `sid` chosen: the supplier card, the pickers, the shopping list, the order sheets. */
+  async function checkSupplier(sid, base) {
+    const sup = await supplierData(sid);
+    await goStep(4);
+    await tap('[data-act="supplier"][data-id="' + sid + '"]');
+    const st = await state();
+    t.ok(st.supplierId === sid && st.libSupplier === sid && st.undoLabel === 'Buy from ' + sup.name, sid + ': choosing it sets project.library.supplierId in one undoable step (' + st.undoLabel + ')');
+    // Every run on Auto whose product has an equivalent at the supplier now uses the supplier's.
+    const switched = st.runs.filter((r) => r.supplierId === sid);
+    const wrong = st.runs.filter((r) => {
+      const was = base.runs.find((b) => b.featureId === r.featureId);
+      return sup.equivs.includes(was.productId) ? r.supplierId !== sid : r.productId !== was.productId;
+    });
+    t.ok(switched.length > 0 && switched.every((r) => r.auto) && wrong.length === 0, sid + ': ' + switched.length + ' of ' + st.runs.length + ' Auto runs switched to its products, the rest stayed' + (wrong.length ? ' (wrong: ' + wrong.map((r) => r.label).join(', ') + ')' : ''));
+    t.ok(st.runs.some((r) => r.kind === 'bulk') && st.buying.style === 'bulk', sid + ': C7 and C9 runs are cut-to-length by default');
+
+    // --- The supplier card.
+    const card = await page.evaluate((id) => {
+      const el = document.querySelector('.sup-card[data-supplier="' + id + '"]');
+      if (!el) return null;
+      const links = Array.from(el.querySelectorAll('a')).map((a) => ({ href: a.getAttribute('href'), target: a.getAttribute('target'), rel: a.getAttribute('rel'), text: a.textContent.trim(), kind: a.getAttribute('data-link') }));
+      return {
+        text: el.textContent, prices: (el.querySelector('.sup-prices') || {}).textContent || '', links, copies: el.querySelectorAll('[data-act="copy-link"]').length,
+        account: (el.querySelector('.sup-account') || {}).textContent || '',
+        chips: Array.from(document.querySelectorAll('[data-act="supplier"]')).map((b) => b.dataset.id + ':' + b.getAttribute('aria-pressed')).join(' '),
+        styles: Array.from(document.querySelectorAll('[data-act="buy-style"]')).map((b) => ({ style: b.dataset.style, on: b.getAttribute('aria-pressed') === 'true', text: b.textContent })),
+        firstSection: document.querySelector('.panel-content > section').getAttribute('data-key'),
+      };
+    }, sid);
+    t.ok(card && card.firstSection === 'buy-from' && card.chips.includes(sid + ':true') && card.chips.split('true').length === 2, sid + ': "Buy from" is the first thing in the Design step and shows it as chosen (' + (card && card.chips) + ')');
+    const site = card.links.find((l) => l.kind === 'site');
+    t.ok(site && site.href === sup.url && linkOk(site) && card.copies === card.links.length, sid + ': its site link opens in a new tab (noopener noreferrer) with a Copy link button beside every link');
+    const whole = card.links.find((l) => l.kind === 'wholesale');
+    if (sup.wholesale.url) t.ok(whole && whole.href === sup.wholesale.url && linkOk(whole), sid + ': the wholesale page is linked (' + (whole && whole.href) + ')');
+    else t.ok(!whole && card.links.length === 1, sid + ': no account page is on file, so there is no account link');
+    t.ok(card.account.includes(sup.wholesale.phone) && card.account.includes(sup.wholesale.note) && (!sup.wholesale.email || card.account.includes(sup.wholesale.email)), sid + ': the phone' + (sup.wholesale.email ? ', the email' : '') + ' and what its pages say are shown');
+    const sentenceOk = card.prices.includes('as of ' + sup.date) && card.prices.includes('checked on the supplier\'s page') && card.prices.includes('Your account price may be lower: edit any price.') &&
+      (sup.observed > 0) === card.prices.includes(sup.observed + ' seen in a listing, not confirmed');
+    t.ok(sentenceOk, sid + ': one honest sentence about its prices (' + card.prices + ')');
+    t.ok(card.styles.length === 2 && card.styles[0].style === 'bulk' && card.styles[0].on && !card.styles[1].on && /Cut-to-length wire \+ bulbs/.test(card.styles[0].text) && /how installers buy/i.test(card.styles[0].text) && /Ready-made strings/.test(card.styles[1].text),
+      sid + ': "C7 and C9 as" offers cut-to-length wire + bulbs (on) or ready-made strings');
+    await page.evaluate(() => { document.getElementById('panel-root').scrollTop = 0; });
+    await sleep(250);
+    await shot('step4-' + sid);
+
+    // --- The product pickers and the card under each.
+    const cards = await runCards();
+    const others = ['cle', '1000bulbs'].filter((x) => x !== sid).map((x) => (x === 'cle' ? 'Christmas Lights Etc' : '1000Bulbs'));
+    const order = [sup.name, 'Any store'].concat(others).join(' > ');
+    const roof = cards.find((c) => c.groups.length === 3);
+    t.ok(!!roof && cards.every((c) => c.groups.map((g) => g.label).join(' > ') === order.split(' > ').filter((n) => c.groups.some((g) => g.label === n)).join(' > ')) && roof.groups.map((g) => g.label).join(' > ') === order,
+      sid + ': pickers group their products by supplier, the chosen one first (' + (roof && roof.groups.map((g) => g.label).join(' > ')) + ')');
+    const opts = roof.groups[0].options;
+    t.ok(opts.some((o) => / · part number \S+ · \$\d+\.\d\d$/.test(o.text)) && opts.some((o) => / · sold as parts · about \$\d+\.\d\d per ft$/.test(o.text)), sid + ': options show the part number and price (' + opts.map((o) => o.text.slice(-34)).join(' | ') + ')');
+    t.ok(cards.every((c) => /^Auto: /.test(c.auto)) && cards.filter((c) => c.value === '').length === cards.length, sid + ': every run is still on Auto, and Auto names the product it picks');
+    const bulkCard = cards.find((c) => c.info && c.info.kind === 'bulk');
+    const kit = sup.bulk.find((b) => st.runs.some((r) => r.productId === b.id));
+    const listed = kit.parts.filter((x) => x.status !== 'verified').length;
+    t.ok(!!bulkCard && bulkCard.info.supplier === sid && /sold as parts/.test(bulkCard.info.head) && /by the spool/.test(bulkCard.info.head) && bulkCard.info.head.includes('of ' + kit.packQty + ' by colour') &&
+      /a male and a female slide-on plug for every length you cut/.test(bulkCard.info.head) && bulkCard.info.head.includes(kit.maxRunFt + ' ft') && bulkCard.info.head.includes(kit.maxBulbs + ' bulbs'),
+      sid + ': a cut-to-length card says what is ordered (wire, bulbs by the ' + kit.packQty + ', a plug pair per cut) and its limit (' + kit.maxRunFt + ' ft or ' + kit.maxBulbs + ' bulbs)');
+    t.ok(bulkCard.info.parts.length === kit.parts.length && kit.parts.every((x) => bulkCard.info.parts.some((r) => r.text.includes('part number ' + x.part) && r.status === (x.status === 'verified' ? 'checked' : 'check'))) &&
+      bulkCard.info.parts.every((r) => sup.hosts.includes(hostOf(r.href)) && r.copy === 1),
+      sid + ': its ' + kit.parts.length + ' parts are listed with part number, status and a link on the supplier\'s site');
+    t.ok(bulkCard.info.badges.some((b) => b.kind === 'checked' && b.text.includes('as of ' + sup.date)) && bulkCard.info.badges.some((b) => b.kind === 'check') === (listed > 0) && !/check the price/i.test(bulkCard.info.head),
+      sid + ': the kit is never marked "check price" itself; its labels count the parts (' + bulkCard.info.badges.map((b) => b.text).join(' / ') + ')');
+    const plain = cards.find((c) => c.info && c.info.supplier === sid && c.info.kind !== 'bulk');
+    t.ok(!!plain && /part number \S+/.test(plain.info.head) && /\$\d+\.\d\d/.test(plain.info.head) && plain.info.links.length === 1 && plain.info.links[0].text === 'Open at ' + sup.name && linkOk(plain.info.links[0]) && sup.hosts.includes(hostOf(plain.info.links[0].href)),
+      sid + ': a ready-made product shows its part number, price and "Open at ' + sup.name + '" (' + (plain && plain.info.head.slice(0, 70)) + ')');
+    const stay = cards.find((c) => c.info && c.info.supplier === 'generic');
+    t.ok(!!stay && /No part number on file at /.test(stay.info.head) && stay.info.links[0].text === 'Find at ' + sup.name && sup.hosts.includes(hostOf(stay.info.links[0].href)), sid + ': a run with nothing on file there says so and offers "Find at ' + sup.name + '"');
+    await scrollTo('.run-card');
+    await shot('step4-' + sid + '-runs');
+    let over = await noOverflow();
+    t.ok(over.page <= 0 && over.panel <= 0 && over.wide.length === 0, sid + ': step 4 fits the width (' + JSON.stringify(over) + ')');
+
+    // --- Step 6: the shopping list.
+    await goStep(6);
+    const rows = await bomRows();
+    t.ok(rows.length === st.lines.length && rows.every((r, i) => r.sku === st.lines[i].sku), sid + ': the shopping list has a row for each of the ' + st.lines.length + ' lines');
+    const bad = [];
+    st.lines.forEach((l, i) => {
+      const r = rows[i];
+      const open = r.links.find((x) => x.kind === 'product');
+      const find = r.links.find((x) => x.kind === 'find');
+      if (!r.from.includes(l.supplierName)) bad.push(l.name + ': supplier');
+      if (l.supplierSku && !r.from.includes('part number ' + l.supplierSku)) bad.push(l.name + ': part number');
+      if (l.url && !(open && open.href === l.url && open.text === 'Open' && linkOk(open) && sup.hosts.includes(hostOf(open.href)) && r.copy === 1)) bad.push(l.name + ': Open link');
+      if (!l.url && l.findUrl && !(find && find.href === l.findUrl && find.text === 'Find at ' + sup.name && linkOk(find) && r.copy === 1)) bad.push(l.name + ': Find link');
+      if (!l.url && !l.findUrl && r.links.length) bad.push(l.name + ': a link from nowhere');
+      const want = l.priceStatus === 'verified' ? 'as of ' + sup.date + ' · checked' : l.priceStatus === 'observed' ? 'as of ' + sup.date + ' · check price' : l.priceStatus === 'yours' ? 'your price' : 'typical price';
+      if (r.badge !== want) bad.push(l.name + ': status "' + r.badge + '"');
+      if ((l.usedQty < l.qty) !== !!r.use) bad.push(l.name + ': used and left over');
+      if (!r.tall) bad.push(l.name + ': a small tap target');
+    });
+    t.ok(bad.length === 0, sid + ': every row shows supplier, part number, price status and its link on the supplier\'s site' + (bad.length ? ' (' + bad.slice(0, 4).join('; ') + ')' : ''));
+    t.ok(st.lines.some((l) => l.supplierSku) && st.lines.some((l) => l.url) && st.lines.some((l) => !l.url && l.findUrl), sid + ': the list has part numbers, product links and "Find at" links to check');
+    const wire = rows.filter((r) => /ft used/.test(r.use)).map((r) => /^([\d,]+) (spools?|lengths?) \(([\d,]+) ft\): ([\d,]+) ft used, ([\d,]+) ft left$/.exec(r.use));
+    const boxes = rows.filter((r) => /spare$/.test(r.use)).map((r) => /^([\d,]+) (boxes|box|packs?) \(([\d,]+) (bulbs|plugs)\): ([\d,]+) used, ([\d,]+) spare$/.exec(r.use));
+    const num = (x) => Number(String(x).replace(/,/g, ''));
+    t.ok(wire.length > 0 && wire.every((m) => m && num(m[4]) + num(m[5]) === num(m[3])) && boxes.length >= 3 && boxes.every((m) => m && num(m[5]) + num(m[6]) === num(m[3])),
+      sid + ': rows bought by the spool, box or pack say what is used and left (' + rows.filter((r) => r.use).map((r) => r.use).slice(0, 2).join(' | ') + ')');
+    await scrollTo('[data-key="bom"]');
+    await shot('step6-' + sid);
+
+    // --- Order sheets.
+    const sheets = await page.evaluate(() => Array.from(document.querySelectorAll('.order-card')).map((c) => ({
+      id: c.getAttribute('data-supplier'), head: c.querySelector('.order-head').textContent,
+      lines: Array.from(c.querySelectorAll('.order-line')).map((li) => ({ qty: li.querySelector('.os-qty').textContent, name: li.querySelector('.os-name').textContent, part: li.getAttribute('data-part') })),
+      total: c.querySelector('.order-total').textContent, phone: (c.querySelector('[data-fact="phone"]') || {}).textContent || '', shipping: (c.querySelector('[data-fact="shipping"]') || {}).textContent || '',
+      buttons: Array.from(c.querySelectorAll('button')).map((b) => b.textContent.trim()),
+    })));
+    const mine = st.lines.filter((l) => l.supplierId === sid);
+    const rest = st.lines.filter((l) => !l.supplierId);
+    const own = sheets.find((x) => x.id === sid);
+    const money = (v) => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    t.ok(sheets.map((x) => x.id).join(',') === sid + ',generic' && !!own && own.lines.length === mine.length && own.lines.every((ln, i) => ln.part === mine[i].supplierSku && ln.name === mine[i].name && ln.qty.startsWith(String(mine[i].qty))),
+      sid + ': an order sheet for it (' + mine.length + ' lines: part number, item, qty) and one for any store (' + rest.length + ')');
+    t.ok(own.total.includes(money(mine.reduce((a, l) => a + l.buyTotal, 0))) && own.phone.includes(sup.wholesale.phone) && own.buttons.join('|') === 'Copy order list|Save order CSV',
+      sid + ': its sheet shows the subtotal to order and the phone (' + own.phone + ')');
+    const ships = /ships free/.test(sup.wholesale.note);
+    t.ok(ships ? sup.wholesale.note.includes(own.shipping) && /ships free with orders of \$\d+/.test(own.shipping) : own.shipping === '', sid + ': the free-shipping line is shown only when its pages give one (' + (own.shipping || 'none') + ')');
+    await scrollTo('.order-card[data-supplier="' + sid + '"]');
+    await shot('step6-' + sid + '-orders');
+    over = await noOverflow();
+    t.ok(over.page <= 0 && over.panel <= 0 && over.wide.length === 0, sid + ': step 6 fits the width (' + JSON.stringify(over) + ')');
+
+    // Save order CSV: the right columns, and quantities equal to the shopping list.
+    const csvFile = await clickAndDownload(page, '.order-card[data-supplier="' + sid + '"] [data-act="order-csv"]');
+    const csv = csvRows(fs.readFileSync(csvFile, 'utf8').replace(/^﻿/, ''));
+    t.ok(/-order-[a-z0-9-]+\.csv$/.test(csvFile) && csv[0].join(',') === 'Part number,Item,Qty,Unit,Unit Price,Total,Price status,Link,Notes', sid + ': the order CSV downloads with its columns (' + path.basename(csvFile) + ')');
+    t.ok(mine.every((l, i) => csv[i + 1][0] === l.supplierSku && csv[i + 1][1] === l.name && csv[i + 1][2] === String(l.qty) && csv[i + 1][7] === l.url && sup.hosts.includes(hostOf(csv[i + 1][7]))) && csv[mine.length + 1].join('') === '',
+      sid + ': its ' + mine.length + ' rows carry the part numbers, the shopping list\'s quantities and the product links');
+    await sleep(400);
+    // Copy order list: plain text on the clipboard.
+    await page.evaluate(() => { window.__clip.writes.length = 0; });
+    await tap('.order-card[data-supplier="' + sid + '"] [data-act="copy-order"]');
+    const copied = await page.evaluate(() => ({ text: window.__clip.writes[0] || '', toast: (window.LightPlanApp.store.ui().toast || {}).message || '' }));
+    t.ok(copied.text.startsWith('Order from ' + sup.name) && mine.every((l) => copied.text.includes('Part ' + l.supplierSku + ': ')) && copied.text.includes('Phone: ' + sup.wholesale.phone) && /copied\.$/.test(copied.toast),
+      sid + ': Copy order list puts the list on the clipboard as text (' + copied.toast + ')');
+    return { st, sup, rows };
+  }
+
+  try {
+    await page.goto(URL);
+    await waitForApp(page);
+    const base = await state();
+    t.ok(base.libSupplier === 'generic' && base.supplierId == null && base.lines.every((l) => !l.supplierId && !l.url && !l.findUrl), 'the sample starts at Any store: no supplier, no links');
+
+    // --- Any store: the control is there, with nothing to link to.
+    await goStep(4);
+    const any = await page.evaluate(() => ({
+      chips: Array.from(document.querySelectorAll('[data-act="supplier"]')).map((b) => b.textContent.trim() + (b.getAttribute('aria-pressed') === 'true' ? '*' : '')).join(' | '),
+      first: document.querySelector('.panel-content > section').getAttribute('data-key'),
+      links: document.querySelectorAll('#panel-root a').length, style: document.querySelectorAll('[data-act="buy-style"]').length, info: document.querySelectorAll('.prod-info').length,
+      note: (document.querySelector('[data-key="buy-note"]') || {}).textContent || '',
+    }));
+    t.ok(any.chips === 'Any store* | Christmas Lights Etc | 1000Bulbs' && any.first === 'buy-from', 'step 4 opens with "Buy from": ' + any.chips);
+    t.ok(any.links === 0 && any.style === 0 && any.info === 0 && /no part numbers and no links/.test(any.note), 'at Any store there are no links, no part numbers and no C7/C9 choice');
+    const anyCards = await runCards();
+    t.ok(anyCards.find((c) => c.groups.length === 3).groups.map((g) => g.label).join(' > ') === 'Any store > Christmas Lights Etc > 1000Bulbs', 'at Any store the pickers list any-store products first, then each supplier');
+    await shot('step4-any');
+    await goStep(6);
+    const anyRows = await bomRows();
+    t.ok(anyRows.every((r) => r.badge === 'typical price' && /^Any store/.test(r.from) && r.links.length === 0 && !r.use), 'at Any store every row says "Any store" and "typical price", with no link');
+    const anyTitles = await page.evaluate(() => Array.from(document.querySelectorAll('#panel-root .sec-title')).map((h) => h.textContent));
+    t.ok(anyTitles.includes('Shopping list') && anyTitles.includes('Order sheets') && !anyTitles.some((x) => /bill of materials|sku/i.test(x)) && !/\bSKU\b/.test(await page.locator('#panel-root').innerText()),
+      'the Review step says "Shopping list" and "Order sheets", never "Bill of materials" or "SKU" (' + anyTitles.join(', ') + ')');
+
+    // --- Christmas Lights Etc.
+    const cle = await checkSupplier('cle', base);
+
+    // Copy link: to the clipboard when the browser allows it...
+    await page.evaluate(() => { window.__clip.writes.length = 0; });
+    const firstLink = cle.st.lines.find((l) => l.url);
+    const rowSel = '.bom-row[data-sku="' + firstLink.sku + '"]';
+    await tap(rowSel + ' [data-act="copy-link"]');
+    let cp = await page.evaluate((sel) => ({ writes: window.__clip.writes.slice(), toast: (window.LightPlanApp.store.ui().toast || {}).message || '', label: document.querySelector(sel + ' [data-act="copy-link"]').textContent.trim(), field: !!document.querySelector('[data-copy-field]') }), rowSel);
+    t.ok(cp.writes.length === 1 && cp.writes[0] === firstLink.url && cp.toast === 'Link copied.' && cp.label === 'Copied' && !cp.field, 'Copy link writes the address to the clipboard and says so (' + cp.toast + ')');
+    // ...and, where the clipboard is blocked, the address is shown selected in a read-only field.
+    await page.evaluate(() => { window.__clip.mode = 'blocked'; window.__clip.writes.length = 0; });
+    await tap(rowSel + ' [data-act="copy-link"]');
+    cp = await page.evaluate((sel) => {
+      const f = document.querySelector(sel + ' [data-copy-field]');
+      return f ? { value: f.value, readOnly: f.readOnly, focused: document.activeElement === f, start: f.selectionStart, end: f.selectionEnd, fields: document.querySelectorAll('[data-copy-field]').length, writes: window.__clip.writes.length,
+        hint: f.closest('.copy-fallback').textContent, inView: f.getBoundingClientRect().right <= window.innerWidth } : null;
+    }, rowSel);
+    t.ok(cp && cp.value === firstLink.url && cp.readOnly && cp.focused && cp.start === 0 && cp.end === firstLink.url.length && cp.fields === 1 && cp.writes === 0 && /Copying is blocked/.test(cp.hint) && cp.inView,
+      'with the clipboard blocked, the address is shown selected in a read-only field to copy by hand');
+    await shot('copy-blocked');
+    // The order list falls back the same way, as several lines.
+    await tap('.order-card[data-supplier="cle"] [data-act="copy-order"]');
+    cp = await page.evaluate(() => { const f = document.querySelector('.order-card[data-supplier="cle"] [data-copy-field]'); return f ? { tag: f.tagName, text: f.value, readOnly: f.readOnly, sel: f.selectionEnd - f.selectionStart, fields: document.querySelectorAll('[data-copy-field]').length } : null; });
+    t.ok(cp && cp.tag === 'TEXTAREA' && cp.readOnly && cp.text.startsWith('Order from Christmas Lights Etc') && cp.sel === cp.text.length && cp.fields === 1, 'a blocked order list is shown selected in a read-only box (and the link field is gone)');
+    await tap('[data-act="copy-close"]');
+    t.ok(await page.locator('[data-copy-field]').count() === 0, 'Done puts the read-only box away');
+    await page.evaluate(() => { window.__clip.mode = 'ok'; });
+
+    // --- Exports with a supplier chosen: the shopping-list CSV and the PDF report.
+    const bomCsvFile = await clickAndDownload(page, '[data-act="export"][data-kind="csv"]');
+    const bomCsv = csvRows(fs.readFileSync(bomCsvFile, 'utf8').replace(/^﻿/, ''));
+    const col = (n) => bomCsv[0].indexOf(n);
+    t.ok(bomCsv[0].join(',') === 'SKU,Item,Category,Qty,Unit,Unit Price,Line Total,Notes,Supplier,Part number,Price status,Link' &&
+      cle.st.lines.every((l, i) => bomCsv[i + 1][col('Supplier')] === l.supplierName && bomCsv[i + 1][col('Part number')] === (l.supplierSku || '') && bomCsv[i + 1][col('Link')] === (l.url || l.findUrl || '') && bomCsv[i + 1][col('Qty')] === String(l.qty)),
+      'the shopping-list CSV gains Supplier, Part number, Price status and Link columns, filled for every line');
+    await sleep(400);
+    const pdfFile = await clickAndDownload(page, '[data-act="export"][data-kind="pdf"]');
+    const pdfBytes = fs.readFileSync(pdfFile);
+    let pdfText = '';
+    try { pdfText = execFileSync('pdftotext', [pdfFile, '-'], { encoding: 'utf8' }); } catch (e) { pdfText = ''; }
+    const flat = pdfText.replace(/\s+/g, ' ');
+    const cleLines = cle.st.lines.filter((l) => l.supplierId === 'cle');
+    t.ok(flat.includes('Shopping list') && flat.includes('Where to buy') && flat.includes('Christmas Lights Etc') && cleLines.every((l) => flat.includes('Part number ' + l.supplierSku)) && !/\bSKU\b/.test(flat),
+      'the PDF report\'s materials table shows the supplier and part number of every line');
+    t.ok(flat.includes('Prices were last checked on ' + cle.sup.date + '; confirm at checkout.') && flat.includes('Site: ' + cle.sup.url) && flat.includes('Phone ' + cle.sup.wholesale.phone),
+      'the report says when prices were last checked and has a "Where to buy" block with the site and phone');
+    const pdfLinks = Array.from(pdfBytes.toString('latin1').matchAll(/\/S \/URI \/URI \(([^)]*)\)/g)).map((m) => m[1]);
+    t.ok(cleLines.every((l) => pdfLinks.includes(l.url)) && pdfLinks.every((u) => cle.sup.hosts.includes(hostOf(u))), 'every product link is in the PDF as a link (' + pdfLinks.length + ' links, all on the supplier\'s site)');
+    await sleep(400);
+
+    // --- Installer mode: the cost-basis switch, and a customer quote with no supplier in it.
+    t.ok(await page.locator('[data-act="cost-basis"]').count() === 0, 'the cost-basis switch is not shown to a homeowner');
+    await page.locator('[data-act="quote-toggle"]').evaluate((el) => el.click());
+    await sleep(400);
+    const basis0 = await page.evaluate(() => Array.from(document.querySelectorAll('[data-act="cost-basis"]')).map((b) => b.dataset.basis + ':' + b.getAttribute('aria-pressed') + ':' + b.textContent).join(' | '));
+    t.ok(/^bought:true:Everything ordered/.test(basis0) && / \| used:false:Only what is used/.test(basis0) && /Charge this job for/.test(await page.locator('.cost-basis').innerText()), 'installer mode shows "Charge this job for: everything ordered / only what is used"');
+    await scrollTo('.cost-basis', 'center');
+    await shot('step6-cle-installer');
+    await tap('[data-act="cost-basis"][data-basis="used"]');
+    const usedSt = await state();
+    const toOrder = await page.evaluate(() => (document.querySelector('[data-key="to-order"]') || {}).textContent || '');
+    const buyAll = usedSt.lines.reduce((a, l) => a + l.buyTotal, 0);
+    t.ok(usedSt.buying.costBasis === 'used' && usedSt.undoLabel === 'Change what the job is charged for' && usedSt.subtotal < cle.st.subtotal && usedSt.quoteMaterials === usedSt.subtotal &&
+      toOrder.includes('$' + buyAll.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')),
+      '"Only what is used" lowers the job\'s materials ($' + cle.st.subtotal + ' -> $' + usedSt.subtotal + ') and still shows what to order (' + toOrder.replace(/\s+/g, ' ') + ')');
+    const usedRows = await bomRows();
+    t.ok(usedRows.filter((r) => /the whole order costs \$/.test(r.use)).length === usedSt.lines.filter((l) => l.usedQty < l.qty).length, 'each row charged by its share also says what the whole order costs');
+    const quoteFile = await clickAndDownload(page, '[data-act="export"][data-kind="quote"]');
+    const quoteBytes = fs.readFileSync(quoteFile).toString('latin1');
+    let quoteText = '';
+    try { quoteText = execFileSync('pdftotext', [quoteFile, '-'], { encoding: 'utf8' }); } catch (e) { quoteText = ''; }
+    const leaks = [];
+    for (const hay of [quoteBytes, quoteText]) {
+      for (const word of ['Christmas Lights Etc', '1000Bulbs', 'christmaslightsetc', '1000bulbs.com', 'Part number', 'part number', 'Any store', cle.sup.wholesale.phone, 'https://', '/Subtype /Link']) if (hay.includes(word)) leaks.push(word);
+      for (const l of usedSt.lines.filter((x) => x.supplierSku)) if (hay.includes(l.supplierSku)) leaks.push(l.supplierSku);
+    }
+    const quoteMoney = quoteText.match(/\$[\d,]+\.\d\d/g) || [];
+    const quoteLines = await page.evaluate(() => window.LightPlanApp.store.plan().quote.lines.map((l) => '$' + l.amount.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')));
+    t.ok(/QUOTE/.test(quoteText) && leaks.length === 0 && quoteMoney.length >= quoteLines.length && quoteMoney.every((m) => quoteLines.includes(m)),
+      'the customer quote PDF has no supplier name, part number, link or supplier unit price' + (leaks.length ? ' (found: ' + leaks.join(', ') + ')' : ''));
+    await sleep(400);
+    // Back to "everything ordered" and out of installer mode, by undo (one step each).
+    await page.click('#btn-undo');
+    await sleep(300);
+    await page.click('#btn-undo');
+    await sleep(300);
+    const afterInstaller = await state();
+    t.ok(!afterInstaller.installer && afterInstaller.buying.costBasis === 'bought' && afterInstaller.subtotal === cle.st.subtotal && afterInstaller.supplierId === 'cle', 'two undos take the cost basis and installer mode back');
+
+    // --- A run can use another supplier's product: it then goes on that supplier's order sheet.
+    await goStep(4);
+    const roofRun = cle.st.runs.find((r) => r.kind === 'bulk');
+    const otherId = await page.evaluate((fid) => {
+      const sel = document.querySelector('select[data-act="run-product"][data-id="' + fid + '"]');
+      const g = Array.from(sel.querySelectorAll('optgroup')).find((x) => x.label === '1000Bulbs');
+      return Array.from(g.querySelectorAll('option')).find((o) => /part number/.test(o.textContent)).value;
+    }, roofRun.featureId);
+    await page.locator('select[data-act="run-product"][data-id="' + roofRun.featureId + '"]').selectOption(otherId);
+    await sleep(500);
+    const mixed = await state();
+    const mixedRun = mixed.runs.find((r) => r.featureId === roofRun.featureId);
+    t.ok(mixedRun.productId === otherId && !mixedRun.auto && mixed.supplierId === 'cle' && mixed.lines.some((l) => l.supplierId === '1000bulbs'), 'picking a 1000Bulbs product for one run keeps it while the rest stay with Christmas Lights Etc');
+    await goStep(6);
+    const mixedSheets = await page.evaluate(() => Array.from(document.querySelectorAll('.order-card')).map((c) => c.getAttribute('data-supplier')).join(','));
+    t.ok(mixedSheets === 'cle,1000bulbs,generic', 'the order sheets then list both suppliers and any store (' + mixedSheets + ')');
+    await page.click('#btn-undo');
+    await sleep(300);
+    t.ok(sameLines((await state()).lines, cle.st.lines), 'undo puts the run back on Auto');
+
+    // --- 1000Bulbs.
+    const tb = await checkSupplier('1000bulbs', base);
+    t.ok(tb.st.subtotal !== cle.st.subtotal && tb.st.lines.every((l) => l.supplierId !== 'cle'), 'switching supplier re-prices the plan with the new supplier\'s products only');
+
+    // --- Ready-made strings instead of cut-to-length.
+    await goStep(4);
+    await tap('[data-act="buy-style"][data-style="strings"]');
+    const strings = await state();
+    const stringCards = await runCards();
+    const stringCard = stringCards.find((c) => c.featureId === roofRun.featureId);
+    t.ok(strings.buying.style === 'strings' && strings.undoLabel === 'Change how C7 and C9 are bought' && !strings.runs.some((r) => r.kind === 'bulk') && strings.runs.find((r) => r.featureId === roofRun.featureId).supplierId === '1000bulbs' &&
+      strings.lines.every((l) => l.usedQty === l.qty), '"Ready-made strings" swaps every cut-to-length run for a ready-made string from the same supplier, with nothing bought by the spool');
+    t.ok(stringCard.info && stringCard.info.kind !== 'bulk' && /part number \S+/.test(stringCard.info.head) && stringCard.info.links[0].text === 'Open at 1000Bulbs' && hostOf(stringCard.info.links[0].href) === 'www.1000bulbs.com' &&
+      await page.locator('[data-act="buy-style"][data-style="strings"]').getAttribute('aria-pressed') === 'true', 'the run\'s card now shows the string\'s part number and "Open at 1000Bulbs"');
+    await scrollTo('.run-card');
+    await shot('step4-1000bulbs-strings');
+
+    // --- Override a price: the line becomes "your price"; undo brings the supplier's price and date back.
+    await goStep(6);
+    const target = strings.lines.find((l) => l.supplierId === '1000bulbs' && l.priceStatus === 'verified');
+    const input = page.locator('.bom-row[data-sku="' + target.sku + '"] [data-act="price"]');
+    await input.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    const myPrice = Math.round((target.unitPrice * 0.8) * 100) / 100;
+    await input.fill(String(myPrice));
+    await input.press('Enter');
+    await input.evaluate((el) => el.blur());
+    await sleep(450);
+    const priced = await state();
+    const pl = priced.lines.find((l) => l.sku === target.sku);
+    const pr = (await bomRows()).find((r) => r.sku === target.sku);
+    t.ok(priced.overrides[target.sku] === myPrice && pl.unitPrice === myPrice && pl.priceStatus === 'yours' && pl.priceAsOf === null && pr.badge === 'your price' && pr.status === 'yours' &&
+      Math.abs(priced.subtotal - (strings.subtotal - target.lineTotal + pl.lineTotal)) < 0.006, 'a typed price is kept by the line\'s key and flips its status to "your price" ($' + target.unitPrice + ' -> $' + myPrice + ')');
+    await scrollTo('.bom-row[data-sku="' + target.sku + '"]', 'center');
+    await shot('step6-1000bulbs-your-price');
+    await page.click('#btn-undo');
+    await sleep(350);
+    const unpriced = await state();
+    const ur = (await bomRows()).find((r) => r.sku === target.sku);
+    t.ok(Object.keys(unpriced.overrides).length === 0 && sameLines(unpriced.lines, strings.lines) && ur.badge === 'as of ' + tb.sup.date + ' · checked', 'undo takes the price back to the supplier\'s, with its date');
+    await page.click('#btn-undo');
+    await sleep(350);
+    const unstyled = await state();
+    t.ok(unstyled.buying.style === 'bulk' && sameLines(unstyled.lines, tb.st.lines) && unstyled.config === null, 'a second undo goes back to cut-to-length wire and bulbs');
+
+    // --- Back to Any store: the original plan, exactly.
+    await goStep(4);
+    await tap('[data-act="supplier"][data-id="generic"]');
+    const back = await state();
+    t.ok(back.supplierId === null && back.libSupplier === 'generic' && back.undoLabel === 'Buy from any store', 'Any store clears the supplier (' + back.undoLabel + ')');
+    t.ok(back.subtotal === base.subtotal && back.cost === base.cost && back.watts === base.watts && JSON.stringify(back.lines) === JSON.stringify(base.lines) && JSON.stringify(back.runs) === JSON.stringify(base.runs),
+      'back at Any store the totals, every line and every run are exactly the original ($' + base.subtotal + ', ' + base.watts + ' W)');
+    t.ok(await page.locator('#panel-root a').count() === 0 && await page.locator('[data-act="buy-style"]').count() === 0, 'and the links and the C7/C9 choice are gone again');
+
+    // --- Reload keeps the choice.
+    await tap('[data-act="supplier"][data-id="cle"]');
+    await tap('[data-act="buy-style"][data-style="strings"]');
+    const chosen = await state();
+    await sleep(1000); // autosave is debounced (400 ms)
+    await page.reload();
+    await waitForApp(page);
+    const reloaded = await state();
+    t.ok(reloaded.supplierId === 'cle' && reloaded.buying.style === 'strings' && reloaded.subtotal === chosen.subtotal && sameLines(reloaded.lines, chosen.lines), 'a reload keeps the supplier and how C7 and C9 are bought ($' + reloaded.subtotal + ')');
+    await goStep(4);
+    const reChips = await page.evaluate(() => ({
+      sup: (document.querySelector('[data-act="supplier"][aria-pressed="true"]') || {}).textContent, style: (document.querySelector('[data-act="buy-style"][aria-pressed="true"]') || { dataset: {} }).dataset.style,
+      card: !!document.querySelector('.sup-card[data-supplier="cle"]'),
+    }));
+    t.ok(reChips.sup === 'Christmas Lights Etc' && reChips.style === 'strings' && reChips.card, 'after the reload the Design step shows Christmas Lights Etc and ready-made strings as chosen');
+    const opened = await page.evaluate(() => window.__opened);
+    t.ok(opened === 0 && fetched.length === 0, 'no window was opened by code and nothing was fetched from a supplier' + (fetched.length ? ' (' + fetched.slice(0, 2).join(', ') + ')' : ''));
+  } catch (e) {
+    t.ok(false, 'unexpected error: ' + (e && e.message ? e.message.split('\n')[0] : e));
+    await shot('error').catch(() => {});
+  }
+  t.ok(errors.length === 0, 'no console or page errors' + (errors.length ? ': ' + errors.slice(0, 5).join(' | ') : ''));
+  await context.close();
+  return t;
+}
+
 // ------------------------------------------------------------------ main
 
 const browser = await chromium.launch();
@@ -1920,6 +2397,7 @@ for (const name of selected) {
   if (name === 'inputs') { results.push(await runPlanningInputs(browser)); continue; }
   if (name === 'measure') { results.push(await runMeasureChecks(browser)); continue; }
   if (name === 'v11-phone' || name === 'v11-desktop') { results.push(await runPhase11(browser, name)); continue; }
+  if (name === 'sup-phone' || name === 'sup-desktop') { results.push(await runSuppliers(browser, name)); continue; }
   if (!PASSES[name]) { console.error('unknown pass ' + name); process.exitCode = 2; continue; }
   results.push(await runPass(browser, name));
 }

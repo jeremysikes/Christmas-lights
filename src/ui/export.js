@@ -40,8 +40,20 @@
  *    gaugeText(awg) → "16-gauge". roughMeasurements(plan, project) lists the Low-confidence items with the range
  *    each could be ("about 38 ft, could be 33 to 44 ft"); the report prints them under the measurements table and
  *    marks the materials cost "rough", and the Review step shows the same list with tape-measure fields.
+ *  - Suppliers (SPEC §8.3, §8.5), in plain words and shared by the Design and Review steps and the PDF report:
+ *    supplierFacts(library, id) (site, phone, wholesale facts, the free-shipping line when its note has one),
+ *    supplierItems(library, id, overrides) (everything on file that can be ordered there), priceStatusLabel(item)
+ *    ("as of Nov 11, 2026 · checked" / "… · check price" / "your price" / "typical price"), priceSentence(items)
+ *    (the honest sentence about a set of prices), orderUseText(line, library) ("1 spool (1,000 ft): 143 ft used,
+ *    857 ft left"), describeBulk(product) (what a cut-to-length product is ordered as), whereToBuy(plan) (one entry
+ *    per order sheet) and orderSheetText(entry). exportOrderCsv(store, supplierId) saves one supplier's order sheet.
+ *  - The report's materials table shows the supplier and part number of each line, the sentence "Prices were last
+ *    checked on ...; confirm at checkout." under it, and a "Where to buy" block per supplier with its site, phone
+ *    and every product link. Its heading is "Shopping list" ("Bill of materials" in installer mode). The customer
+ *    quote never shows a supplier, a part number or a unit price.
+ *  - PdfDoc.link(x, y, w, h, url) makes an area of the page open a web address (https only).
  */
-LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModule, schema) {
+LP.define('ui.export', ['catalog', 'bom', 'schema', 'suppliers'], function (catalog, bomModule, schema, suppliers) {
   'use strict';
 
   const { FEATURE_TYPES } = catalog;
@@ -404,7 +416,7 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
 
     /** Start a new page and make it current. Returns its index. */
     addPage() {
-      this.pages.push({ ops: [], images: new Set() });
+      this.pages.push({ ops: [], images: new Set(), links: [] });
       this.current = this.pages.length - 1;
       return this.current;
     }
@@ -526,6 +538,17 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
       return { width: W, height: H };
     }
 
+    /**
+     * Make the box with its top-left corner at (x, y) open a web address when it is clicked. Only plain https
+     * addresses in printable ASCII are accepted; anything else is ignored (returns false).
+     */
+    link(x, y, w, h, url) {
+      const u = suppliers.safeUrl(url);
+      if (!u || !/^[\x21-\x7e]+$/.test(u) || !(isNum(x) && isNum(y) && w > 0 && h > 0)) return false;
+      this.page().links.push({ x, y, w, h, url: u });
+      return true;
+    }
+
     /** The finished PDF file. */
     toBytes() {
       if (!this.pages.length) this.addPage();
@@ -569,10 +592,14 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
       this.pages.forEach((pg, i) => {
         const pageNum = pageBase + i * 2;
         const xobjects = Array.from(pg.images).map((im) => '/' + im.name + ' ' + imageNum.get(im) + ' 0 R').join(' ');
+        // Link areas: annotation dictionaries written straight into the page (no border, a URI action each).
+        const annots = arr(pg.links).map((a) => '<< /Type /Annot /Subtype /Link /Rect [' + num(a.x) + ' ' + num(this.flipY(a.y + a.h)) + ' ' +
+          num(a.x + a.w) + ' ' + num(this.flipY(a.y)) + '] /Border [0 0 0] /A << /S /URI /URI ' + pdfString(a.url) + ' >> >>').join(' ');
         startObj(pageNum);
         write('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + num(this.width) + ' ' + num(this.height) + ']' +
           ' /Resources << /Font << /F1 3 0 R /F2 4 0 R >>' + (xobjects ? ' /XObject << ' + xobjects + ' >>' : '') +
-          ' /ProcSet [/PDF /Text /ImageB /ImageC] >> /Contents ' + (pageNum + 1) + ' 0 R >>\nendobj\n');
+          ' /ProcSet [/PDF /Text /ImageB /ImageC] >>' + (annots ? ' /Annots [' + annots + ']' : '') +
+          ' /Contents ' + (pageNum + 1) + ' 0 R >>\nendobj\n');
         const content = asciiBytes(pg.ops.join('\n'));
         startObj(pageNum + 1);
         write('<< /Length ' + content.length + ' >>\nstream\n');
@@ -660,7 +687,7 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     return core ? 'Q-' + core : 'Q-DRAFT';
   }
   function plural(n, one, many) { return formatNumber(n, 0) + ' ' + (n === 1 ? one : many); }
-  const UNIT_WORDS = { string: ['string', 'strings'], net: ['net', 'nets'], set: ['set', 'sets'], foot: ['ft', 'ft'], pack: ['pack', 'packs'], each: ['', ''] };
+  const UNIT_WORDS = { string: ['string', 'strings'], net: ['net', 'nets'], set: ['set', 'sets'], foot: ['ft', 'ft'], pack: ['pack', 'packs'], spool: ['spool', 'spools'], each: ['', ''] };
   function qtyText(qty, unit) {
     if (!isNum(qty)) return '—';
     const w = UNIT_WORDS[unit] || ['', ''];
@@ -896,6 +923,297 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
       out.push(item);
     }
     return out;
+  }
+
+  // ================================================================ suppliers in plain words (SPEC §8.3, §8.5)
+  // The Design step, the Review step and the PDF report all read these, so the screen and the paper say the same.
+  const GENERIC = suppliers.GENERIC_ID;
+  const ANY_STORE = 'Any store';
+  /** The address when it is a plain https link, else null (every link shown or printed goes through this). */
+  const linkOf = (u) => suppliers.safeUrl(u);
+  /** "christmaslightsetc.com" from a link (no https, no www.); '' when it is not a plain https link. */
+  function hostOf(url) {
+    const m = /^https:\/\/([^/:?#]+)/i.exec(linkOf(url) || '');
+    return m ? m[1].toLowerCase().replace(/^www\./, '') : '';
+  }
+  const dateText = (iso) => (typeof iso === 'string' && iso ? suppliers.formatDate(iso) : '');
+  const cents = (v) => (isNum(v) ? Math.round(v * 100) : null);
+
+  /**
+   * The price of a shopping-list line, a product or a part in a few honest words.
+   * → { kind, text, date }
+   *   'checked'  "as of Nov 11, 2026 · checked"      read on the supplier's own page that day (verified)
+   *   'check'    "as of Nov 11, 2026 · check price"  seen in a listing only, not confirmed (observed)
+   *   'yours'    "your price"                        typed in by the user
+   *   'typical'  "typical price"                     any store: a typical retail figure, not one brand
+   */
+  function priceStatusLabel(item) {
+    const it = isObj(item) ? item : {};
+    if (it.priceStatus === 'yours' || it.overridden === true) return { kind: 'yours', text: 'your price', date: '' };
+    const date = dateText(it.priceAsOf);
+    if (it.priceStatus === 'verified') return { kind: 'checked', text: (date ? 'as of ' + date + ' · ' : '') + 'checked', date };
+    if (it.priceStatus === 'observed') return { kind: 'check', text: (date ? 'as of ' + date + ' · ' : '') + 'check price', date };
+    return { kind: 'typical', text: 'typical price', date: '' };
+  }
+
+  /**
+   * One honest sentence (or two) about a set of prices, built from their dates and statuses: "Prices are as of
+   * Nov 11, 2026: 27 checked on the supplier's page, 4 seen in a listing, not confirmed. Your account price may be
+   * lower: edit any price." items: BOM lines, order-sheet lines, products or parts. opts.account: false leaves the
+   * account sentence out (for a card that sits under one that already says it).
+   */
+  function priceSentence(items, opts) {
+    let checked = 0, listed = 0, yours = 0, typical = 0;
+    const dates = [];
+    for (const it of arr(items)) {
+      if (!isObj(it)) continue;
+      const kind = priceStatusLabel(it).kind;
+      if (kind === 'checked') checked += 1; else if (kind === 'check') listed += 1; else if (kind === 'yours') yours += 1; else typical += 1;
+      if ((kind === 'checked' || kind === 'check') && typeof it.priceAsOf === 'string' && it.priceAsOf) dates.push(it.priceAsOf);
+    }
+    const out = [];
+    const dated = checked + listed;
+    if (dated) {
+      const when = dates.length ? 'as of ' + dateText(dates.sort()[0]) : 'not dated';
+      if (!listed) out.push('Prices are ' + when + ', checked on the supplier\'s page.');
+      else if (!checked) out.push('Prices are ' + when + ', seen in a listing, not confirmed.');
+      else out.push('Prices are ' + when + ': ' + formatNumber(checked, 0) + ' checked on the supplier\'s page, ' + formatNumber(listed, 0) + ' seen in a listing, not confirmed.');
+    }
+    if (yours) out.push(dated || typical ? formatNumber(yours, 0) + (yours === 1 ? ' is your own price.' : ' are your own prices.') : 'These are your own prices.');
+    if (typical && !dated) out.push('Typical store prices, not one brand: check the price where you buy.');
+    else if (typical) out.push(typical === 1 ? 'The 1 any-store item is a typical price.' : 'The ' + formatNumber(typical, 0) + ' any-store items are typical prices.');
+    if (dated && !(isObj(opts) && opts.account === false)) out.push('Your account price may be lower: edit any price.');
+    return out.join(' ');
+  }
+
+  /** The sentence of a supplier's note that says when an order ships free; '' when the note names no such offer. */
+  function freeShippingLine(note) {
+    const sentences = String(note || '').match(/[^.!?]+[.!?]+(?=\s|$)|[^.!?]+$/g) || [];
+    return sentences.map((x) => x.trim()).find((x) => /\bships? free\b|\bfree shipping (on|with|for|over|at)\b/i.test(x)) || '';
+  }
+
+  /**
+   * What the app holds about a supplier, ready to show. Nothing here is made up: a field the supplier map does not
+   * have comes back empty. → { id, generic, name, url, host, notes, priceAsOf, phone, freeShipping,
+   *   wholesale: { name, url | null, phone, email, note } | null,
+   *   searchPrefix (the start of its search links, '' when it has no search), searchChecked (true only when the
+   *   search address was tested), searchNote }
+   */
+  function supplierFacts(library, supplierId) {
+    const list = isObj(library) && Array.isArray(library.suppliers) && library.suppliers.length ? library.suppliers.filter(isObj) : suppliers.SUPPLIERS;
+    const id = suppliers.knownSupplierId(supplierId);
+    const s = list.find((x) => x.id === id) || suppliers.getSupplier(id) || suppliers.getSupplier(GENERIC) || {};
+    const w = isObj(s.wholesale) ? s.wholesale : null;
+    const note = w ? str(w.note) : '';
+    return {
+      id: s.id || GENERIC, generic: (s.id || GENERIC) === GENERIC, name: str(s.name) || ANY_STORE, url: linkOf(s.url), host: hostOf(s.url),
+      notes: str(s.notes), priceAsOf: typeof s.priceAsOf === 'string' ? s.priceAsOf : null,
+      phone: w ? str(w.phone) : '', freeShipping: freeShippingLine(note),
+      wholesale: w ? { name: str(w.name), url: linkOf(w.url), phone: str(w.phone), email: str(w.email), note } : null,
+      searchPrefix: typeof s.searchUrlTemplate === 'string' && s.searchUrlTemplate.indexOf('{query}') > 0 ? s.searchUrlTemplate.split('{query}')[0] : '',
+      searchChecked: s.searchUrlWorks === true, searchNote: str(s.searchNote),
+    };
+  }
+  /** True when `url` is one of the supplier's search links and that search address was never confirmed to work. */
+  function isUncheckedSearch(facts, url) {
+    return isObj(facts) && !!facts.searchPrefix && !facts.searchChecked && typeof url === 'string' && url.indexOf(facts.searchPrefix) === 0;
+  }
+
+  const partNumber = (o) => (isObj(o) && (typeof o.supplierSku === 'string' || typeof o.supplierSku === 'number') && String(o.supplierSku) ? String(o.supplierSku) : null);
+  /**
+   * The price of a product or part as the plan uses it (the same rule as the shopping list): the user's own price
+   * wins, whether typed on a shopping-list line (overrides, keyed by sku) or edited in the product library, and is
+   * then "your price" with no date. → { price, priceStatus, priceAsOf }
+   */
+  function pricedAs(o, overrides) {
+    const it = isObj(o) ? o : {};
+    const ov = isObj(overrides) && typeof it.sku === 'string' && Object.prototype.hasOwnProperty.call(overrides, it.sku) ? overrides[it.sku] : undefined;
+    const typed = typeof ov === 'string' && ov.trim() !== '' ? Number(ov) : ov;
+    const own = isNum(typed) && typed >= 0;
+    const listed = typeof it.sku === 'string' ? suppliers.catalogPrice(it.sku) : null;
+    const edited = own || (listed !== null && cents(listed) !== cents(it.price));
+    return { price: own ? typed : isNum(it.price) ? it.price : null, priceStatus: edited ? 'yours' : it.priceStatus, priceAsOf: edited ? null : it.priceAsOf || null };
+  }
+
+  /**
+   * Everything on file that can be ordered from a supplier: its ready-made products, the parts of its
+   * cut-to-length products (the kit itself has no part number or page price) and its accessories.
+   * `overrides` (project.pricing.overrides) and an edited price in the product library show as 'yours'.
+   * → [{ sku, supplierSku, name, price, priceStatus, priceAsOf, url, what }]
+   */
+  function supplierItems(library, supplierId, overrides) {
+    const out = [];
+    const seen = new Set();
+    const add = (o, what) => {
+      if (!isObj(o) || typeof o.sku !== 'string' || !o.sku || seen.has(o.sku)) return;
+      seen.add(o.sku);
+      out.push(Object.assign({ sku: o.sku, supplierSku: partNumber(o), name: str(o.name), url: linkOf(o.url), what }, pricedAs(o, overrides)));
+    };
+    for (const p of arr(isObj(library) ? library.products : null)) {
+      if (!isObj(p) || p.supplierId !== supplierId || p.enabled === false) continue;
+      if (p.kind === 'bulk') for (const c of suppliers.componentOffers(p)) add(c.offer, c.part);
+      else add(p, 'product');
+    }
+    const acc = suppliers.SUPPLIER_ACCESSORIES[supplierId];
+    if (isObj(acc)) for (const k of Object.keys(acc)) add(acc[k], 'accessory');
+    return out;
+  }
+
+  /** sku → {part, offer} for every part of the library's cut-to-length products (wire sizes, bulb colours, plugs). */
+  function bulkPartIndex(library) {
+    const map = new Map();
+    for (const p of arr(isObj(library) ? library.products : null)) {
+      if (!isObj(p) || p.kind !== 'bulk' || !isObj(p.components)) continue;
+      for (const c of suppliers.componentOffers(p)) {
+        if (isObj(c.offer) && typeof c.offer.sku === 'string' && !map.has(c.offer.sku)) map.set(c.offer.sku, { part: c.part, offer: c.offer });
+      }
+    }
+    return map;
+  }
+  /**
+   * For a line bought by the spool, box or pack (wire, bulbs and plugs of cut-to-length products): what is ordered
+   * against what this job uses, e.g. "1 spool (1,000 ft): 143 ft used, 857 ft left" or "6 boxes (150 bulbs): 139
+   * used, 11 spare". '' for a line that is used whole. Pass the library, or bulkPartIndex(library) when asking
+   * about many lines.
+   */
+  function orderUseText(line, libraryOrIndex) {
+    const l = isObj(line) ? line : {};
+    if (!(isNum(l.qty) && l.qty > 0 && isNum(l.usedQty) && l.usedQty >= 0 && l.usedQty < l.qty - 1e-9)) return '';
+    const index = libraryOrIndex instanceof Map ? libraryOrIndex : bulkPartIndex(libraryOrIndex);
+    const sku = str(l.sku);
+    let hit = index.get(sku) || null;
+    // A colour the supplier does not list is priced like its default colour: "<default sku>:<colour>".
+    if (!hit) for (const [k, v] of index) if (sku.indexOf(k + ':') === 0) { hit = v; break; }
+    const n = (v) => formatNumber(v, 0);
+    const count = (q, one, many) => n(q) + ' ' + (Math.abs(q - 1) < 1e-9 ? one : many);
+    const name = hit ? str(hit.offer.name) : '';
+    if (hit && hit.part === 'wire') {
+      const each = isNum(hit.offer.lengthFt) && hit.offer.lengthFt > 0 ? hit.offer.lengthFt : hit.offer.spoolFt;
+      if (isNum(each) && each > 0) {
+        const bought = l.qty * each;
+        const used = Math.min(bought, Math.round(l.usedQty * each));
+        const spool = l.unit === 'spool' || /\bspool\b/i.test(name);
+        return count(l.qty, spool ? 'spool' : 'length', spool ? 'spools' : 'lengths') + ' (' + n(bought) + ' ft): ' + n(used) + ' ft used, ' + n(bought - used) + ' ft left';
+      }
+    }
+    if (hit && isNum(hit.offer.packQty) && hit.offer.packQty > 0) {
+      const bought = l.qty * hit.offer.packQty;
+      const used = Math.min(bought, Math.round(l.usedQty * hit.offer.packQty));
+      const box = /\bbox of\b/i.test(name);
+      return count(l.qty, box ? 'box' : 'pack', box ? 'boxes' : 'packs') + ' (' + n(bought) + ' ' + (hit.part === 'bulb' ? 'bulbs' : 'plugs') + '): ' +
+        n(used) + ' used, ' + n(bought - used) + ' spare';
+    }
+    // A part the library does not describe: say the share in plain words.
+    return n(l.qty) + ' ordered: about ' + n((l.usedQty / l.qty) * 100) + '% used on this job';
+  }
+
+  /**
+   * A cut-to-length (bulk) product in plain words, for its card in the Design step. null when it is not one.
+   * → { summary: 'Ordered as parts: socket wire by the spool or as a ready-made length, bulbs in boxes of 25 by
+   *     colour, and a male and a female slide-on plug for every length you cut.',
+   *     limit: 'One cord can feed at most 250 ft of this wire or 250 bulbs, whichever comes first.',
+   *     perFoot: 'about $1.61 per ft with bulbs', prices: (priceSentence of the parts, no account sentence),
+   *     statuses: [{ kind, text }] (the same in a few words: 'all 12 parts as of Nov 11, 2026 · checked', '1 part: check price'),
+   *     parts: [{ group: 'wire' | 'bulb' | 'plug', label, sku, name, supplierSku, price, url, status, priceStatus, priceAsOf, note }] }
+   * The kit itself has no part number and no page price, so only its parts carry a status; `overrides`
+   * (project.pricing.overrides) shows a part whose price the user typed as "your price".
+   */
+  function describeBulk(product, overrides) {
+    const p = isObj(product) ? product : {};
+    const c = p.kind === 'bulk' && isObj(p.components) ? p.components : null;
+    if (!c || !isObj(c.wire) || !isObj(c.bulb)) return null;
+    const n = (v) => formatNumber(v, 0);
+    const parts = [];
+    const add = (group, label, o) => {
+      if (!isObj(o)) return null;
+      const priced = pricedAs(o, overrides);
+      const part = Object.assign({ group, label, sku: str(o.sku), name: str(o.name), supplierSku: partNumber(o), url: linkOf(o.url), note: str(o.notes) }, priced);
+      part.status = priceStatusLabel(part);
+      parts.push(part);
+      return part;
+    };
+    let ready = false;
+    const spool = isNum(c.wire.spoolFt) && c.wire.spoolFt > 0 ? add('wire', n(c.wire.spoolFt) + ' ft spool', c.wire) : null;
+    for (const s of arr(c.wire.sizes)) {
+      if (!isObj(s) || !isNum(s.lengthFt)) continue;
+      const made = !!s.plugsIncluded;
+      if (made) ready = true;
+      add('wire', n(s.lengthFt) + (made ? ' ft ready-made length' : ' ft spool'), s);
+    }
+    const variants = isObj(c.bulb.variants) ? c.bulb.variants : {};
+    const packQty = isNum(c.bulb.packQty) && c.bulb.packQty > 0 ? c.bulb.packQty : 25;
+    const box = /\bbox of\b/i.test(str(c.bulb.name) + ' ' + (isObj(variants[c.bulb.defaultVariant]) ? str(variants[c.bulb.defaultVariant].name) : ''));
+    const keys = Object.keys(variants).sort((a, b) => {
+      const ia = suppliers.VARIANT_ORDER.indexOf(a), ib = suppliers.VARIANT_ORDER.indexOf(b);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+    });
+    let defBulb = null;
+    for (const k of keys) {
+      const part = add('bulb', (suppliers.VARIANT_LABELS[k] || k) + ' bulbs, ' + (box ? 'box' : 'pack') + ' of ' + n(packQty), variants[k]);
+      if (k === c.bulb.defaultVariant) defBulb = part;
+    }
+    const plugPack = (o) => (isObj(o) && isNum(o.packQty) && o.packQty > 1 ? ', pack of ' + n(o.packQty) : '');
+    add('plug', 'Male slide-on plugs' + plugPack(c.plugMale), c.plugMale);
+    add('plug', 'Female slide-on plugs' + plugPack(c.plugFemale), c.plugFemale);
+    const maxFt = isNum(p.maxRunFt) && p.maxRunFt > 0 ? p.maxRunFt : isNum(p.maxEndToEnd) ? p.maxEndToEnd : null;
+    const maxBulbs = isNum(p.maxBulbsPerRun) && p.maxBulbsPerRun > 0 ? p.maxBulbsPerRun : null;
+    const limits = [maxFt ? n(maxFt) + ' ft of this wire' : null, maxBulbs ? n(maxBulbs) + ' bulbs' : null].filter(Boolean);
+    // Per foot, from the whole spool and the default bulbs at the prices the plan uses: a guide, never a page price.
+    const spacing = isNum(p.bulbSpacingIn) && p.bulbSpacingIn > 0 ? p.bulbSpacingIn : 12;
+    const perFt = spool && defBulb && isNum(spool.price) && isNum(defBulb.price) ? spool.price / c.wire.spoolFt + (12 / spacing) * defBulb.price / packQty : isNum(p.price) ? p.price : null;
+    // The statuses of the parts in a few words each, for the small labels on the card.
+    const count = { checked: 0, check: 0, yours: 0, typical: 0 };
+    const dates = [];
+    for (const part of parts) {
+      count[part.status.kind] += 1;
+      if (part.priceAsOf && (part.status.kind === 'checked' || part.status.kind === 'check')) dates.push(part.priceAsOf);
+    }
+    const when = dates.length ? ' as of ' + dateText(dates.sort()[0]) : '';
+    const some = (k, one, many) => (count[k] === 1 ? one : n(count[k]) + ' ' + many);
+    const statuses = [];
+    if (count.checked && count.checked === parts.length) statuses.push({ kind: 'checked', text: 'all ' + n(parts.length) + ' parts' + when + ' · checked' });
+    else if (count.checked) statuses.push({ kind: 'checked', text: some('checked', '1 part', 'parts') + when + ' · checked' });
+    if (count.check) statuses.push({ kind: 'check', text: some('check', '1 part', 'parts') + ': check price' });
+    if (count.yours) statuses.push({ kind: 'yours', text: some('yours', '1 part', 'parts') + ' at your price' });
+    if (count.typical) statuses.push({ kind: 'typical', text: some('typical', '1 part', 'parts') + ' at a typical price' });
+    return {
+      summary: 'Ordered as parts: socket wire ' + (ready ? 'by the spool or as a ready-made length' : 'by the spool') + ', bulbs in ' + (box ? 'boxes' : 'packs') + ' of ' +
+        n(packQty) + ' by colour, and a male and a female slide-on plug for every length you cut.',
+      limit: limits.length ? 'One cord can feed at most ' + limits.join(' or ') + (limits.length > 1 ? ', whichever comes first.' : '.') : '',
+      perFoot: perFt !== null ? 'about ' + formatMoney(perFt) + ' per ft with bulbs' : '',
+      prices: priceSentence(parts, { account: false }),
+      statuses,
+      parts,
+    };
+  }
+
+  /**
+   * Who to order from: one entry per order sheet (bom.orderSheets, suppliers first, then "Any store") with the
+   * supplier's facts, its lines and the sentence about its prices.
+   * → [supplierFacts + { supplierId (the sheet's own), name, lines, subtotal, sentence, sheet }]
+   */
+  function whereToBuy(plan) {
+    const p = isObj(plan) ? plan : {};
+    const lib = isObj(p.library) ? p.library : null;
+    let sheets = [];
+    try { sheets = bomModule.orderSheets(p.bom, lib); } catch (e) { sheets = []; }
+    return arr(sheets).filter(isObj).map((sheet) => {
+      const facts = supplierFacts(lib, sheet.supplierId);
+      const lines = arr(sheet.lines).filter(isObj);
+      return Object.assign(facts, {
+        supplierId: typeof sheet.supplierId === 'string' && sheet.supplierId ? sheet.supplierId : GENERIC,
+        name: str(sheet.supplierName) || facts.name, lines, subtotal: isNum(sheet.subtotal) ? sheet.subtotal : 0, sentence: priceSentence(lines), sheet,
+      });
+    });
+  }
+
+  /** One order sheet as plain text to paste into an email or a note: the list, then the phone and free-shipping line when known. */
+  function orderSheetText(entry) {
+    const e = isObj(entry) ? entry : {};
+    const out = [bomModule.orderSheetToText(e.sheet)];
+    if (str(e.phone)) out.push('Phone: ' + e.phone);
+    if (str(e.freeShipping)) out.push(e.freeShipping);
+    return out.join('\n');
   }
 
   // ================================================================ page layout
@@ -1251,28 +1569,129 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     L.y += 8;
   }
 
-  function reportBom(L, parts) {
-    heading(L, 'Bill of materials', 70);
+  /**
+   * The materials table: what to buy, from whom (supplier, part number, how fresh the price is), how many and what
+   * it costs. Headed "Shopping list" for a homeowner and "Bill of materials" in installer mode.
+   */
+  function reportBom(L, parts, project) {
+    const installer = isObj(project) && isObj(project.quote) && project.quote.enabled === true;
+    heading(L, installer ? 'Bill of materials' : 'Shopping list', 70);
     let edited = false;
+    let shares = false;
     const rows = parts.bom.lines.map((l) => {
       if (l.overridden) edited = true;
+      // With the cost basis "only what is used", a spool, box or pack is costed for the share this job uses.
+      const share = isNum(l.buyTotal) && isNum(l.lineTotal) && Math.abs(l.buyTotal - l.lineTotal) > 0.004;
+      if (share) shares = true;
+      const partNo = str(l.supplierSku) ? 'Part number ' + str(l.supplierSku) : '';
       return [
         { text: str(l.name) || str(l.sku) || 'Item', sub: str(l.notes) || null },
-        { text: str(l.sku), color: C.muted },
+        { text: str(l.supplierName) || ANY_STORE, sub: [partNo, priceStatusLabel(l).text].filter(Boolean).join('\n') },
         qtyText(l.qty, l.unit),
         formatMoney(l.unitPrice) + (l.overridden ? '*' : ''),
-        formatMoney(l.lineTotal),
+        { text: formatMoney(l.lineTotal), sub: share ? 'to order: ' + formatMoney(l.buyTotal) : null },
       ];
     });
     if (rows.length) rows.push({ style: 'total', cells: ['Subtotal', '', '', '', formatMoney(parts.bom.subtotal)] });
     table(L, [
-      { title: 'Item', w: 240 },
-      { title: 'SKU', w: 82 },
-      { title: 'Qty', w: 66, align: 'right' },
-      { title: 'Unit price', w: 68, align: 'right' },
-      { title: 'Line total', w: 76, align: 'right' },
-    ], rows, { empty: 'Nothing to buy yet.', after: edited ? 4 : 12 });
-    if (edited) paragraph(L, '* Unit price edited to match your store.', { size: 7.5, color: C.muted, after: 10 });
+      { title: 'Item', w: 206 },
+      { title: 'Where to buy', w: 118 },
+      { title: 'Qty', w: 58, align: 'right' },
+      { title: 'Unit price', w: 66, align: 'right' },
+      { title: 'Line total', w: 84, align: 'right' },
+    ], rows, { empty: 'Nothing to buy yet.', after: 4 });
+    if (edited) paragraph(L, '* Unit price edited to match your store.', { size: 7.5, color: C.muted, after: 2 });
+    if (shares) paragraph(L, 'Line totals count only the share of the wire, bulbs and plugs that this job uses; "to order" is what the whole spool, box or pack costs.', { size: 7.5, color: C.muted, after: 2 });
+    let note = '';
+    try { note = bomModule.priceNote(parts.bom); } catch (e) { note = ''; }
+    if (note) paragraph(L, note, { size: 8.5, color: C.ink, after: 2 });
+    L.y += 8;
+  }
+
+  const LINK_COLOR = '#1b5fa8';
+  /**
+   * Small text followed by a web address that can be clicked (and still read and typed from paper). The address
+   * sits on the label's line when both fit, else on the line below; a long address wraps and stays one link.
+   */
+  function linkLine(L, label, url, o) {
+    const u = linkOf(url);
+    if (!u) return;
+    const opts = o || {};
+    const size = opts.size || 8;
+    const lh = size * 1.35;
+    const indent = opts.indent || 0;
+    const x = L.left + indent;
+    const width = L.width - indent;
+    const lab = str(label);
+    const labW = lab ? textWidth(lab + ' ', size, false) : 0;
+    const sameLine = labW + textWidth(u, size, false) <= width;
+    const urlLines = L.doc.wrapText(u, size, false, sameLine ? width - labW : width - 8);
+    L.ensure((urlLines.length + (sameLine || !lab ? 0 : 1)) * lh);   // one link stays on one page
+    if (lab) L.doc.text(lab, x, L.y, { size, color: opts.color || C.ink, lineHeight: 1.35, maxWidth: width, maxLines: 1 });
+    if (lab && !sameLine) L.y += lh;
+    const ux = sameLine ? x + labW : x + 8;
+    const top = L.y;
+    let widest = 0;
+    for (const line of urlLines) {
+      widest = Math.max(widest, L.doc.text(line, ux, L.y, { size, color: LINK_COLOR, lineHeight: 1.35 }).width);
+      L.y += lh;
+    }
+    L.doc.link(ux, top, widest, urlLines.length * lh, u);
+    L.y += isNum(opts.after) ? opts.after : 1;
+  }
+
+  /**
+   * "Where to buy": one block per supplier in the plan with its site, phone, what its pages say about business
+   * accounts, the sentence about its prices and the link of every item, so the paper carries what the screen links
+   * to. Left out when the whole plan is for "Any store" (there is nothing to add).
+   */
+  function reportWhereToBuy(L, parts) {
+    const list = whereToBuy(parts.plan).filter((e) => e.lines.length);
+    if (!list.some((e) => !e.generic || e.lines.some((l) => linkOf(l.findUrl)))) return;
+    const chosen = supplierFacts(isObj(parts.plan.library) ? parts.plan.library : null, isObj(parts.plan.library) ? parts.plan.library.supplierId : null);
+    heading(L, 'Where to buy', 70);
+    const doc = L.doc;
+    const short = (t, n) => (t.length > n ? t.slice(0, n - 1).replace(/[\s,]+$/, '') + '…' : t);
+    for (const e of list) {
+      L.ensure(54);
+      doc.text(e.name, L.left, L.y, { size: 10.5, bold: true, color: C.ink, maxWidth: L.width - 170, maxLines: 1 });
+      doc.text(plural(e.lines.length, 'item', 'items') + ' · ' + formatMoney(e.subtotal) + ' to order', L.right, L.y + 1.5, { size: 8.5, color: C.muted, align: 'right' });
+      L.y += 15;
+      if (e.generic) {
+        paragraph(L, 'No part number is on file for these' + (chosen.generic ? '' : ' at ' + chosen.name) + ': any store that carries them will do. ' + e.sentence, { size: 8.5, color: C.ink, after: 3 });
+        // Where the chosen supplier keeps such things: one link per page, with what to look for there.
+        const byLink = new Map();
+        for (const l of e.lines) {
+          const u = linkOf(l.findUrl);
+          if (!u) continue;
+          if (!byLink.has(u)) byLink.set(u, []);
+          byLink.get(u).push(str(l.name) || 'Item');
+        }
+        for (const [u, names] of byLink) {
+          const what = names.length > 2 ? names.slice(0, 2).map((t) => short(t, 44)).join('; ') + ' and ' + formatNumber(names.length - 2, 0) + ' more' : names.map((t) => short(t, 60)).join('; ');
+          linkLine(L, '-  Look for ' + what + ':', u, { size: 7.5, indent: 6, color: C.muted });
+        }
+        if (Array.from(byLink.keys()).some((u) => isUncheckedSearch(chosen, u)) && chosen.searchNote) {
+          paragraph(L, 'About the search links: ' + chosen.searchNote, { size: 7.5, color: C.muted, after: 2 });
+        }
+      } else {
+        if (e.url) linkLine(L, 'Site:', e.url, { size: 8.5 });
+        const w = e.wholesale;
+        const contact = [w && w.phone ? 'Phone ' + w.phone : '', w && w.email ? 'Email ' + w.email : ''].filter(Boolean).join(' · ');
+        if (contact) paragraph(L, (w.name ? w.name + ': ' : '') + contact, { size: 8.5, color: C.ink, after: 1 });
+        if (w && w.url) linkLine(L, 'Business accounts:', w.url, { size: 8.5 });
+        if (w && w.note) paragraph(L, w.note, { size: 7.5, color: C.muted, after: 2 });
+        if (e.sentence) paragraph(L, e.sentence, { size: 8.5, color: C.ink, after: 4 });
+        for (const l of e.lines) {
+          const u = linkOf(l.url) || linkOf(l.findUrl);
+          if (!u) continue;
+          const part = str(l.supplierSku) ? 'Part ' + str(l.supplierSku) + ', ' : '';
+          linkLine(L, '-  ' + part + short(str(l.name) || 'Item', 70) + ':', u, { size: 7.5, indent: 6, color: C.muted });
+        }
+      }
+      L.y += 8;
+    }
+    L.y += 4;
   }
 
   function reportPower(L, project, parts) {
@@ -1482,9 +1901,13 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     const dis = parts.warnings.find((w) => w.code === 'disclaimer' && str(w.message)) ||
       parts.power.warnings.find((w) => w.code === 'disclaimer' && str(w.message));
     const wastePct = isObj(project.settings) && isNum(project.settings.wastePct) ? project.settings.wastePct : 10;
+    const fromSupplier = parts.bom.lines.some((l) => str(l.supplierId));
+    const prices = fromSupplier
+      ? 'Supplier prices are the public prices seen on the date shown, the other prices are typical retail, and all of them change: confirm at checkout. '
+      : 'Prices are typical retail and change often. ';
     const text = 'Lengths are measured from one photo using the reference sizes you entered, so check the low-confidence runs ' +
       'with a tape measure before you buy. Linear runs include ' + formatNumber(wastePct, 0) + '% extra for waste, corners and drops. ' +
-      'Prices are typical retail and change often. ' + (dis ? dis.message : DISCLAIMER_LONG);
+      prices + (dis ? dis.message : DISCLAIMER_LONG);
     const size = 8.5, lh = size * 1.4;
     const lines = L.doc.wrapText(text, size, false, L.width - 24);
     const h = 26 + lines.length * lh;
@@ -1534,7 +1957,8 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     section(L, () => reportSummary(L, parts, fmtLen, roughList.length));
     section(L, () => reportMeasurements(L, project, parts, fmtLen));
     section(L, () => reportRough(L, roughList));
-    section(L, () => reportBom(L, parts));
+    section(L, () => reportBom(L, parts, project));
+    section(L, () => reportWhereToBuy(L, parts));
     section(L, () => reportPower(L, project, parts));
     section(L, () => reportWarnings(L, parts));
     section(L, () => reportChecklist(L, parts));
@@ -1991,6 +2415,20 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     });
   }
 
+  /**
+   * One supplier's order sheet as CSV (Part number, Item, Qty, Unit, Unit Price, Total, Price status, Link, Notes),
+   * through the same save path as the other files. supplierId 'generic' = everything with no supplier.
+   */
+  function exportOrderCsv(store, supplierId) {
+    return Promise.resolve().then(() => {
+      const project = requireProject(store);
+      const entry = whereToBuy(planOf(store)).find((e) => e.supplierId === supplierId && e.lines.length);
+      if (!entry) throw new Error('There is nothing to order from that supplier in this plan.');
+      const csv = bomModule.orderSheetToCsv(entry.sheet);
+      return saveFile(exportFilename(project, 'order-' + slug(entry.name) + '.csv'), '\ufeff' + csv, 'text/csv;charset=utf-8');
+    });
+  }
+
   /** The project as JSON (schema.exportProject) with the plan as `derived` and, by default, the photos. */
   function exportJson(store, opts) {
     const includeImages = !(isObj(opts) && opts.includeImages === false);
@@ -2032,5 +2470,7 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     base64ToBytes, dataUrlToBytes, slug, formatMoney, formatNumber, formatDate, quoteNumber, exportFilename,
     collectImages, HELVETICA_WIDTHS, HELVETICA_BOLD_WIDTHS, _resetDownloads,
     describeCords, gaugeText, roughMeasurements, roughFeet,
+    supplierFacts, supplierItems, priceStatusLabel, priceSentence, orderUseText, bulkPartIndex, describeBulk, whereToBuy, orderSheetText,
+    freeShippingLine, hostOf, isUncheckedSearch, pricedAs, exportOrderCsv,
   };
 });

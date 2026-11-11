@@ -919,6 +919,46 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           d.library.config = catalog.isPlainObject(config) && Object.keys(config).length ? catalog.deepClone(config) : null;
         });
       };
+      /**
+       * "Buy from" (SPEC §8.3): who the project buys from. 'generic' (or null) = any store, which clears the field.
+       * Every run still on Auto then switches to that supplier's product; a run with its own product keeps it.
+       * One undo step. Returns true when the choice changed.
+       */
+      actions.setSupplier = (supplierId) => {
+        const lib = catalog.getLibrary(P());
+        const known = arr(lib.suppliers).find((s) => s && s.id === supplierId) || null;
+        const next = known && known.id !== 'generic' ? known.id : null;
+        return store.commit(next ? 'Buy from ' + known.name : 'Buy from any store', (d) => {
+          if (!catalog.isPlainObject(d.library)) d.library = { products: null, config: null };
+          const cur = typeof d.library.supplierId === 'string' && d.library.supplierId && d.library.supplierId !== 'generic' ? d.library.supplierId : null;
+          if (cur === next) return false;
+          if (next) d.library.supplierId = next; else delete d.library.supplierId;
+          return undefined;
+        });
+      };
+      /**
+       * How the chosen supplier's C7 and C9 is bought and costed (config.buying): {style: 'bulk' | 'strings'} and
+       * {costBasis: 'bought' | 'used'}. Only a value that differs from the default is stored, like every other rule
+       * of thumb. One undo step. Returns true when something changed.
+       */
+      actions.setBuying = (patch) => {
+        if (!catalog.isPlainObject(patch)) return false;
+        const allowed = { style: catalog.BUYING_STYLES, costBasis: catalog.COST_BASES };
+        const def = catalog.DEFAULT_CONFIG.buying;
+        const label = patch.style !== undefined ? 'Change how C7 and C9 are bought' : 'Change what the job is charged for';
+        return store.commit(label, (d) => {
+          if (!catalog.isPlainObject(d.library)) d.library = { products: null, config: null };
+          const cfg = catalog.isPlainObject(d.library.config) ? d.library.config : {};
+          const buying = catalog.isPlainObject(cfg.buying) ? Object.assign({}, cfg.buying) : {};
+          for (const k of Object.keys(allowed)) {
+            if (patch[k] === undefined || !allowed[k].includes(patch[k])) continue;
+            if (patch[k] === def[k]) delete buying[k]; else buying[k] = patch[k];
+          }
+          if (Object.keys(buying).length) cfg.buying = buying; else delete cfg.buying;
+          d.library.config = Object.keys(cfg).length ? cfg : null;
+          return undefined;
+        });
+      };
       actions.updateImageCamera = (imageId, patch) => {
         if (!patch) return;
         store.commit('Change lens', (d) => {
