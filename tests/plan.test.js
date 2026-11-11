@@ -50,7 +50,7 @@ function project(o = {}) {
   }, o);
 }
 const PLAN_KEYS = ['library', 'measured', 'runs', 'power', 'bom', 'quote', 'checklist', 'warnings', 'summary'];
-const SUMMARY_KEYS = ['totalFt', 'totalWithWasteFt', 'byType', 'strings', 'clips', 'cords', 'timers', 'watts', 'amps', 'circuits', 'outletsUsed', 'cost', 'quoteTotal'];
+const SUMMARY_KEYS = ['totalFt', 'totalWithWasteFt', 'byType', 'strings', 'clips', 'cords', 'timers', 'homeRuns', 'jumpers', 'taps', 'watts', 'amps', 'circuits', 'outletsUsed', 'cost', 'quoteTotal'];
 const LEVELS = { danger: 0, warn: 1, info: 2 };
 function assertSorted(warnings) {
   for (let i = 1; i < warnings.length; i++) assert.ok(LEVELS[warnings[i - 1].level] <= LEVELS[warnings[i].level], 'warnings sorted by severity');

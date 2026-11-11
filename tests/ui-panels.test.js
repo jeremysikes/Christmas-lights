@@ -44,13 +44,16 @@ test('warnings are routed to the step that can fix them', () => {
   assert.equal(panels.warningStep({ code: 'internal-error', stage: 'power' }), 5);
   assert.equal(panels.warningStep({ code: 'something-else' }), 6);
   const s = sample.createSample({ traced: true });
-  const samplePlan = plan.computePlan(s.project);
+  const step5Of = (pl) => pl.warnings.filter((w) => (w.level === 'warn' || w.level === 'danger') && panels.warningStep(w) === 5).map((w) => w.code);
+  // Phase 1.1: with runs linked by jumpers, two cords go back to the outlets and none crosses the door or the walkway.
+  assert.deepEqual(step5Of(plan.computePlan(s.project)), [], 'the linked sample plan has no power warnings');
+  // One cord per run (daisy chains off): the cord to the door lights ends just inside the walkway in front of the door.
+  const flat = JSON.parse(JSON.stringify(s.project));
+  flat.library = { products: null, config: { power: { daisyChain: false } } };
+  const samplePlan = plan.computePlan(flat);
   const counts = panels.stepWarnings(samplePlan);
-  const step5 = samplePlan.warnings.filter((w) => (w.level === 'warn' || w.level === 'danger') && panels.warningStep(w) === 5).map((w) => w.code);
-  // The sample's porch outlet feeds 8 cords (more than 6 → many-cords). Along the front wall, the cord to Bush 2
-  // passes the front door and the walkway in front of it, and the cord to the door lights ends just inside the walkway.
-  assert.deepEqual(step5.slice().sort(), ['cord-doorway', 'cord-walkway', 'cord-walkway', 'many-cords'],
-    'the sample has doorway, walkway and many-cords warnings');
+  const step5 = step5Of(samplePlan);
+  assert.deepEqual(step5.slice().sort(), ['cord-walkway'], 'without jumpers the sample has a walkway warning');
   assert.equal(counts[5].count, step5.length);
   assert.equal(counts[5].level, 'warn');
   assert.equal(counts[1].count, 0, 'info and the disclaimer are not counted');

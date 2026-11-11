@@ -467,5 +467,7 @@ test('config clipPackSize and stakes.packSize override the accessory pack sizes 
   assert.match(lineBy(custom, 'clip-allinone').notes, /in packs of 25\./);
   assert.equal(lineBy(custom, 'clip-adhesive').qty, 2, '33 clips in packs of 25');
   assert.equal(lineBy(custom, 'light-stakes').qty, 3, '30 stakes in packs of 10');
-  assert.equal('outletHeightFt' in catalog.DEFAULT_CONFIG.power, false, 'a key nothing reads is not offered for editing');
+  // Phase 1.1: outletHeightFt is read again (the ground under an outlet, for cord routes), so it is back.
+  assert.equal(catalog.DEFAULT_CONFIG.power.outletHeightFt, 1.5);
+  assert.deepEqual(Object.keys(catalog.DEFAULT_CONFIG.power).slice(-8), ['daisyChain', 'jumperMaxFt', 'jumperDirectFt', 'jumperSlackFt', 'outletHeightFt', 'openingMarginFt', 'crossingPenaltyFt', 'tapOutlets']);
 });

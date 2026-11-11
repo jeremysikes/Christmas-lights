@@ -20,6 +20,8 @@
  *    as its own assumed circuit); summary.quoteTotal is null when installer mode is off.
  *  - mergeRunInfo also copies power's per-run string count (quantity, hung, live watts and amps, bulbs and a
  *    detail note), because strings are counted along each chain, not rounded up run by run.
+ *  - Phase 1.1 (SPEC §8.2): mergeRunInfo also copies sourceFeedId (the feed a run is jumpered from), and the
+ *    summary carries homeRuns, jumpers and taps next to cords (which counts every cord piece bought).
  *  - Extra exports: mergeRunInfo, collectWarnings, summarize, emptyMeasured, emptyPower.
  */
 LP.define('plan', ['catalog', 'bom'], function (catalog, bom) {
@@ -61,8 +63,8 @@ LP.define('plan', ['catalog', 'bom'], function (catalog, bom) {
   }
   function emptyPower() {
     return {
-      chains: [], feeds: [], outlets: [], circuits: [], runInfo: {}, cords: [],
-      counts: { timers: 0, splitters: 0, cordCovers: 0, gfciAdapters: 0 }, totals: { watts: 0, amps: 0 }, warnings: [],
+      chains: [], feeds: [], outlets: [], circuits: [], groups: [], runInfo: {}, cords: [],
+      counts: { timers: 0, splitters: 0, cordCovers: 0, gfciAdapters: 0, taps: 0, homeRuns: 0, jumpers: 0 }, totals: { watts: 0, amps: 0 }, warnings: [],
     };
   }
   function emptyQuote() {
@@ -84,7 +86,7 @@ LP.define('plan', ['catalog', 'bom'], function (catalog, bom) {
   function completePower(p) {
     const base = emptyPower();
     const out = Object.assign({}, base, p);
-    for (const k of ['chains', 'feeds', 'outlets', 'circuits', 'cords', 'warnings']) if (!Array.isArray(out[k])) out[k] = [];
+    for (const k of ['chains', 'feeds', 'outlets', 'circuits', 'groups', 'cords', 'warnings']) if (!Array.isArray(out[k])) out[k] = [];
     for (const k of ['runInfo', 'counts', 'totals']) if (!isObj(out[k])) out[k] = base[k];
     return out;
   }
@@ -109,6 +111,8 @@ LP.define('plan', ['catalog', 'bom'], function (catalog, bom) {
       out.feedIds = arr(ri.feedIds).slice();
       out.outletId = ri.outletId == null ? null : ri.outletId;
       out.circuitId = ri.circuitId == null ? null : ri.circuitId;
+      // The feed this run is plugged into with a jumper (null: its cord comes straight from the outlet).
+      if (ri.sourceFeedId !== undefined) out.sourceFeedId = ri.sourceFeedId == null ? null : ri.sourceFeedId;
       // Strings counted along the chain (power.js): the run's share of what is bought, what is hung, and the
       // live load (hung strings only).
       if (Number.isFinite(ri.quantity) && ri.quantity >= 0 && fin(run.quantity, 0) > 0) {
@@ -205,6 +209,11 @@ LP.define('plan', ['catalog', 'bom'], function (catalog, bom) {
       clips: Math.round(clips),
       cords: Math.round(cords),
       timers: Math.round(fin(isObj(pw.counts) ? pw.counts.timers : 0, 0)),
+      // Cords that go back to an outlet, jumper cords between runs, and 3-way taps (SPEC §8.2). Without those
+      // counts (an older power plan) every powered feed is a home run.
+      homeRuns: Math.round(fin(isObj(pw.counts) ? pw.counts.homeRuns : NaN, feeds.length)),
+      jumpers: Math.round(fin(isObj(pw.counts) ? pw.counts.jumpers : 0, 0)),
+      taps: Math.round(fin(isObj(pw.counts) ? pw.counts.taps : 0, 0)),
       watts: round(watts, 2),
       amps: round(amps, 3),
       circuits: circuitKeys.size,

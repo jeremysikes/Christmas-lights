@@ -188,10 +188,11 @@ LP.define('bom', ['catalog'], function (catalog) {
     for (const f of arr(pw.feeds)) {
       if (!isObj(f) || !isObj(f.cord) || !Number.isFinite(f.cord.awg)) continue;
       const where = isObj(f.start) && f.start.label ? 'the ' + f.start.label : 'a feed';
+      const list = f.cord.kind === 'jumper' ? 'jumpers' : 'homes';
       for (const L of arr(f.cord.pieces)) {
         const k = f.cord.awg + '|' + L;
-        if (!cordUses.has(k)) cordUses.set(k, []);
-        if (!cordUses.get(k).includes(where)) cordUses.get(k).push(where);
+        if (!cordUses.has(k)) cordUses.set(k, { homes: [], jumpers: [] });
+        if (!cordUses.get(k)[list].includes(where)) cordUses.get(k)[list].push(where);
       }
     }
     for (const c of arr(pw.cords)) {
@@ -200,8 +201,12 @@ LP.define('bom', ['catalog'], function (catalog) {
       const acc = accessory(sku);
       const table = catalog.CORD_PRICES[c.awg];
       const price = acc ? acc.price : (table && Number.isFinite(table[c.lengthFt]) ? table[c.lengthFt] : null);
-      const uses = cordUses.get(c.awg + '|' + c.lengthFt) || [];
-      const note = (uses.length ? 'For the cord' + (uses.length > 1 ? 's' : '') + ' to ' + listText(shortList(uses, 3)) + '.' : '') +
+      // Cords from an outlet and jumper cords between runs are the same product; the note says which is which.
+      const uses = cordUses.get(c.awg + '|' + c.lengthFt) || { homes: [], jumpers: [] };
+      const parts = [];
+      if (uses.homes.length) parts.push('the cord' + (uses.homes.length > 1 ? 's' : '') + ' to ' + listText(shortList(uses.homes, 3)));
+      if (uses.jumpers.length) parts.push('the jumper' + (uses.jumpers.length > 1 ? 's' : '') + ' to ' + listText(shortList(uses.jumpers, 3)));
+      const note = (parts.length ? 'For ' + parts.join('; ') + '.' : '') +
         (Number.isFinite(price) ? '' : ' No price in the product library.');
       addLine('cords', sku, (acc && acc.name) || `Outdoor extension cord, ${c.awg} AWG, ${c.lengthFt} ft`, Math.round(c.count),
         (acc && acc.unit) || 'each', price, note.trim());
@@ -223,6 +228,9 @@ LP.define('bom', ['catalog'], function (catalog) {
     accLine('power', 'timer-outdoor', counts.timers, timerOutlets.length ? 'One for each outlet used: ' + listText(shortList(timerOutlets, 4)) + '.' : '');
     const splitOutlets = pwOutlets.filter((o) => o.splitters > 0).map(outletLabel);
     accLine('power', 'splitter-3', counts.splitters, splitOutlets.length ? 'For outlets that feed more than one cord: ' + listText(shortList(splitOutlets, 4)) + '.' : '');
+    // 3-way taps where jumper cords branch off a run (SPEC §8.2).
+    const tapAt = arr(pw.feeds).filter((f) => isObj(f) && fin(f.taps, 0) > 0).map((f) => (isObj(f.start) && f.start.label ? 'the ' + f.start.label : 'a run'));
+    accLine('power', 'tap-3way', counts.taps, tapAt.length ? 'Where jumper cords branch off: ' + listText(shortList(tapAt, 4)) + '.' : '');
     const noGfci = used.map((o) => projOutlets.find((p) => p.id === o.id)).filter((o) => o && !hasGfci(o)).map(outletLabel);
     accLine('power', 'gfci-adapter', counts.gfciAdapters, noGfci.length ? 'For outlets without GFCI protection: ' + listText(shortList(noGfci, 4)) + '.' : '');
 
@@ -335,10 +343,11 @@ LP.define('bom', ['catalog'], function (catalog) {
 
   // ================================================================ buildChecklist
   /**
-   * Install checklist: one group per outlet (project order), each in feed order: GFCI adapter → timer →
-   * power stake → for each cord: run the cord → clips/stakes → hang from the start end → continue into
-   * the next chained run → test. Then feeds with no outlet, runs not in the plan, and a final safety
-   * and test group. Returns [{outletId|null, title, steps: [string]}].
+   * Install checklist: one group per outlet (project order): GFCI adapter → timer → power stake → then each
+   * supply tree depth-first (SPEC §8.2): run the cord from the outlet (with its route) → 3-way tap → clips/stakes →
+   * hang from the start end → continue into the next chained run → test → each run jumpered from it, the same
+   * way. Then feeds with no outlet, runs not in the plan, and a final safety and test group.
+   * Returns [{outletId|null, title, steps: [string]}].
    */
   function buildChecklist(project, runs, power, measured) { // eslint-disable-line no-unused-vars
     // `measured` is part of the SPEC signature; every number the checklist needs is already on the runs.
@@ -375,12 +384,52 @@ LP.define('bom', ['catalog'], function (catalog) {
       return (f && f.closed === true) || (t && t.geometry === 'area') ? 'around' : 'along';
     };
 
-    /** Steps for one feed: cord, then each run portion (clips, stakes, hang), then a test. */
+    const feedById = new Map(feeds.map((f) => [f.id, f]));
+    /** Feeds jumpered from `feed`, in the order they were planned. */
+    const childrenOf = (feed) => {
+      const ids = arr(feed.childFeedIds).filter((id) => feedById.has(id));
+      const kids = ids.map((id) => feedById.get(id));
+      for (const f of feeds) if (f.parentFeedId === feed.id && !ids.includes(f.id)) kids.push(f);
+      return kids;
+    };
+    const portOf = (f) => (isObj(f.source) && f.source.port === 'start' ? 'start' : 'end');
+    const tapPer = Math.max(1, Math.round(pos(isObj(config.power) ? config.power.tapOutlets : null) || 3) - 1);
+    /** "the last string of Front eave": the plug at the end of a feed, for the run that hangs off it. */
+    const endOf = (feed) => {
+      const list = portions.get(feed.id) || [];
+      const hung = list.filter((p) => p.units > EPS);
+      const run = (hung.length ? hung[hung.length - 1] : list[list.length - 1] || {}).run;
+      if (!run) return 'the last string of the run before';
+      const noun = run.unit === 'foot' ? 'section' : unitWord(run.unit, 1);
+      return `the last ${noun} of ${run.label || 'the run before'}`;
+    };
+    const startOf = (feed) => (isObj(feed.start) && feed.start.label ? 'the ' + feed.start.label : 'the start of the run');
+    const tapWords = (n) => (n === 1 ? 'a 3-way tap' : `${n} 3-way taps (each plugged into the one before)`);
+    const hangOn = (kids) => {
+      const cords = kids.every((k) => isObj(k.cord));
+      return kids.length === 1 ? (cords ? '1 jumper cord' : '1 more run') : `${kids.length} ${cords ? 'jumper cords' : 'more runs'}`;
+    };
+
+    /**
+     * Steps for one feed: its cord (from the outlet, or a jumper from the run that feeds it), a tap when other runs
+     * branch off where the cord arrives, then each run portion (clips, stakes, hang), a tap on the end plug when
+     * more than one jumper leaves it, and a test.
+     */
     function feedSteps(feed, cordText, timer, prefix) {
       const steps = [prefix + cordText];
+      const jumper = isObj(feed.source) && feed.source.kind === 'feed';
+      const cordName = feed.plugIn ? 'plug' : jumper ? 'jumper cord' : 'cord';
       if (feed.crossesDoorway) {
-        steps.push(`Keep the cord along the bottom of the wall where it passes ${feed.doorway || 'the door'} and lay a cord cover over it there${feed.crossesWalkway ? ' and across the walkway' : ''}.`);
-      } else if (feed.crossesWalkway) steps.push('Lay a cord cover over the cord where it crosses the walkway.');
+        steps.push(`Keep the ${cordName} along the bottom of the wall where it passes ${feed.doorway || 'the door'} and lay a cord cover over it there${feed.crossesWalkway ? ' and across the walkway' : ''}.`);
+      } else if (feed.crossesWalkway) steps.push(`Lay a cord cover over the ${cordName} where it crosses the walkway.`);
+      const kids = childrenOf(feed);
+      const atStart = kids.filter((k) => portOf(k) === 'start'), atEnd = kids.filter((k) => portOf(k) === 'end');
+      if (atStart.length) {
+        const n = Math.ceil(atStart.length / tapPer);
+        const where = feed.plugIn ? `at ${startOf(feed)}` : `into the end of that ${cordName} at ${startOf(feed)}`;
+        steps.push(`Plug ${tapWords(n)} ${where}: the lights and ${hangOn(atStart)} plug into ${n === 1 ? 'it' : 'them'}.`);
+      }
+      const plugInto = atStart.length ? 'the tap' : `the ${cordName}`;
       const list = portions.get(feed.id) || [];
       let stringRun = null; // the run whose last string is the one in hand (a carried-on run starts none)
       list.forEach((p, j) => {
@@ -395,7 +444,9 @@ LP.define('bom', ['catalog'], function (catalog) {
         if (j === 0) {
           const start = feed.start && feed.start.label ? feed.start.label : sideOf(run);
           const toward = feed.start && typeof feed.start.toward === 'string' && feed.start.toward ? `, working toward the ${feed.start.toward}` : '';
-          steps.push(`${verbPhrase(run, what, label, prepOf(run))}, starting at the ${start}${toward}. Plug the first ${noun} into the cord.`);
+          // A run that plugs straight into another one (no jumper cord) was plugged in by the step before.
+          const plugStep = feed.plugIn && !atStart.length ? '' : ` Plug the first ${noun} into ${plugInto}.`;
+          steps.push(`${verbPhrase(run, what, label, prepOf(run))}, starting at the ${start}${toward}.${plugStep}`);
         } else if (!(p.units > EPS) && run.unit !== 'foot') {
           // Strings counted along the chain: the last string of the previous run carries on along this one.
           const prev = stringRun || list[j - 1].run;
@@ -416,9 +467,14 @@ LP.define('bom', ['catalog'], function (catalog) {
         const noun = first && first.unit === 'foot' ? 'ft' : unitWord(first ? first.unit : 'string', n);
         steps.push(`Keep the ${fmtNum(n, 2)} spare ${noun} (bought for waste) to replace a dead one later.`);
       }
+      if (atEnd.length > 1) {
+        const n = Math.ceil((atEnd.length - 1) / tapPer);
+        steps.push(`Plug ${tapWords(n)} into the end of ${endOf(feed)}: ${hangOn(atEnd)} plug into ${n === 1 ? 'it' : 'them'}.`);
+      }
       const strings = list.length && list.every((p) => p.run.unit === 'string') ? list.reduce((s, p) => s + p.units, 0) : null;
-      const lights = strings === null ? 'every light on this cord works'
-        : Math.abs(strings - 1) < EPS ? 'the string on this cord lights' : `all ${fmtNum(strings, 2)} strings on this cord light`;
+      const on = feed.plugIn ? 'run' : 'cord';
+      const lights = strings === null ? `every light on this ${on} works`
+        : Math.abs(strings - 1) < EPS ? `the string on this ${on} lights` : `all ${fmtNum(strings, 2)} strings on this ${on} light`;
       steps.push(timer
         ? `Test: switch the timer on and check that ${lights}. Fix dead bulbs or blown fuses, then switch it off.`
         : `Test: plug the cord in and check that ${lights}. Fix dead bulbs or blown fuses, then unplug it.`);
@@ -442,21 +498,33 @@ LP.define('bom', ['catalog'], function (catalog) {
       const adapter = projOutlets.some((x) => x.id === oid) && !hasGfci(o);
       if (adapter) steps.push(`Plug a portable outdoor GFCI adapter into ${label}.`);
       if (timer) steps.push(`Plug an outdoor timer or smart plug into ${adapter ? 'the GFCI adapter' : label} and leave it switched off while you work.`);
+      // Cords that come back to the outlet (home runs); every other feed hangs off one of them by a jumper.
+      const here = new Set(fs.map((f) => f.id));
+      const homes = fs.filter((f) => !(f.parentFeedId && here.has(f.parentFeedId)));
       const splitters = Math.max(0, Math.round(fin(info.splitters, 0)));
       const per = Math.max(2, Math.round(pos(isObj(config.power) ? config.power.splitterOutlets : null) || 3));
       const into = timer ? 'timer' : 'outlet';
       if (splitters === 1) {
-        steps.push(`Plug an outdoor power stake (${per} outlets each) into the ${into} so it can feed ${fs.length} cords.`);
+        steps.push(`Plug an outdoor power stake (${per} outlets each) into the ${into} so it can feed ${homes.length} cords.`);
       } else if (splitters > 1) {
         // Stakes are chained: the first goes into the timer, each other one into a free socket of the stake before it.
         const sockets = splitters * (per - 1) + 1;
         steps.push(`Plug an outdoor power stake (${per} outlets) into the ${into}, then plug each of the other ${splitters - 1} stakes into a free socket ` +
-          `of the stake before it. The ${splitters} stakes give ${sockets} sockets for the ${fs.length} cords.`);
+          `of the stake before it. The ${splitters} stakes give ${sockets} sockets for the ${homes.length} cords.`);
       }
-      fs.forEach((f, i) => {
-        const prefix = fs.length > 1 ? `Cord ${i + 1} of ${fs.length}: ` : '';
-        steps.push(...feedSteps(f, cordStep(f, label), timer, prefix));
-      });
+      // Depth-first through each supply tree: the cord from the outlet, its lights, then every run jumpered from it.
+      const done = new Set();
+      const visit = (f, text, prefix) => {
+        if (done.has(f.id)) return;
+        done.add(f.id);
+        steps.push(...feedSteps(f, text, timer, prefix));
+        for (const k of childrenOf(f)) {
+          if (!here.has(k.id)) continue;
+          const from = portOf(k) === 'start' ? `the 3-way tap at ${startOf(f)}` : `the end of ${endOf(f)}`;
+          visit(k, jumperStep(k, from, portions.get(k.id) || []), '');
+        }
+      };
+      homes.forEach((f, i) => visit(f, cordStep(f, label), homes.length > 1 ? `Cord ${i + 1} of ${homes.length}: ` : ''));
       if (timer) steps.push(`Set the timer on ${label} to switch the lights on at dusk and off at bedtime.`);
       groups.push({ outletId: oid, title, steps });
     }
@@ -551,13 +619,35 @@ LP.define('bom', ['catalog'], function (catalog) {
     if (isObj(c) && Number.isFinite(c.awg) && arr(c.pieces).length) {
       const pieces = c.pieces.filter((p) => p > 0);
       const need = Number.isFinite(c.lengthFt) ? ` (about ${fmtNum(Math.ceil(c.lengthFt), 0)} ft needed)` : '';
-      if (pieces.length === 1) return `Run a ${fmtNum(pieces[0], 0)} ft, ${c.awg} AWG outdoor extension cord from ${outletLabel} to ${dest}${need}.`;
+      // The way the cord runs (power.js): "down 1.5 ft, 18 ft along the ground, up 8.5 ft beside Window left".
+      const route = typeof c.routeText === 'string' && c.routeText ? `: ${c.routeText}` : '';
+      if (pieces.length === 1) return `Run a ${fmtNum(pieces[0], 0)} ft, ${c.awg} AWG outdoor extension cord from ${outletLabel} to ${dest}${need}${route}.`;
       const sum = pieces.reduce((s, p) => s + p, 0);
       return `Run ${fmtNum(sum, 0)} ft of ${c.awg} AWG outdoor extension cord (${pieces.map((p) => fmtNum(p, 0) + ' ft').join(' + ')}, joined end to end) ` +
-        `from ${outletLabel} to ${dest}${need}. Keep the joints off the ground.`;
+        `from ${outletLabel} to ${dest}${need}${route}. Keep the joints off the ground.`;
     }
     if (feed.cordUnknown) return `Run an outdoor extension cord from ${outletLabel} to ${dest}. Measure that distance on site, because the photo cannot size this cord.`;
     return `Run an outdoor extension cord from ${outletLabel} to ${dest}.`;
+  }
+
+  /** The step that brings power to a feed from the run that feeds it: a jumper cord, or a plug straight into it. */
+  function jumperStep(feed, from, list) {
+    const dest = isObj(feed.start) && feed.start.label ? 'the ' + feed.start.label : 'the start of the run';
+    const c = feed.cord;
+    if (isObj(c) && Number.isFinite(c.awg) && arr(c.pieces).length) {
+      const pieces = c.pieces.filter((p) => p > 0);
+      const need = Number.isFinite(c.lengthFt) ? ` (about ${fmtNum(Math.ceil(c.lengthFt), 0)} ft needed)` : '';
+      const route = typeof c.routeText === 'string' && c.routeText ? `: ${c.routeText}` : '';
+      if (pieces.length === 1) return `From ${from}, run a ${fmtNum(pieces[0], 0)} ft, ${c.awg} AWG jumper cord to ${dest}${need}${route}.`;
+      const sum = pieces.reduce((s, p) => s + p, 0);
+      return `From ${from}, run ${fmtNum(sum, 0)} ft of ${c.awg} AWG jumper cord (${pieces.map((p) => fmtNum(p, 0) + ' ft').join(' + ')}, joined end to end) ` +
+        `to ${dest}${need}${route}. Keep the joints off the ground.`;
+    }
+    const first = list.length ? list[0].run : null;
+    const noun = first && first.unit === 'foot' ? 'section' : unitWord(first ? first.unit : 'string', 1);
+    const what = `the first ${noun} of ${(first && first.label) || 'the next run'}`;
+    if (feed.plugIn) return `Plug ${what} straight into ${from}: no jumper cord is needed.`;
+    return `From ${from}, run a jumper cord to ${dest}. Measure that distance on site, because the photo cannot size this cord.`;
   }
 
   function clipStep(run, label, spacing, prep) {
@@ -607,7 +697,7 @@ LP.define('bom', ['catalog'], function (catalog) {
   function startSideLabel(run, feature) {
     const label = run.label || 'the run';
     const type = catalog.FEATURE_TYPES[run.featureType];
-    if (type && type.geometry === 'vertical') return 'base of ' + label;
+    if (type && (type.geometry === 'vertical' || type.geometry === 'area')) return 'base of ' + label;
     const isPt = (p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]);
     const start = isPt(run.start) ? run.start : null;
     if (!start) return 'start of ' + label;

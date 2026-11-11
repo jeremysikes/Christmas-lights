@@ -1039,6 +1039,10 @@
           "type": "boolean",
           "description": "Start the run at its last point instead of letting the planner choose."
         },
+        "ownCord": {
+          "type": "boolean",
+          "description": "Give this run its own cord from the outlet: no jumper to or from another run. Optional; missing means false."
+        },
         "overrideWidthFt": {
           "anyOf": [
             {

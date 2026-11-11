@@ -267,6 +267,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
           wrapMode: { anyOf: [{ enum: ENUMS.wrapMode.slice() }, { type: 'null' }], description: 'Trees: trunk (spiral wrap) or canopy (planned by light count).' },
           outletId: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Force this run to be powered from this outlet.' },
           reverse: { type: 'boolean', description: 'Start the run at its last point instead of letting the planner choose.' },
+          ownCord: { type: 'boolean', description: 'Give this run its own cord from the outlet: no jumper to or from another run. Optional; missing means false.' },
           overrideWidthFt: { anyOf: [{ type: 'number', exclusiveMinimum: 0 }, { type: 'null' }], description: 'Bushes: tape-measured width in feet.' },
           overrideHeightFt: { anyOf: [{ type: 'number', exclusiveMinimum: 0 }, { type: 'null' }], description: 'Bushes: tape-measured height in feet.' },
         },
@@ -653,7 +654,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     return keepExtras(out, pl, PLANE_KEYS);
   }
 
-  const PARAM_KEYS = ['mount', 'diameterIn', 'spiralSpacingIn', 'wrapMode', 'outletId', 'reverse', 'overrideWidthFt', 'overrideHeightFt'];
+  const PARAM_KEYS = ['mount', 'diameterIn', 'spiralSpacingIn', 'wrapMode', 'outletId', 'reverse', 'ownCord', 'overrideWidthFt', 'overrideHeightFt'];
   function normParams(raw) {
     const p = isObj(raw) ? raw : {};
     const out = {
@@ -666,6 +667,8 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
       overrideWidthFt: posOrNull(p.overrideWidthFt),
       overrideHeightFt: posOrNull(p.overrideHeightFt),
     };
+    // Phase 1.1: optional, so projects saved before it are still normalized as they are. Missing means false.
+    if (typeof p.ownCord === 'boolean') out.ownCord = p.ownCord;
     return keepExtras(out, p, PARAM_KEYS);
   }
   function normFeatureColor(raw) {
@@ -1085,6 +1088,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
       if (pr.wrapMode !== null && !ENUMS.wrapMode.includes(pr.wrapMode)) err(who + ': the wrap mode must be trunk, canopy or empty.');
       if (!refOk(pr.outletId, outletIds)) err(who + ' is assigned to an outlet that does not exist.');
       if (typeof pr.reverse !== 'boolean') err(who + ': "reverse" must be true or false.');
+      if (pr.ownCord !== undefined && typeof pr.ownCord !== 'boolean') err(who + ': "ownCord" must be true or false.');
     });
     dupCheck(lists.features, 'features');
 

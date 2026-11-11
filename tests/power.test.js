@@ -8,6 +8,8 @@ const power = LP.require('power');
 
 const close = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg || ''} expected ${b}, got ${a}`);
 const lib = catalog.getLibrary(null);
+/** One cord per feed from the outlet (config.power.daisyChain off), for tests about a single cord. */
+const NO_CHAIN = catalog.getLibrary({ library: { products: null, config: { power: { daisyChain: false } } } });
 
 // ------------------------------------------------------------------ fixtures
 // Wall planes: image px → plane feet with u = s·x and v = s·(H0 − y), so v points up (SPEC §3).
@@ -290,7 +292,9 @@ test('no outlets: feeds stay unassigned with a no-outlets warning', () => {
   assert.equal(pw.feeds[0].cord, null);
   assert.deepEqual(pw.feeds[0].cordPath, []);
   assert.deepEqual(pw.cords, []);
-  assert.deepEqual(pw.counts, { timers: 0, splitters: 0, cordCovers: 0, gfciAdapters: 0 });
+  assert.deepEqual(pw.counts, { timers: 0, splitters: 0, cordCovers: 0, gfciAdapters: 0, taps: 0, homeRuns: 0, jumpers: 0 });
+  assert.deepEqual(pw.groups, []);
+  assert.equal(pw.feeds[0].source, null);
   assert.ok(codes(pw).includes('no-outlets'));
   assert.ok(codes(pw).includes('disclaimer'));
   assert.equal(pw.runInfo.run_ft_e.outletId, null);
@@ -389,32 +393,37 @@ test('circuit above 90% of its limit gets a circuit-high warning', () => {
 });
 
 // ------------------------------------------------------------------ cords
-test('same-plane cord: |du| + |dv| routed down the wall and across, × routing factor + slack', () => {
+test('same-wall cord: down to the ground, along it and up, × routing factor + slack', () => {
   const eave = feature('ft_e', 'roofline', [F(10, 20), F(60, 20)]);
   const pw = plan(project({ features: [eave], outlets: [outlet('out_a', F(5, 1.5))] })).power;
   const f = pw.feeds[0];
-  // |10 − 5| + |20 − 1.5| = 23.5 ft → 23.5 × 1.15 + 4 = 31.0 ft
-  close(f.cord.lengthFt, 31.0, 0.05);
+  // 1.5 ft down + |10 − 5| along the ground + 20 ft up = 26.5 ft → 26.5 × 1.15 + 4 = 34.5 ft
+  close(f.cord.lengthFt, 34.5, 0.05);
   assert.equal(f.cord.awg, 16);
   assert.deepEqual(f.cord.pieces, [50]);
-  assert.equal(f.cordPath.length, 3);
+  assert.equal(f.cordPath.length, 4);
   assert.deepEqual(f.cordPath[0], F(5, 1.5));
-  close(f.cordPath[1][0], F(10, 1.5)[0], 1e-6); close(f.cordPath[1][1], F(10, 1.5)[1], 1e-6);
-  assert.deepEqual(f.cordPath[2], F(10, 20));
+  close(f.cordPath[1][0], F(5, 0)[0], 1e-6); close(f.cordPath[1][1], F(5, 0)[1], 1e-6);
+  close(f.cordPath[2][0], F(10, 0)[0], 1e-6); close(f.cordPath[2][1], F(10, 0)[1], 1e-6);
+  assert.deepEqual(f.cordPath[3], F(10, 20));
   assert.deepEqual(pw.cords, [{ awg: 16, lengthFt: 50, count: 1 }]);
   assert.equal(f.crossesWalkway, false);
 });
 
-test('outlet without a plane uses the feed plane scale; cross-plane cords add 30%', () => {
+test('outlet without a plane: the photo distance to the foot of the riser is scaled (+30%); two walls: ground distance between their feet', () => {
   const eave = feature('ft_e', 'roofline', [F(10, 20), F(60, 20)]);
   const noPlane = plan(project({ features: [eave], outlets: [outlet('out_a', F(5, 1.5), { planeId: null })] })).power;
-  const px = g.dist(F(5, 1.5), F(10, 20));
-  close(noPlane.feeds[0].cord.lengthFt, px * 0.1 * 1.3 * 1.15 + 4, 0.05);
-  assert.equal(noPlane.feeds[0].cordPath.length, 2);
-  // feed on the side wall (0.2 ft/px), outlet on the front wall (0.1 ft/px): mean scale 0.15
+  const px = g.dist(F(5, 1.5), F(10, 0));
+  close(noPlane.feeds[0].cord.lengthFt, (px * 0.1 * 1.3 + 20) * 1.15 + 4, 0.05);
+  assert.equal(noPlane.feeds[0].cordPath.length, 3);
+  // Feed on the side wall (0.2 ft/px, its ground set by a door traced down to v = 0), outlet on the front wall
+  // (0.1 ft/px): 1.5 ft down, the 100 px between the two feet at the mean scale 0.15, then 40 ft up.
   const side = feature('ft_s', 'roofline', [[2000, 800], [2100, 800]], { planeId: 'pl_side' });
-  const cross = plan(project({ features: [side], outlets: [outlet('out_a', [1900, 985])] })).power;
-  close(cross.feeds[0].cord.lengthFt, g.dist([1900, 985], [2000, 800]) * 0.15 * 1.3 * 1.15 + 4, 0.05);
+  const door = feature('ft_d', 'door', [[2300, 1000], [2300, 965], [2315, 965], [2315, 1000]], { planeId: 'pl_side' });
+  const cross = plan(project({ features: [side, door], outlets: [outlet('out_a', [1900, 985])] }), NO_CHAIN).power;
+  const f = feedOf(cross, 'run_ft_s');
+  close(f.cord.lengthFt, (1.5 + 100 * 0.15 + 40) * 1.15 + 4, 0.05);
+  assert.deepEqual(f.cord.route.map((x) => x.kind), ['drop', 'ground', 'rise']);
 });
 
 test('1,500 W feed with a ~95 ft cord: 12 AWG and a voltage-drop warning; long cords get pieces and a warning', () => {
@@ -422,27 +431,28 @@ test('1,500 W feed with a ~95 ft cord: 12 AWG and a voltage-drop warning; long c
   custom.products.push({ id: 'big-c9', sku: 'big-c9', name: 'Big C9 string', category: 'c9', tech: 'LED', unit: 'string',
     bulbSpacingIn: 12, stringLengthFt: 10, leadFt: 1, bulbsPerUnit: 10, wattsPerUnit: 150, maxEndToEnd: 20, price: 10,
     colors: ['warmWhite'], clipEligible: true, enabled: true, suitableFor: ['roofline'] });
-  // 100 ft → 10 strings of 10 ft hung (11 bought with waste) × 150 W = 1,500 W. Outlet 70 ft across and 9 ft below the left end.
+  // 100 ft → 10 strings of 10 ft hung (11 bought with waste) × 150 W = 1,500 W. Outlet 70 ft to the left and 9 ft below
+  // the left end; the ground is 1.5 ft below the outlet: 1.5 + 70 + 10.5 = 82 ft routed.
   const eave = feature('ft_e', 'roofline', [F(100, 20), F(200, 20)], { label: 'Front eave', productId: 'big-c9' });
   const pw = plan(project({ features: [eave], outlets: [outlet('out_a', F(30, 11))], circuits: [circuit('cir_1', 20)] }), custom).power;
   const f = pw.feeds[0];
   assert.equal(f.watts, 1500);
-  close(f.cord.lengthFt, 79 * 1.15 + 4, 0.06);  // 94.85 ft, stored to 0.1 ft
+  close(f.cord.lengthFt, 82 * 1.15 + 4, 0.06);  // 98.3 ft
   assert.equal(f.cord.awg, 12);
   assert.ok(f.cord.voltageDropPct > 3);
   const vd = byCode(pw, 'voltage-drop');
   assert.equal(vd.length, 1);
   // The 100 ft cord bought carries the current: 2 · 100 · 1.588/1000 · 12.5 / 120 = 3.3%.
-  assert.match(vd[0].message, /^The 100 ft cord to the left end of Front eave \(about 95 ft needed\) would lose 3\.3% of its voltage even with 12 AWG cord \(limit 3%\)\. Use a closer outlet or split the run\.$/);
+  assert.match(vd[0].message, /^The 100 ft cord to the left end of Front eave \(about 98 ft needed\) would lose 3\.3% of its voltage even with 12 AWG cord \(limit 3%\)\. Use a closer outlet or split the run\.$/);
   assert.deepEqual(byCode(pw, 'long-cord'), []);
 
-  // Long cord: 145 ft across + 18.5 ft up → 163.5 × 1.15 + 4 = 192 ft → two 100 ft cords
+  // Long cord: 1.5 ft down + 145 ft along the ground + 20 ft up → 166.5 × 1.15 + 4 = 195.5 ft → two 100 ft cords
   const far = feature('ft_far', 'roofline', [F(150, 20), F(175, 20)], { label: 'Garage eave' });
   const pw2 = plan(project({ features: [far], outlets: [outlet('out_a', F(5, 1.5))] })).power;
-  close(pw2.feeds[0].cord.lengthFt, 192.0, 0.05);
+  close(pw2.feeds[0].cord.lengthFt, 195.5, 0.05);
   assert.deepEqual(pw2.feeds[0].cord.pieces, [100, 100]);
   assert.deepEqual(pw2.cords, [{ awg: 16, lengthFt: 100, count: 2 }]);
-  assert.equal(byCode(pw2, 'long-cord')[0].message, 'The cord to the left end of Garage eave needs about 192 ft (100 ft + 100 ft). Look for a closer outlet.');
+  assert.match(byCode(pw2, 'long-cord')[0].message, /^The cord to the left end of Garage eave needs about 19[56] ft \(100 ft \+ 100 ft\)\. Look for a closer outlet\.$/);
 });
 
 test('a cord path that crosses a walkway needs a cord cover and gets a warning', () => {
@@ -586,19 +596,24 @@ test('integration: a real measure.measureProject result flows through design and
   assert.deepEqual(chain.runIds, ['run_eave_r', 'run_eave_l']);
   const feed = pw.feeds.find((f) => f.id === chain.feedIds[0]);
   assert.equal(feed.start.label, 'right end of Right eave');
-  // same-plane route: |40 − 38| + |12 − 1.5| = 12.5 ft → × 1.15 + 4 = 18.4 ft → one 25 ft 16 AWG cord
-  close(feed.cord.lengthFt, 12.5 * 1.15 + 4, 0.06);
+  // ground-first route: 1.5 ft down + |40 − 38| along the ground + 12 ft up = 15.5 ft → × 1.15 + 4 = 21.8 ft → one 25 ft 16 AWG cord
+  close(feed.cord.lengthFt, 15.5 * 1.15 + 4, 0.06);
   assert.deepEqual(feed.cord.pieces, [25]);
   assert.equal(feed.cord.awg, 16);
-  // the window plugs in at its first point (bottom-left on the wall): |5 − 38| + |4 − 1.5| = 35.5 ft
+  assert.deepEqual(feed.source, { kind: 'outlet', outletId: 'out_porch' });
+  // the window plugs in at its first point (bottom-left on the wall). A cord from the outlet would need 48 ft; a
+  // jumper from the far end of the eave lights (0, 12) needs 8 ft down the wall and 5 ft across to (5, 4).
   const wf = feedOf(pw, 'run_win');
   assert.equal(wf.start.label, 'bottom-left corner of Window');
-  close(wf.cord.lengthFt, 35.5 * 1.15 + 4, 0.06);
+  assert.deepEqual(wf.source, { kind: 'feed', feedId: feed.id, port: 'end' });
+  close(wf.cord.lengthFt, 13 * 1.15 + 1.5, 0.06);
+  assert.equal(wf.cord.routeText, 'down 8 ft, 5 ft across');
   assert.equal(pw.outlets[0].feedIds.length, 2);
-  assert.equal(pw.outlets[0].splitters, 1);
+  assert.deepEqual(pw.outlets[0].directFeedIds, [feed.id]);
+  assert.equal(pw.outlets[0].splitters, 0);
   assert.equal(pw.counts.timers, 1);
   close(pw.circuits[0].loadW, 9.6 * 2 + 4.8, 1e-9);
-  assert.deepEqual(codes(pw), ['disclaimer']);
+  assert.deepEqual(codes(pw), ['daisy-chain', 'disclaimer']);
 });
 
 test('a chain of several runs that needs more than one feed reads "need" (plural)', () => {
@@ -699,53 +714,75 @@ test('sample house: cords and chain gaps between planes are measured in 3D, not 
   const sample = LP.require('sample');
   const planMod = LP.require('plan');
   const s = sample.createSample();
-  const out = planMod.computePlan(s.project);
+  // One cord per run, so each length can be checked against the 3D model.
+  const p = JSON.parse(JSON.stringify(s.project));
+  p.library = { products: null, config: { power: { daisyChain: false } } };
+  const out = planMod.computePlan(p);
   const pw = out.power;
-  // Front-wall frame (u, v, w) of the 3D model: porch outlet (13, 1.5, 0).
-  const cord = (d3) => d3 * 1.3 * 1.15 + 4;
+  // Front-wall frame (u, v, w) of the 3D model: porch outlet (13, 1.5, 0), garage outlet (35, 1.5, -4).
+  const cord = (ft) => (1.5 + ft) * 1.15 + 4;
   const feedFor = (runId) => pw.feeds.find((f) => f.runIds.includes(runId));
-  // Walkway right edge runs from (19, 0, 1) to (19, 0, 16): the near end is 6.3 ft from the outlet, the far end 17.2 ft.
-  const walk = feedFor('run_ft_walk_right');
+  // Walkway left edge runs from (15, 0, 1) to (15, 0, 16): the near end is 2.2 ft along the ground from the porch outlet.
+  const walk = feedFor('run_ft_walk_left');
   assert.equal(walk.outletId, 'out_porch');
-  close(walk.cord.lengthFt, cord(Math.hypot(6, 1.5, 1)), 1.5);
-  assert.match(walk.start.label, /end of Walkway right edge/);
-  const walkRun = out.runs.find((r) => r.id === 'run_ft_walk_right');
+  close(walk.cord.lengthFt, cord(Math.hypot(2, 1)), 0.5);
+  assert.match(walk.start.label, /end of Walkway left edge/);
+  const walkRun = out.runs.find((r) => r.id === 'run_ft_walk_left');
   const near = walkRun.start, far = walkRun.end;
   const H = out.measured.planes.pl_yard.Himg2plane;
   assert.ok(g.applyH(H, near)[1] < g.applyH(H, far)[1], 'the feed starts at the end nearest the house');
-  // Maple tree base (-10, 0, 12): 26.0 ft in a straight line.
+  // Walkway right edge starts at (19, 0, 1). From the porch outlet the cord would pass the front door and the other
+  // walkway edge, so it comes from the garage outlet on the other wall: 16.8 ft across the ground in 3D.
+  const right = feedFor('run_ft_walk_right');
+  assert.equal(right.outletId, 'out_garage');
+  close(right.cord.lengthFt, cord(Math.hypot(16, 5)), 1);
+  assert.equal(right.crossesDoorway || right.crossesWalkway, false);
+  // Maple tree base (-10, 0, 12): 25.9 ft along the ground from the porch outlet.
   const tree = feedFor('run_ft_tree');
-  close(tree.cord.lengthFt, cord(Math.hypot(23, 1.5, 12)), 4);
+  close(tree.cord.lengthFt, cord(Math.hypot(23, 12)), 1);
   assert.deepEqual(tree.cord.pieces, [50]);
   // Eave right end (34, 10, 0) and garage gutter start (34, 9, -4) are 4.1 ft apart: more than chainGapFt (3), not chained.
   assert.notEqual(out.runs.find((r) => r.id === 'run_ft_garage_gutter').chainId, out.runs.find((r) => r.id === 'run_ft_eave').chainId);
 });
 
-test('a cord run across a wall is flagged where it passes a traced door or a walkway that meets the wall', () => {
+test('a cord along the ground is flagged where it passes a traced door; a jumper through the door lights avoids it', () => {
   // Synthetic wall: outlet at u = 5, door from u = 20 to 23, a window to the right of the door.
   const door = feature('ft_door', 'door', [F(20, 0), F(20, 6.7), F(23, 6.7), F(23, 0)], { label: 'Front door' });
   const win = feature('ft_win', 'window', [F(30, 8), F(34, 8), F(34, 4), F(30, 4)], { label: 'Window right' });
   const left = feature('ft_wl', 'window', [F(8, 8), F(12, 8), F(12, 4), F(8, 4)], { label: 'Window left' });
-  const pw = plan(project({ features: [door, win, left], outlets: [outlet('out_a', F(5, 1.5))] })).power;
+  const p = project({ features: [door, win, left], outlets: [outlet('out_a', F(5, 1.5))] });
+  // One cord per run: the cord to the right window lies on the ground in front of the door.
+  const pw = plan(p, NO_CHAIN).power;
   const winFeed = feedOf(pw, 'run_ft_win');
-  assert.equal(winFeed.crossesDoorway, true, 'the cord to the right window passes the doorway at outlet height');
+  assert.equal(winFeed.crossesDoorway, true, 'the cord to the right window passes the doorway on the ground');
+  assert.equal(winFeed.doorway, 'Front door');
   assert.equal(feedOf(pw, 'run_ft_wl').crossesDoorway, false);
   assert.equal(feedOf(pw, 'run_ft_door').crossesDoorway, false, 'the door lights themselves start at the door');
   const dw = byCode(pw, 'cord-doorway');
   assert.equal(dw.length, 1);
   assert.match(dw[0].message, /^The cord to the top-left corner of Window right passes Front door\. Run it along the bottom of the wall under a cord cover/);
   assert.equal(pw.counts.cordCovers, 1);
+  // Linked runs: the door lights carry the power over the doorway, and the right window hangs off their end.
+  const linked = plan(p).power;
+  assert.deepEqual(feedOf(linked, 'run_ft_win').source, { kind: 'feed', feedId: 'feed_ft_door_1', port: 'end' });
+  assert.equal(linked.counts.cordCovers, 0);
+  assert.deepEqual(byCode(linked, 'cord-doorway'), []);
+  assert.equal(linked.counts.homeRuns, 2, 'the door lights and the left window each get a cord; the right window gets a jumper');
 });
 
-test('sample house: the cord to Bush 2 runs past the front door and across the walkway in front of it', { skip: !LP.has('sample') || !LP.has('measure') }, () => {
-  const out = LP.require('plan').computePlan(LP.require('sample').createSample().project);
+test('sample house, one cord per run: Bush 2 is fed from the garage side; from the porch its cord would pass the door and the walkway', { skip: !LP.has('sample') || !LP.has('measure') }, () => {
+  const base = LP.require('sample').createSample().project;
+  const run = (powerCfg) => {
+    const p = JSON.parse(JSON.stringify(base));
+    p.library = { products: null, config: { power: powerCfg } };
+    return LP.require('plan').computePlan(p);
+  };
+  // Crossings cost 12 ft each when cords are compared, so the planner goes around the doorway.
+  const out = run({ daisyChain: false });
   const pw = out.power;
   const bush2 = feedOf(pw, 'run_ft_bush_2');
-  assert.equal(bush2.outletId, 'out_porch');
-  assert.equal(bush2.crossesDoorway, true);
-  assert.equal(bush2.crossesWalkway, true);
-  assert.ok(byCode(pw, 'cord-walkway').some((w) => /Bush 2/.test(w.message)));
-  assert.ok(byCode(pw, 'cord-doorway').some((w) => /Bush 2/.test(w.message) && /Front door/.test(w.message)));
+  assert.equal(bush2.outletId, 'out_garage');
+  assert.equal(bush2.crossesDoorway || bush2.crossesWalkway, false);
   for (const id of ['run_ft_gable_left', 'run_ft_window_left', 'run_ft_bush_1']) {
     const f = feedOf(pw, id);
     assert.equal(f.crossesWalkway || f.crossesDoorway, false, id);
@@ -754,7 +791,16 @@ test('sample house: the cord to Bush 2 runs past the front door and across the w
   // that cord crosses the walkway's left edge but not its own doorway.
   assert.equal(feedOf(pw, 'run_ft_door').crossesDoorway, false);
   assert.equal(feedOf(pw, 'run_ft_door').crossesWalkway, true);
-  const steps = out.checklist.find((gr) => gr.outletId === 'out_porch').steps;
+  assert.equal(pw.counts.cordCovers, 1);
+  // Without the penalty the nearer porch outlet wins, and the crossings are flagged.
+  const flat = run({ daisyChain: false, crossingPenaltyFt: 0 });
+  const b2 = feedOf(flat.power, 'run_ft_bush_2');
+  assert.equal(b2.outletId, 'out_porch');
+  assert.equal(b2.crossesDoorway, true);
+  assert.equal(b2.crossesWalkway, true);
+  assert.ok(byCode(flat.power, 'cord-walkway').some((w) => /Bush 2/.test(w.message)));
+  assert.ok(byCode(flat.power, 'cord-doorway').some((w) => /Bush 2/.test(w.message) && /Front door/.test(w.message)));
+  const steps = flat.checklist.find((gr) => gr.outletId === 'out_porch').steps;
   assert.ok(steps.some((s) => /cord cover/.test(s) && /Front door/.test(s)), 'the checklist says where the cover goes');
 });
 
@@ -767,8 +813,11 @@ test('mid-run feeds start where the hung strings end (string length, not string 
   assert.deepEqual(pw.feeds.map((f) => f.watts), [525, 175]);
   assert.equal(pw.feeds[1].start.label, 'point 75 ft from the left end of Eave', 'three 25 ft strings end at 75 ft');
   close(pw.feeds[1].start.point[0], F(75, 20)[0], 1e-6);
-  close(pw.feeds[1].cord.lengthFt, (75 + 18.5) * 1.15 + 4, 0.06);
-  assert.deepEqual(pw.feeds[1].cord.pieces, [100, 15], 'the cord bought is long enough for the real feed point (about 112 ft)');
+  // Three full strings pass nothing on (525 W is their limit), so the last string gets its own cord from the outlet:
+  // 1.5 ft down, 75 ft along the ground, 20 ft up.
+  assert.deepEqual(pw.feeds[1].source, { kind: 'outlet', outletId: 'out_a' });
+  close(pw.feeds[1].cord.lengthFt, (1.5 + 75 + 20) * 1.15 + 4, 0.06);
+  assert.deepEqual(pw.feeds[1].cord.pieces, [100, 15], 'the cord bought is long enough for the real feed point (about 115 ft)');
   assert.equal(pw.totals.watts, 700, 'live load is the 4 hung strings');
   assert.equal(pw.chains[0].strings, 4);
   assert.equal(pw.chains[0].spares, 1);
@@ -788,7 +837,7 @@ test('checklist follows the power plan: the second cord goes to 75 ft, hangs the
   const p = project({ features: [eave], outlets: [outlet('out_a', F(0, 1.5), { label: 'Outlet 1' })] });
   const { runs, power: pw } = plan(p);
   const steps = bomMod.buildChecklist(p, planMod.mergeRunInfo(runs, pw), pw, null)[0].steps;
-  assert.ok(steps.includes('Cord 2 of 2: Run 115 ft of 16 AWG outdoor extension cord (100 ft + 15 ft, joined end to end) from Outlet 1 to the point 75 ft from the left end of Eave (about 112 ft needed). Keep the joints off the ground.'), steps.join('\n'));
+  assert.ok(steps.includes('Cord 2 of 2: Run 115 ft of 16 AWG outdoor extension cord (100 ft + 15 ft, joined end to end) from Outlet 1 to the point 75 ft from the left end of Eave (about 115 ft needed): down 1.5 ft, 75 ft along the ground, up 20 ft. Keep the joints off the ground.'), steps.join('\n'));
   assert.ok(steps.some((s) => /^Hang the first 3 of the 4 × warm white C9 incandescent string/.test(s)), steps.join('\n'));
   assert.ok(steps.some((s) => /^Hang the last 1 of the 4 × warm white C9 incandescent string.*starting at the point 75 ft from the left end of Eave, working toward the right end of Eave\./.test(s)), steps.join('\n'));
   assert.ok(steps.some((s) => /Keep the 1 spare string/.test(s)), steps.join('\n'));
@@ -831,26 +880,47 @@ test('sample house: the roofline chains buy 6 C9 LED strings, not 8', { skip: !L
   assert.equal(out.summary.strings, out.runs.filter((r) => r.unit === 'string').reduce((s, r) => s + r.quantity, 0));
 });
 
-test('an outlet under the middle of a long run feeds it from the middle: two feeds working outward, short cords', () => {
+test('an outlet under the middle of a long run feeds it from the middle: one short cord, a tap, lights working outward both ways', () => {
   // 200 ft C9 LED eave at 12 ft, one outlet directly below its middle.
   const eave = feature('ft_eave', 'roofline', [F(10, 12), F(210, 12)], { label: 'Eave' });
   const { power: pw } = plan(project({ features: [eave], outlets: [outlet('out_a', F(110, 1.5), { label: 'Outlet 1' })] }));
   assert.equal(pw.feeds.length, 2, JSON.stringify(pw.feeds.map((f) => f.start.label)));
-  for (const f of pw.feeds) {
-    close(f.cord.lengthFt, 10.5 * 1.15 + 4, 1.5);
-    close(f.start.point[0], F(110, 12)[0], 15);
-  }
+  for (const f of pw.feeds) close(f.start.point[0], F(110, 12)[0], 15);
+  // One cord from the outlet (1.5 ft down, 12 ft up) ends in a 3-way tap; the other half plugs straight into the tap.
+  const [a, b] = pw.feeds[0].source.kind === 'outlet' ? pw.feeds : [pw.feeds[1], pw.feeds[0]];
+  assert.deepEqual(a.source, { kind: 'outlet', outletId: 'out_a' });
+  close(a.cord.lengthFt, 13.5 * 1.15 + 4, 1.5);
+  assert.deepEqual(b.source, { kind: 'feed', feedId: a.id, port: 'start' });
+  assert.equal(b.plugIn, true);
+  assert.equal(b.cord, null);
+  assert.equal(a.taps, 1);
+  assert.equal(pw.counts.taps, 1);
+  assert.equal(pw.counts.homeRuns, 1);
+  assert.equal(pw.outlets[0].splitters, 0);
+  close(a.supplyW, 8 * 9.6, 1e-6);
   assert.deepEqual(byCode(pw, 'long-cord'), []);
   assert.equal(pw.feeds.reduce((s, f) => s + f.strings, 0), 8, '4 strings each way cover the 200 ft');
   assert.equal(pw.runInfo.run_ft_eave.quantity, 9, 'spares are counted over the chain: 220 ft with waste = 9 strings, not 5 + 5');
   assert.equal(pw.chains[0].spares, 1);
   assert.deepEqual(byCode(pw, 'max-end-to-end'), [], '8 strings are well within the limit of 30');
-  assert.match(byCode(pw, 'fed-from-middle')[0].message, /^Eave is fed from the point nearest Outlet 1: 2 cords work outward from there/);
+  assert.match(byCode(pw, 'fed-from-middle')[0].message, /^Eave is fed from the point nearest Outlet 1: one cord ends in a 3-way tap there and the lights run outward both ways/);
   const towards = pw.feeds.map((f) => f.start.toward).sort();
   assert.deepEqual(towards, ['left end of Eave', 'right end of Eave']);
-  assert.ok(pw.cords.every((c) => c.lengthFt <= 25), JSON.stringify(pw.cords));
+  assert.deepEqual(pw.cords, [{ awg: 16, lengthFt: 25, count: 1 }]);
+  // With one cord per feed (daisy chains off) two cords work outward from there, as before.
+  const flat = plan(project({ features: [eave], outlets: [outlet('out_a', F(110, 1.5), { label: 'Outlet 1' })] }), NO_CHAIN).power;
+  assert.equal(flat.feeds.length, 2);
+  assert.ok(flat.feeds.every((f) => f.source.kind === 'outlet' && f.cord.pieces[0] === 25));
+  assert.match(byCode(flat, 'fed-from-middle')[0].message, /^Eave is fed from the point nearest Outlet 1: 2 cords work outward from there/);
   // An outlet near one end still feeds from that end with one cord.
   const end = plan(project({ features: [eave], outlets: [outlet('out_a', F(5, 1.5))] })).power;
   assert.equal(end.feeds.length, 1);
   assert.equal(end.feeds[0].start.label, 'left end of Eave');
+  // A split that needs an extra string to save a few feet of cord is not worth it: 22 ft of eave is one 25 ft string
+  // from either end, two strings when fed from the middle.
+  const short = feature('ft_s', 'roofline', [F(10, 12), F(32, 12)], { label: 'Short eave' });
+  const one = plan(project({ features: [short], outlets: [outlet('out_a', F(21, 1.5))] })).power;
+  assert.equal(one.feeds.length, 1);
+  assert.equal(one.runInfo.run_ft_s.quantity, 1);
+  assert.deepEqual(byCode(one, 'fed-from-middle'), []);
 });

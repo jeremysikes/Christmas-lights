@@ -73,6 +73,7 @@ LP.define('catalog', [], function () {
     { sku: 'light-stakes', name: 'C9 light stakes', category: 'hardware', unit: 'pack', packSize: 25, price: 14.99 },
     { sku: 'timer-outdoor', name: 'Outdoor plug-in timer or smart plug', category: 'power', unit: 'each', packSize: 1, price: 19.99 },
     { sku: 'splitter-3', name: 'Outdoor 3-outlet power stake', category: 'power', unit: 'each', packSize: 1, price: 12.99 },
+    { sku: 'tap-3way', name: 'Outdoor 3-way tap', category: 'power', unit: 'each', packSize: 1, price: 6.99 },
     { sku: 'gfci-adapter', name: 'Portable outdoor GFCI adapter', category: 'power', unit: 'each', packSize: 1, price: 24.99 },
     { sku: 'cord-cover', name: 'Walkway cord cover, 6 ft', category: 'hardware', unit: 'each', packSize: 1, price: 14.99 },
   ];
@@ -97,7 +98,9 @@ LP.define('catalog', [], function () {
     tree: { defaultDiameterIn: 10, spiralSpacingIn: 4, canopyLightsPerFtHeight: 100 },
     column: { defaultDiameterIn: 8, spiralSpacingIn: 6 },
     stakes: { spacingIn: 12, packSize: null }, // packSize null = the light-stakes accessory pack size (25); a number overrides
-    power: { voltage: 120, continuousFactor: 0.8, maxVoltageDropPct: 3, cordSlackFt: 4, routingFactor: 1.15, chainGapFt: 3, timerPerOutlet: true, splitterOutlets: 3, plugAmps: 15, timerTungstenW: 1250 },
+    power: { voltage: 120, continuousFactor: 0.8, maxVoltageDropPct: 3, cordSlackFt: 4, routingFactor: 1.15, chainGapFt: 3, timerPerOutlet: true, splitterOutlets: 3, plugAmps: 15, timerTungstenW: 1250,
+      // Phase 1.1 (SPEC §8): runs are linked with jumper cords, and cords run down to the ground, along it and up.
+      daisyChain: true, jumperMaxFt: 30, jumperDirectFt: 6, jumperSlackFt: 1.5, outletHeightFt: 1.5, openingMarginFt: 0.5, crossingPenaltyFt: 12, tapOutlets: 3 },
     labor: { ftPerHour: 40, setupHours: 1, hoursPerTree: 0.75, hoursPerBush: 0.25 },
     refDisagreementWarnPct: 5,
     confidence: { highMin: 75, mediumMin: 50 },
