@@ -1111,4 +1111,131 @@ New config keys (`config.power`): `daisyChain: true, jumperMaxFt: 30, jumperDire
 outletHeightFt: 1.5, openingMarginFt: 0.5, crossingPenaltyFt: 12, tapOutlets: 3`.
 New feature param: `params.ownCord: boolean` (default false) — "give this run its own cord from the outlet".
 
-### 8.3 Suppliers (written after the supplier research; see below when present)
+### 8.3 Suppliers: choose who you buy from, order by their part numbers
+
+Owner request: "whatever we are offering inside the app is easy to go in and select directly from who we're
+purchasing from" (Christmas Lights Etc and 1000Bulbs, wholesalers of C7 and C9). No supplier has a public API,
+feed or cart link, so Phase 1.1 is a **supplier map inside the app** (Stage 0): hand-checked catalog data,
+deep links, an order sheet per supplier, and prices the user can overwrite with their account price.
+
+**New pure module `suppliers`** (`src/core/suppliers.js`, `LP.define('suppliers', [], …)`, loaded before
+`catalog`; `catalog` depends on it). Data and tiny lookups only.
+
+```
+SUPPLIERS: [{ id, name, short, url, wholesale: {name, url, phone, note} | null,
+              searchUrlTemplate | null,          // '{query}' placeholder, URL-encoded by supplierSearchUrl()
+              categoryUrls: { role: url },       // roles: c9Bulbs c7Bulbs spools stringers plugs clips miniLights
+                                                  //        icicle net rope treeWrap stakes timers extensionCords
+              priceAsOf: 'YYYY-MM-DD', notes }]
+   ids: 'generic' ("Any store", no links; the Phase 1 default products), 'cle' (Christmas Lights Etc),
+        '1000bulbs' (1000Bulbs).
+SUPPLIER_PRODUCTS: Product[]   // same shape as catalog.DEFAULT_PRODUCTS plus the fields below
+SUPPLIER_ACCESSORIES: { [supplierId]: { [accessorySku]: Offer } }
+getSupplier(id), supplierSearchUrl(supplierId, query), findUrl(supplierId, role, query)
+```
+
+Extra **Product** fields (all optional, all preserved by `schema.normalizeProject` in `library.products`):
+`supplierId`, `supplierSku` (what you type at the supplier), `url` (product page), `priceAsOf`, `priceStatus`
+(`'verified'` = seen on the supplier's page that day; `'observed'` = seen in a search result, not confirmed),
+`equiv` (id of the generic product whose role it fills, e.g. `'c9-led'`), `kind` (`'bulk'` or absent),
+`components` (bulk only). Product ids are `<supplierId>:<slug>` (e.g. `cle:c9-bulk-12`); `sku` equals the id
+and stays the key for `pricing.overrides`.
+
+**Offer** (accessories and bulk components): `{ sku, supplierSku, name, url, price, packQty, priceAsOf,
+priceStatus }` where `sku` is `<supplierId>:<supplierSku>` (the `pricing.overrides` key).
+
+**Library.** `catalog.getLibrary(project)` returns `{ products, config, accessories, supplierId, suppliers }`:
+`products` = the project's own list (or the defaults) followed by every `SUPPLIER_PRODUCTS` entry whose id is not
+already in the list; `supplierId` = `project.library.supplierId` when it names a known supplier, else
+`'generic'`. New persisted field `project.library.supplierId: string | null`. New config block
+`config.buying: { style: 'bulk', costBasis: 'bought' }`.
+
+**Automatic product choice** (`design`, when a run has no explicit product): take the generic default for the
+feature type; when the preferred supplier is not `generic`, replace it with that supplier's enabled product
+whose `equiv` matches, preferring `kind === 'bulk'` when `config.buying.style === 'bulk'` and a non-bulk product
+when it is `'strings'`; if the supplier has none, keep the generic product (its BOM line carries a `findUrl`).
+A run's explicit `design.productId` always wins and may name any supplier's product.
+
+**Bulk C7/C9 (`kind: 'bulk'`)** is how wholesale C7/C9 is bought: socket wire by the spool, bulbs by the box,
+slide-on plugs. It is a per-foot Product (`unit: 'foot'`, `stringLengthFt: 1`, `leadFt: 0`) so measuring,
+chaining and feeds work unchanged:
+`bulbSpacingIn`, `bulbsPerUnit = 12 / bulbSpacingIn`, `wattsPerUnit = wattsEach × bulbsPerUnit`,
+`maxEndToEnd = maxRunFt` (default 250: "250 bulbs or 250 ft of line, whichever comes first"),
+`maxConnectedW = maxBulbsPerRun × wattsEach`, `endConnector: true`, `clipEligible: true`,
+`price` = per-foot equivalent derived from the components (display and fallback only), and
+```
+components: {
+  wire:       Offer & { spoolFt, wireType: 'SPT-1'|'SPT-2', maxAmps, sizes?: [Offer & {lengthFt}] },
+  bulb:       { packQty, wattsEach, base: 'E17'|'E12', defaultVariant, variants: { [variant]: Offer } },
+                 // variants: warmWhite coolWhite multi red green blue (those the supplier sells)
+  plugMale:   Offer,   plugFemale: Offer
+}
+```
+BOM for bulk products (grouped per product, across the whole job):
+- **Wire:** feet needed = sum of the runs' feet (waste included). Buy the cheapest mix of `sizes` (or the one
+  spool) that covers it; each line says feet needed and feet left over.
+- **Bulbs:** sockets = `ceil(run feet × 12 / bulbSpacingIn)` per run, split by the run's colour pattern into
+  variants (alternating red/green = half and half; "multi" = the supplier's multicolour box). A colour the
+  supplier does not list uses `defaultVariant` with the note "choose the colour at the supplier". Packs =
+  `ceil(bulbs / packQty)` per variant; the line says bulbs needed and spares.
+- **Plugs:** one male and one female per cut length = per power feed of that product (per run when there is no
+  power plan), in packs.
+- **Clips:** one per socket for clip-mounted runs (same as today at 12 in spacing).
+- `config.buying.costBasis`: `'bought'` (default) totals what is ordered; `'used'` totals only the share used
+  (feet × price per foot, bulbs × price per bulb) for installers who carry leftovers to the next job. Lines carry
+  `qty` (order this), `usedQty`, `total` (per basis) and `buyTotal`.
+
+**Accessories.** When the preferred supplier has an Offer for an accessory sku (clips by mount type, stakes,
+timer, …) the BOM line takes its name, pack size, price and link; otherwise the generic accessory is kept with a
+`findUrl` (the supplier's category page for that role, else its search URL).
+
+**Every BOM line** gains: `supplierId | null`, `supplierName`, `supplierSku | null`, `url | null`,
+`findUrl | null`, `priceAsOf | null`, `priceStatus: 'verified' | 'observed' | 'default' | 'yours'` (`'yours'` when
+`pricing.overrides` has the line's sku). `bom.orderSheets(bom, library)` → `[{ supplierId, supplierName, url,
+lines: [{ supplierSku, name, qty, unit, unitPrice, total, url }], subtotal }]`, suppliers first, then
+"Any store". CSV/PDF add Supplier, Part number and Link columns; one order-sheet CSV per supplier.
+
+**Price honesty.** A supplier price is never shown as current: lines say "as of <date>" and, for `'observed'`,
+"check the price". Exports carry "Prices were last checked on <date>; confirm at checkout. Account (wholesale)
+prices differ: edit any price." The power model takes watts and limits from the supplier's listing; a product
+with no listed watts is not offered.
+
+### 8.4 Confidence that is honest about finger taps
+
+The UX review measured a real failure: a garage-door rectangle tapped on a 390 px phone at fit zoom gave an eave
+26% short, rated Medium. Cause: every tap is assumed good to ±2.5 px of the stored photo, but at fit zoom one
+screen pixel is about 5 photo pixels.
+
+- **Stored:** optional `tapErr: number[]` beside any tapped point list, aligned index for index: `rect.tapErr`
+  (4), `ref.tapErr` (2), `feature.tapErr` (one per point), `plane.derived.tapErr` (its tapped line). Each value
+  is the expected tap error (1σ) in stored-image pixels. Missing, wrong length or non-numeric = no information
+  (2.5 px, today's behaviour; the sample has none).
+- **UI sets it** when a point is placed or dragged: `e = clamp(k / s, 2.5, 80)`, `s` = screen px per image px at
+  that moment (× the loupe magnification when the loupe is showing), `k = 3` for touch, `1.5` for mouse or pen.
+  Actions that insert, delete or move points keep the array aligned.
+- **measure uses it:** wherever the tap precision constant is used, a plane's calibration uses
+  `max(2.5, largest tapErr among its rect, refs and derived line)` and a feature uses
+  `max(2.5, largest tapErr among its points)`. When that raises the expected error, the reason says
+  "Tapped zoomed out (about ±N px on the photo): zoom in and re-tap" and the level follows the expected error as
+  it does today. `tests/measure-honesty.test.js` gains a finger-at-fit-zoom case with the same pass bar.
+- New two-tap reference presets: garage door width 16 ft, 9 ft and 8 ft.
+- The "Street View screenshot" lens preset is renamed "Screenshot (wide view)" and the Street View wording is
+  removed from the UI (Google's terms prohibit tracing from Street View; see the roadmap).
+
+### 8.5 UI for 8.1–8.4
+
+- **Photo overlay:** home runs and jumpers are drawn differently (home run: solid cord colour with the outlet's
+  marker; jumper: thinner dashed), each along its `cordPath`; a 3-way tap gets a small marker; a `plugIn` feed
+  gets a "plugs in" dot; labels say "25 ft cord" or "6 ft jumper" and do not overlap the outlet labels.
+- **Step 5:** a plain verdict card first ("Good to go: 233 W, 16% of one outlet's safe limit" / what to fix);
+  per outlet "1 cord at this outlet feeding 10 runs · 185 W"; a supply-tree list (cord from the outlet → run →
+  jumper → run, with `routeText`); switch "Link nearby runs with jumper cords" (`config.power.daisyChain`);
+  per run "Give this run its own cord" (`params.ownCord`); count tiles for cords to outlets, jumpers, taps.
+- **Step 4:** "Buy from" picker (Any store / Christmas Lights Etc / 1000Bulbs) with the supplier's site and
+  wholesale-account links, "C7/C9 as: cut-to-length wire + bulbs / ready-made strings", product pickers grouped
+  by supplier with part number, price "as of" and an "Open at supplier" link plus "Copy link".
+- **Step 6:** low-confidence measurements listed at the top with a tape-measure field; BOM rows show supplier,
+  part number, price status and links; "Order sheet" per supplier (CSV and copy as text); installer cost basis
+  switch; PDF report and CSV carry the new columns, cord kinds, taps and routes.
+- **Flow:** one pinned next-action button per step; step 2 opens automatically after a photo loads; after
+  Finish the hint bar offers what to trace next.
