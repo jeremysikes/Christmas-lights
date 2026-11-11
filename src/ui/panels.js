@@ -1168,22 +1168,24 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       return new Promise((resolve) => {
         const older = () => {
           let ok = false;
+          let ta = null;
           try {
-            const ta = document.createElement('textarea');
+            ta = document.createElement('textarea');
             ta.value = text;
             ta.setAttribute('readonly', '');
             ta.setAttribute('aria-hidden', 'true');
             ta.style.cssText = 'position:fixed;top:0;left:-9999px;opacity:0;';
             const before = document.activeElement;
             (document.body || document.documentElement).appendChild(ta);
-            ta.focus();
+            ta.focus({ preventScroll: true });
             ta.select();
-            try { ok = document.execCommand('copy') === true; } catch (e) { ok = false; }
-            ta.parentNode.removeChild(ta);
-            if (before && typeof before.focus === 'function') { try { before.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
+            ok = document.execCommand('copy') === true;
+            if (before && typeof before.focus === 'function') before.focus({ preventScroll: true });
           } catch (e) {
             ok = false;
           }
+          // The helper field never stays in the page, whatever happened above.
+          try { if (ta && ta.parentNode) ta.parentNode.removeChild(ta); } catch (e) { /* ignore */ }
           resolve(ok);
         };
         try {
@@ -2030,6 +2032,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         scheduled = false;
         const active = document.activeElement;
         const focusKey = active && root.contains(active) ? active.getAttribute('data-fk') : null;
+        // Text shown to be copied by hand belongs to the step it was asked on: it does not wait there for a return.
+        if (lastStep !== null && store.ui().step !== lastStep) local.copy = null;
         const next = build();
         const cur = root.firstElementChild;
         if (cur && cur.classList.contains('panel-content')) morph(cur, next);
