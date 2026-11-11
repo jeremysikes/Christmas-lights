@@ -28,6 +28,19 @@
  *    price is still planned, with a warning that the shopping list prices it at $0.
  *  - Extra exports: resolveProduct(feature, library), clipsFor(feature, product, lengthFt, config) and
  *    productDataProblem(product).
+ *
+ * Phase 1.1 (SPEC §8.3), suppliers:
+ *  - Automatic choice. A run with no product of its own takes the type default; when the project buys from a
+ *    supplier (library.supplierId other than 'generic'), that default is replaced by the supplier's product
+ *    whose `equiv` names it: with config.buying.style 'bulk' the cut-to-length product (kind 'bulk') when the
+ *    supplier has one, else its ready-made product; with 'strings' only a ready-made product (a bulk product is
+ *    never picked for someone who does not cut wire). No match keeps the generic product. resolveProduct then
+ *    returns source 'supplier'. The stand-in search (fallbackProduct) only looks at generic products and the
+ *    chosen supplier's, so another supplier's catalog never leaks into a plan; a product picked on the run
+ *    itself may be from any supplier.
+ *  - Bulk products (unit 'foot', kind 'bulk') get one clip per socket (their own bulbSpacingIn, not
+ *    config.clipSpacingIn) and the detail says how many sockets that is. Runs of supplier products carry
+ *    `supplierId`, and `productKind: 'bulk'` when cut to length.
  */
 LP.define('design', ['catalog'], function (catalog) {
   'use strict';
@@ -88,12 +101,41 @@ LP.define('design', ['catalog'], function (catalog) {
     return null;
   }
   const isUsable = (p) => isEnabled(p) && !productDataProblem(p);
+  const isBulk = (p) => !!p && p.kind === 'bulk';
+  /** The supplier the library buys from, or null for "Any store". */
+  function preferredSupplier(lib) {
+    const id = lib && typeof lib.supplierId === 'string' ? lib.supplierId : null;
+    return id && id !== 'generic' ? id : null;
+  }
+  /** Products the planner may choose by itself: generic ones and the chosen supplier's. */
+  function autoPool(lib) {
+    const sup = preferredSupplier(lib);
+    return lib.products.filter((p) => isObj(p) && (!catalog.isSupplierProduct(p) || p.supplierId === sup));
+  }
+  /**
+   * The chosen supplier's usable product that fills the role of generic product `equivId`, or null.
+   * Buying style 'bulk': the cut-to-length product first, else a ready-made one. 'strings': ready-made only.
+   */
+  function supplierEquivalent(equivId, lib) {
+    const sup = preferredSupplier(lib);
+    if (!sup || !equivId) return null;
+    const list = lib.products.filter((p) => isObj(p) && p.supplierId === sup && p.equiv === equivId && isUsable(p));
+    const strings = list.filter((p) => !isBulk(p));
+    const style = lib.config && lib.config.buying && lib.config.buying.style === 'strings' ? 'strings' : 'bulk';
+    if (style === 'strings') return strings[0] || null;
+    return list.find(isBulk) || strings[0] || null;
+  }
 
   // ---------------------------------------------------------------- products
-  /** Enabled products whose suitableFor list includes the feature type, in library order. */
-  function suitableProducts(type, library) {
+  /**
+   * Enabled products whose suitableFor list includes the feature type, in library order: the generic ones and
+   * the chosen supplier's (so a plan for "Any store" lists no supplier catalog). opts.allSuppliers: true lists
+   * every supplier's products as well, for a picker that offers them all.
+   */
+  function suitableProducts(type, library, opts) {
     const lib = library && Array.isArray(library.products) ? library : catalog.getLibrary(null);
-    return lib.products.filter((p) => isEnabled(p) && Array.isArray(p.suitableFor) && p.suitableFor.includes(type));
+    const list = opts && opts.allSuppliers === true ? lib.products : autoPool(lib);
+    return list.filter((p) => isEnabled(p) && Array.isArray(p.suitableFor) && p.suitableFor.includes(type));
   }
 
   /**
@@ -102,7 +144,8 @@ LP.define('design', ['catalog'], function (catalog) {
    * Turning off an LED product therefore never silently switches to its 12× hungrier incandescent twin.
    */
   function fallbackProduct(type, lib, ref) {
-    const list = suitableProducts(type, lib).filter((p) => !productDataProblem(p));
+    const strings = lib.config && lib.config.buying && lib.config.buying.style === 'strings';
+    const list = suitableProducts(type, lib).filter((p) => !(strings && isBulk(p)) && !productDataProblem(p));
     if (!list.length) return null;
     const rank = (p) => {
       const tech = p.tech === 'incandescent' ? 3 : 0;
@@ -139,11 +182,17 @@ LP.define('design', ['catalog'], function (catalog) {
     const defaults = (lib.config && lib.config.typeDefaults) || {};
     const defId = typeof defaults[type] === 'string' && defaults[type] ? defaults[type] : null;
     const defProduct = defId ? catalog.getProduct(lib.products, defId) : null;
+    // Buying from a supplier: its product for the same job replaces the generic default (SPEC §8.3).
+    if (defId && !catalog.isSupplierProduct(defProduct)) {
+      const own = supplierEquivalent(defId, lib);
+      if (own) return { product: own, source: 'supplier', warnings };
+    }
     if (isUsable(defProduct)) return { product: defProduct, source: 'typeDefault', warnings };
     // The type default is off or missing: the stand-in should resemble it (or the catalog's default for the type).
     const ref = defProduct || (defId && catalog.getProduct(catalog.DEFAULT_PRODUCTS, defId)) || wantedProduct ||
       (FEATURE_TYPES[type] && catalog.getProduct(catalog.DEFAULT_PRODUCTS, FEATURE_TYPES[type].defaultProduct)) || null;
-    const fallback = fallbackProduct(type, lib, ref);
+    const generic = fallbackProduct(type, lib, ref);
+    const fallback = generic && !catalog.isSupplierProduct(generic) ? (supplierEquivalent(generic.id, lib) || generic) : generic;
     if (fallback) {
       const what = PLURAL[type] || 'this feature';
       const name = fallback.name || fallback.id;
@@ -182,7 +231,8 @@ LP.define('design', ['catalog'], function (catalog) {
       type = product.category === 'rope' ? 'adhesive' : 'allInOne';
     }
     if (!type) return null;
-    const spacing = pos(config && config.clipSpacingIn) || 12;
+    // Cut-to-length socket wire is clipped at every socket; everything else at the library's clip spacing.
+    const spacing = (isBulk(product) && pos(product.bulbSpacingIn)) || pos(config && config.clipSpacingIn) || 12;
     // One clip every `spacing` inches plus one to finish the run.
     return { type, count: Math.ceil((lengthFt * 12) / spacing) + 1 };
   }
@@ -354,6 +404,8 @@ LP.define('design', ['catalog'], function (catalog) {
         clips: null, lightStakes: 0, method: methodGuess(ftype, product), detail: '', warnings: warnings.slice(),
         start: null, end: null, reversed: false, chainId: null, feedIds: [], outletId: null, circuitId: null,
       };
+      if (catalog.isSupplierProduct(product)) run.supplierId = product.supplierId;
+      if (isBulk(product)) run.productKind = 'bulk';
       if (product && !(Number.isFinite(product.price) && product.price >= 0)) {
         const shown = product.price === undefined ? '' : ` (${String(product.price)})`;
         run.warnings.push(`${run.productName} has no valid price in the product library${shown}, so the shopping list prices it at $0. Fix it in the product library.`);
@@ -389,6 +441,11 @@ LP.define('design', ['catalog'], function (catalog) {
       run.watts = round(quantity * Math.max(0, finiteOr(product.wattsPerUnit, 0)), 2);
       run.amps = round(run.watts / voltage, 4);
       run.detail = q.detail;
+      if (isBulk(product) && q.method === 'per-foot' && quantity > 0 && pos(product.bulbSpacingIn)) {
+        const sockets = Math.ceil((quantity * 12) / product.bulbSpacingIn - 1e-9);
+        run.bulbs = sockets;
+        run.detail += ` of socket wire = ${num(sockets, 0)} ${sockets === 1 ? 'socket' : 'sockets'} (one every ${short(product.bulbSpacingIn)} in), one bulb each`;
+      }
       run.warnings.push(...q.warnings);
       run.clips = clipsFor(feat, product, run.lengthFt, config);
       // String lights on a stake mount (ground stakes, or C9 / C7 / rope along a walkway) need one light stake

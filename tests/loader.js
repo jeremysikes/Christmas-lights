@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 require('../src/core/lp.js');
-const CORE = ['geometry', 'camera', 'exif', 'catalog', 'measure', 'design', 'power', 'bom', 'schema', 'plan', 'sample'];
+const CORE = ['geometry', 'camera', 'exif', 'suppliers', 'catalog', 'measure', 'design', 'power', 'bom', 'schema', 'plan', 'sample'];
 for (const name of CORE) {
   const file = path.join(__dirname, '..', 'src', 'core', name + '.js');
   if (fs.existsSync(file)) require(file);

@@ -10,7 +10,7 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
 const SCRIPTS = [
   'src/core/lp.js',
-  'src/core/geometry.js', 'src/core/camera.js', 'src/core/exif.js', 'src/core/catalog.js',
+  'src/core/geometry.js', 'src/core/camera.js', 'src/core/exif.js', 'src/core/suppliers.js', 'src/core/catalog.js',
   'src/core/measure.js', 'src/core/design.js', 'src/core/power.js', 'src/core/bom.js',
   'src/core/schema.js', 'src/core/plan.js', 'src/core/sample.js',
   'src/ui/persist.js', 'src/ui/store.js', 'src/ui/imagesource.js', 'src/ui/actions.js',

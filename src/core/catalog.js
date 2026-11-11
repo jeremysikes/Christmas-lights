@@ -1,8 +1,13 @@
 /* LightPlan core: catalog.
  * Feature types, the default product library, accessories and rules of thumb.
  * Everything here is plain JSON-able data so it can be edited in the UI, exported, and moved to a backend.
- * Values are typical retail figures (US, 120 V, 2026 USD), not one brand. Always check the box label. */
-LP.define('catalog', [], function () {
+ * Values are typical retail figures (US, 120 V, 2026 USD), not one brand. Always check the box label.
+ *
+ * Phase 1.1 (SPEC §8.3): the library also carries the supplier map from core/suppliers.js. getLibrary appends
+ * the suppliers' products to the project's list and says which supplier the project buys from
+ * (library.supplierId; 'generic' = "Any store", the Phase 1 behaviour). config.buying holds how C7/C9 is
+ * bought (cut-to-length wire and bulbs, or ready-made strings) and how leftovers are costed. */
+LP.define('catalog', ['suppliers'], function (suppliers) {
   'use strict';
 
   const FEATURE_TYPES = {
@@ -76,6 +81,10 @@ LP.define('catalog', [], function () {
     { sku: 'tap-3way', name: 'Outdoor 3-way tap', category: 'power', unit: 'each', packSize: 1, price: 6.99 },
     { sku: 'gfci-adapter', name: 'Portable outdoor GFCI adapter', category: 'power', unit: 'each', packSize: 1, price: 24.99 },
     { sku: 'cord-cover', name: 'Walkway cord cover, 6 ft', category: 'hardware', unit: 'each', packSize: 1, price: 14.99 },
+    // Slide-on plugs for cut-to-length socket wire (bulk C7/C9, SPEC §8.3). Only used when a supplier's bulk
+    // product has no plug of its own on file.
+    { sku: 'plug-spt1-male', name: 'Slide-on male plugs for SPT-1 socket wire', category: 'lights', unit: 'pack', packSize: 10, price: 7.99 },
+    { sku: 'plug-spt1-female', name: 'Slide-on female plugs for SPT-1 socket wire', category: 'lights', unit: 'pack', packSize: 10, price: 7.99 },
   ];
   for (const g of CORD_GAUGES) {
     for (const L of CORD_LENGTHS) {
@@ -105,7 +114,29 @@ LP.define('catalog', [], function () {
     refDisagreementWarnPct: 5,
     confidence: { highMin: 75, mediumMin: 50 },
     maxImageSide: 2048,
+    // Phase 1.1 (SPEC §8.3). style: how C7/C9 from the chosen supplier is bought when a run has no product of
+    // its own: 'bulk' = socket wire cut to length + bulbs + plugs, 'strings' = ready-made strings.
+    // costBasis: 'bought' totals everything ordered; 'used' totals only the share of wire, bulbs and plugs this
+    // job uses (installers who carry leftovers to the next job).
+    buying: { style: 'bulk', costBasis: 'bought' },
   };
+  const BUYING_STYLES = ['bulk', 'strings'];
+  const COST_BASES = ['bought', 'used'];
+
+  /** Supplier category-page role (suppliers.ROLES) for each generic accessory sku and product category. */
+  const ACCESSORY_ROLES = {
+    'clip-allinone': 'clips', 'clip-gutter': 'clips', 'clip-shingle': 'clips', 'clip-ridge': 'clips', 'clip-adhesive': 'clips', 'zip-ties': 'clips',
+    'light-stakes': 'stakes', 'timer-outdoor': 'timers', 'plug-spt1-male': 'plugs', 'plug-spt1-female': 'plugs',
+  };
+  const CATEGORY_ROLES = { c9: 'stringers', c7: 'stringers', mini: 'miniLights', icicle: 'icicle', net: 'net', rope: 'rope', treewrap: 'treeWrap' };
+  /** Role for an accessory sku: the table above, extension cords by their sku prefix, else null (search instead). */
+  function accessoryRole(sku) {
+    if (Object.prototype.hasOwnProperty.call(ACCESSORY_ROLES, sku)) return ACCESSORY_ROLES[sku];
+    return /^cord-\d+-\d+$/.test(String(sku)) ? 'extensionCords' : null;
+  }
+  function categoryRole(category) {
+    return Object.prototype.hasOwnProperty.call(CATEGORY_ROLES, category) ? CATEGORY_ROLES[category] : null;
+  }
 
   function isPlainObject(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
   function deepClone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
@@ -121,12 +152,30 @@ LP.define('catalog', [], function () {
     return out;
   }
 
-  /** The effective library for a project: products (override list or defaults), merged config, accessories. */
+  /**
+   * The effective library for a project: {products, config, accessories, supplierId, suppliers}.
+   * products = the project's own list (or the defaults) followed by every supplier product whose id is not
+   * already in it, so a saved (edited) copy of a supplier product wins over the catalog's. supplierId = the
+   * supplier the project buys from when it names a known one, else 'generic'. config = defaults with the
+   * project's overrides merged in; config.buying values that are not known words fall back to the defaults.
+   */
   function getLibrary(project) {
     const lib = (project && project.library) || {};
     const products = Array.isArray(lib.products) && lib.products.length ? deepClone(lib.products) : deepClone(DEFAULT_PRODUCTS);
+    const have = new Set(products.map((p) => p && p.id));
+    for (const p of suppliers.SUPPLIER_PRODUCTS) if (!have.has(p.id)) products.push(deepClone(p));
     const config = deepMerge(DEFAULT_CONFIG, isPlainObject(lib.config) ? lib.config : null);
-    return { products, config, accessories: deepClone(ACCESSORIES) };
+    if (!isPlainObject(config.buying)) config.buying = deepClone(DEFAULT_CONFIG.buying);
+    if (!BUYING_STYLES.includes(config.buying.style)) config.buying.style = DEFAULT_CONFIG.buying.style;
+    if (!COST_BASES.includes(config.buying.costBasis)) config.buying.costBasis = DEFAULT_CONFIG.buying.costBasis;
+    return {
+      products, config, accessories: deepClone(ACCESSORIES),
+      supplierId: suppliers.knownSupplierId(lib.supplierId), suppliers: deepClone(suppliers.SUPPLIERS),
+    };
+  }
+  /** True for a product from a supplier's catalog (anything but "Any store"). */
+  function isSupplierProduct(p) {
+    return !!p && typeof p.supplierId === 'string' && p.supplierId !== '' && p.supplierId !== suppliers.GENERIC_ID;
   }
   function getProduct(products, id) {
     if (!Array.isArray(products) || !id) return null;
@@ -150,7 +199,8 @@ LP.define('catalog', [], function () {
 
   return {
     FEATURE_TYPES, TYPE_ORDER, LINEAR_TYPES, DEFAULT_PRODUCTS, DEFAULT_CONFIG, ACCESSORIES, COLOR_MODES,
-    CLIP_TYPES, CORD_GAUGES, CORD_LENGTHS, CORD_PRICES, cordSku,
+    CLIP_TYPES, CORD_GAUGES, CORD_LENGTHS, CORD_PRICES, cordSku, BUYING_STYLES, COST_BASES,
     getLibrary, getProduct, getAccessory, resolveColors, deepMerge, deepClone, isPlainObject,
+    accessoryRole, categoryRole, isSupplierProduct,
   };
 });
