@@ -13,6 +13,11 @@
  * Deviations from SPEC §6.6 (additive): mount() returns {render, destroy}. Module exports also icon(name),
  * h(), morph(), pickFile(actions, kind), exportFile(store, actions, kind), stepWarnings(plan), STEPS,
  * validateProducts(list).
+ *
+ * Phase 1.1 (SPEC §8.5): the panels no longer end in a "Next" button. One button is pinned under the panel by
+ * app.js; nextAction(project, ui, plan) says what it reads and runNextAction does it, and planProgress(project,
+ * plan) tells the step bar what is done. The Power step is built from powerVerdict(plan) and
+ * ui.export.describeCords; Review opens with ui.export.roughMeasurements.
  */
 LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.actions', 'ui.persist', 'ui.store'],
   function (catalog, measure, camera, design, power, actionsModule, persist, storeModule) {
@@ -249,6 +254,91 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         }
       }
       return out;
+    }
+
+    // ================================================================ progress and the next thing to do
+    /**
+     * Where the plan stands, read from the plan itself (never from which step happens to be open).
+     * → { photo, scaled, traced (items on this photo), outlets (on this photo),
+     *     steps: {1: photo in, 2: scale set, 3: something traced, 4: lights planned, 5: outlet placed, 6: false},
+     *     left: ['set the scale', …]  (what is still to do, in order) }
+     */
+    function planProgress(project, plan) {
+      const image = storeModule.activeImageOf(project);
+      const onPhoto = (x) => !!x && (!image || x.imageId === image.id || x.imageId == null);
+      const sols = (plan && plan.measured && plan.measured.planes) || {};
+      const scaled = !!image && arr(project && project.planes).some((pl) => pl && pl.imageId === image.id && sols[pl.id] && sols[pl.id].ok);
+      const traced = image ? arr(project && project.features).filter(onPhoto).length : 0;
+      const outlets = image ? arr(project && project.outlets).filter(onPhoto).length : 0;
+      const left = [];
+      if (!image) left.push('add a photo');
+      else {
+        if (!scaled) left.push('set the scale');
+        if (!traced) left.push('trace the lights');
+        if (!outlets) left.push('place an outlet');
+      }
+      return {
+        photo: !!image, scaled, traced, outlets, left,
+        steps: { 1: !!image, 2: scaled, 3: traced > 0, 4: traced > 0, 5: outlets > 0, 6: false },
+      };
+    }
+
+    /**
+     * The one button pinned under the panel: what to do next, from the plan's state and the open step.
+     * → { id, label, primary, note }   id is handled by runNextAction; note is the "Left to do" line (may be '').
+     */
+    function nextAction(project, ui, plan) {
+      const pr = planProgress(project, plan);
+      const mode = (ui && ui.mode && ui.mode.name) || 'select';
+      const step = (ui && ui.step) || 1;
+      const note = pr.photo && pr.left.length ? 'Left to do: ' + pr.left.join(', ') + '.' : '';
+      const act = (id, label, primary) => ({ id, label, primary: primary !== false, note });
+      // A tool is in use: the button is the way out of it (the hint bar on the photo says what to tap).
+      if (mode === 'trace') return { id: 'trace-done', label: 'Done tracing', primary: true, note: '' };
+      if (mode === 'rect' || mode === 'line' || mode === 'outlet') return { id: 'cancel-tool', label: 'Cancel', primary: false, note: '' };
+      if (!pr.photo) return { id: 'pick-photo', label: 'Choose photo', primary: true, note: '' };
+      const toScale = () => act('go-2', pr.scaled ? 'Next: ' + STEPS[1].label : 'Set the scale');
+      const toTrace = () => act('go-3', pr.traced ? 'Next: ' + STEPS[2].label : 'Trace the lights');
+      if (step <= 1) return toScale();
+      if (step === 2) {
+        if (pr.scaled) return toTrace();
+        const planes = arr(project.planes).filter((pl) => pl && storeModule.activeImageOf(project) && pl.imageId === storeModule.activeImageOf(project).id);
+        const active = byId(planes, ui.activePlaneId);
+        const wall = active && active.kind === 'wall' ? active : planes.find((pl) => pl.kind === 'wall') || null;
+        if (!wall) return act('add-wall', 'Add a wall');
+        if (!wall.rect && !arr(wall.refs).length) return Object.assign(act('mark-rect', 'Mark the 4 corners'), { planeId: wall.id });
+        // A rectangle of unknown size (or references that do not solve yet): one known length sets the scale.
+        return Object.assign(act('draw-ref', 'Add a known length'), { planeId: wall.id });
+      }
+      if (step === 3) {
+        if (!pr.traced) return pr.scaled ? act('trace-roofline', 'Trace the roofline') : act('go-2', 'Set the scale');
+        return act('go-4', 'Next: ' + STEPS[3].label);
+      }
+      if (step === 4) return pr.traced ? act('go-5', 'Next: ' + STEPS[4].label) : toTrace();
+      if (step === 5) {
+        if (!pr.traced) return toTrace();
+        return pr.outlets ? act('go-6', 'See the shopping list') : act('place-outlet', 'Place an outlet');
+      }
+      return pr.traced ? act('save-pdf', 'Save PDF') : toTrace();
+    }
+
+    /** Do what the pinned button says. env: {store, actions}. Returns a promise for 'save-pdf', else undefined. */
+    function runNextAction(next, env) {
+      const actions = env.actions;
+      const id = next && next.id;
+      if (!id) return undefined;
+      if (id === 'pick-photo') return void pickFile(actions, 'file');
+      if (id === 'trace-done') return void actions.finishTracing();
+      if (id === 'cancel-tool') return void actions.cancelDraft();
+      if (id === 'add-wall') return void actions.addPlane('wall');
+      if (id === 'mark-rect') return void actions.startPlaneRect(next.planeId);
+      if (id === 'draw-ref') return void actions.startReference(next.planeId);
+      if (id === 'trace-roofline') return void actions.startTrace('roofline');
+      if (id === 'place-outlet') return void actions.startOutlet();
+      if (id === 'save-pdf') return exportFile(env.store, actions, 'pdf');
+      const m = /^go-(\d)$/.exec(id);
+      if (m) return void actions.goStep(Number(m[1]));
+      return undefined;
     }
 
     // ================================================================ files and exports (shared with app.js)
@@ -488,15 +578,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         h('h2', { class: 'panel-title' }, STEPS[n - 1].title),
         sub ? h('p', { class: 'panel-sub' }, sub) : null);
     }
-    function nextButton(n) {
-      if (n >= 6) {
-        return h('div', { class: 'panel-next' },
-          button('Save project (JSON)', { act: 'export', data: { kind: 'json' }, cls: 'primary block', icon: 'download', disabled: savingUnavailable }),
-          h('p', { class: 'hint center' }, 'Saving keeps the photo, tracing and settings in one file you can open later.'));
-      }
-      return h('div', { class: 'panel-next' },
-        button('Next: ' + STEPS[n].label, { act: 'go-step', data: { step: n + 1 }, cls: 'primary block', icon: 'arrowRight' }));
-    }
     function dl(rows) {
       return h('dl', { class: 'facts' }, rows.filter(Boolean).map((r) => h('div', { class: 'fact' }, h('dt', null, r[0]), h('dd', { class: r[2] || null }, r[1]))));
     }
@@ -572,7 +653,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         kids.push(lensSection(ctx));
       }
       kids.push(disclosure('Photo tips', h('ul', { class: 'tips' }, PHOTO_TIPS.map((t) => h('li', null, t))), { open: !image || isSample, key: 'tips' }));
-      if (image && plan) kids.push(nextButton(1));
       return kids;
     }
 
@@ -645,7 +725,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const pl = ctx.activePlane;
       if (pl) kids.push(planeEditor(ctx, pl, sols[pl.id]));
       kids.push(pitchSection(ctx));
-      kids.push(nextButton(2));
       return kids;
     }
 
@@ -869,7 +948,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         : h('p', { class: 'hint' }, 'Nothing traced yet. Pick a type above, then tap along it on the photo.'), { key: 'features' }));
 
       kids.push(totalsSection(ctx));
-      kids.push(nextButton(3));
       return kids;
     }
 
@@ -1030,7 +1108,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
 
       kids.push(productEditor(ctx));
       kids.push(configEditor(ctx));
-      kids.push(nextButton(4));
       return kids;
     }
 
@@ -1294,7 +1371,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const noOutlet = verdict.level === 'warn' && verdict.lead === 'Place an outlet:';
       const warns = arr(pw.warnings).filter((w) => w.code !== 'disclaimer' && !(noOutlet && w.code === 'no-outlets')).slice().sort((a, b) => order[a.level] - order[b.level]);
       kids.push(section('Warnings', warns.length ? warningList(warns, false) : h('p', { class: 'ok-line' }, icon('check'), h('span', null, noOutlet ? 'Nothing else to check.' : 'No power problems found.')), { key: 'pwarn' }));
-      kids.push(nextButton(5));
       return kids;
     }
 
@@ -1366,8 +1442,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         button('CSV (shopping list)', { act: 'export', data: { kind: 'csv' }, icon: 'table', disabled: !!busy }),
         button('Save project (JSON)', { act: 'export', data: { kind: 'json' }, icon: 'download', disabled: !!busy }),
         button('Open project (JSON)', { act: 'pick', data: { kind: 'json' }, icon: 'folder' })),
-      project.quote.enabled ? null : h('p', { class: 'hint' }, 'Turn on installer mode above to make a customer quote.')], { key: 'export' }));
-      kids.push(nextButton(6));
+      project.quote.enabled ? null : h('p', { class: 'hint' }, 'Turn on installer mode above to make a customer quote.'),
+      h('p', { class: 'hint' }, 'Save project keeps the photo, tracing and settings in one file you can open later.')], { key: 'export' }));
       return kids;
     }
 
@@ -1962,6 +2038,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
 
     return {
       mount, icon, h, morph, pickFile, exportFile, stepWarnings, warningStep, STEPS, validateProducts, diffConfig, ICONS,
-      powerVerdict, outletSummaryText, roughList,
+      powerVerdict, outletSummaryText, roughList, planProgress, nextAction, runNextAction,
     };
   });

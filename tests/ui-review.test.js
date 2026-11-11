@@ -182,7 +182,9 @@ test('data-export:F1 work traced on the practice sample counts as the user\'s wo
   assert.equal(traced.actions.hasUserWork(), false, 'the untouched traced sample is not work');
   traced.actions.updateFeature('ft_eave', { overrideFt: 40 });
   assert.equal(traced.actions.hasUserWork(), true, 'an edited traced sample is work');
-  assert.equal(store.ui().mode.name, 'trace');
+  // Phase 1.1 (UX-06): Finish puts the trace tool down and the hint bar offers what to trace next.
+  assert.equal(store.ui().mode.name, 'select');
+  assert.equal(store.ui().afterTrace.type, 'roofline');
 });
 
 // ---------------------------------------------------------------- mobile-ux:UX-11
@@ -207,6 +209,7 @@ test('mobile-ux:UX-12 Undo while tracing removes the last tapped point before to
   actions.addDraftPoint([10, 10]);
   actions.addDraftPoint([200, 10]);
   actions.completeDraft();
+  actions.startTrace('roofline');   // Phase 1.1: Finish puts the tool down; "Eave" in the hint bar picks it up again
   actions.addDraftPoint([10, 50]);
   actions.addDraftPoint([200, 50]);
   assert.equal(actions.undoLabel(), 'Undo point');

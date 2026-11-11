@@ -13,8 +13,9 @@
  *
  * Deviations from SPEC §6.1 (additive; the documented API is unchanged):
  *  - UI state also has `calib` (calibration form values), `bannerDismissed`, `busy` (a progress message),
- *    `notice` (a persistent note the app shows: storage blocked, unreadable autosave, another tab) and
- *    `activeVertex` ({featureId, index} of the point last pressed, for Delete point).
+ *    `notice` (a persistent note the app shows: storage blocked, unreadable autosave, another tab),
+ *    `activeVertex` ({featureId, index} of the point last pressed, for Delete point) and `afterTrace`
+ *    ({featureId, type} of the item just traced, while the hint bar offers what to trace next).
  *  - createStore accepts opts.persist (default ui.persist; null disables autosave, for tests) and opts.now
  *    (() => ISO string, for tests).
  *  - commit() returns true when the project changed. A mutator may return false to cancel the commit.
@@ -48,6 +49,7 @@ LP.define('ui.store', ['catalog', 'plan', 'ui.persist'], function (catalog, plan
       busy: null,
       activeVertex: null,
       notice: null,          // persistent note: {kind:'storage'|'unreadable'|'foreign', ...}
+      afterTrace: null,      // {featureId, type} right after a trace is finished: the hint bar offers what to trace next
     };
   }
 
@@ -82,6 +84,7 @@ LP.define('ui.store', ['catalog', 'plan', 'ui.persist'], function (catalog, plan
       }
       if (!exists) patch.selection = null;
     }
+    if (ui.afterTrace && !byId(project.features, ui.afterTrace.featureId)) patch.afterTrace = null;
 
     if (!byId(imgPlanes, ui.activePlaneId)) {
       const wall = imgPlanes.find((p) => p.kind === 'wall') || imgPlanes[0] || null;

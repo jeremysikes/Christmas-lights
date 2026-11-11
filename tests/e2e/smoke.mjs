@@ -239,7 +239,34 @@ async function runPass(browser, name) {
     t.ok(after.features === info.features + 1 && !!newId, 'finishing the trace adds a feature');
     const m0 = await page.evaluate((id) => window.LightPlanApp.store.plan().measured.features[id], newId);
     t.ok(m0 && m0.ok && m0.lengthFt > 1, 'the new roofline has a measured length (' + (m0 && m0.lengthFt && m0.lengthFt.toFixed(2)) + ' ft)');
-    await page.click('#hint-cancel').catch(() => {});
+    // E3 (UX-06): after Finish the hint bar shows the result and what to trace next, not "0 points" and a dead Finish.
+    const afterFinish = await page.evaluate(() => {
+      const vis = (id) => { const el = document.getElementById(id); return !!el && !el.hidden && el.getBoundingClientRect().height > 0; };
+      const ui = window.LightPlanApp.store.ui();
+      return {
+        mode: ui.mode.name, sheet: ui.sheet, text: document.getElementById('hint-text').textContent,
+        chips: Array.from(document.querySelectorAll('#hint-next-chips [data-next]')).map((b) => b.textContent),
+        nextShown: vis('hint-next'), finishShown: vis('hint-finish'), doneShown: vis('hint-done'), moreShown: vis('hint-more'),
+        traceBars: Array.from(document.querySelectorAll('.trace-bar')).filter((el) => el.getBoundingClientRect().height > 0).length,
+      };
+    });
+    t.ok(afterFinish.mode === 'select' && afterFinish.nextShown && !afterFinish.finishShown && afterFinish.doneShown && afterFinish.moreShown,
+      'after Finish the hint bar offers what to trace next (' + JSON.stringify(afterFinish.chips) + ', More, Done) and no disabled Finish');
+    t.ok(/^Eave \d+: \d+′ \d+″/.test(afterFinish.text) && !/0 points/.test(afterFinish.text), 'the hint bar shows the result of the trace (' + afterFinish.text + ')');
+    t.ok(afterFinish.chips.join('/') === 'Eave/Window/Bush', 'the quick picks are Eave / Window / Bush (' + afterFinish.chips.join('/') + ')');
+    if (cfg.hasTouch) t.ok(afterFinish.sheet === 'min', 'phone: the sheet stays collapsed while the next item is offered (' + afterFinish.sheet + ')');
+    await shot('after-trace');
+    // Picking a chip starts that trace; on a phone the tracing buttons are shown once (hint bar), not twice.
+    await page.click('#hint-next-chips [data-next="window"]');
+    await sleep(300);
+    const picked = await page.evaluate(() => ({
+      mode: window.LightPlanApp.store.ui().mode, sheet: window.LightPlanApp.store.ui().sheet,
+      traceBars: Array.from(document.querySelectorAll('.trace-bar')).filter((el) => el.getBoundingClientRect().height > 0).length,
+      finishButtons: Array.from(document.querySelectorAll('#hint-finish, [data-act="draft-finish"]')).filter((el) => el.getBoundingClientRect().height > 0).length,
+    }));
+    t.ok(picked.mode.name === 'trace' && picked.mode.opts.type === 'window', 'the Window chip starts tracing a window');
+    if (cfg.hasTouch) t.ok(picked.traceBars === 0 && picked.finishButtons === 1 && picked.sheet === 'min', 'phone: one set of tracing buttons, no sticky trace bar in the sheet (' + JSON.stringify({ bars: picked.traceBars, finish: picked.finishButtons, sheet: picked.sheet }) + ')');
+    await page.click('#hint-cancel');
     await sleep(300);
     await shot('trace');
 

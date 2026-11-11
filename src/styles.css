@@ -34,7 +34,7 @@
   --font-display: "Big Shoulders Display", "Arial Narrow", "Roboto Condensed", Impact, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --sheet-min: 148px;
-  --sheet-half: 46%;
+  --sheet-half: 52%;   /* the pinned action bar takes 60 px of the sheet, so half is a little taller than it was */
   --sheet-full: calc(100% - 56px);
   color-scheme: light;
 }
@@ -354,6 +354,11 @@ body {
 .hint-line { flex: 1 1 220px; margin: 0; font-weight: 700; }
 .hint-count { margin-left: 4px; padding: 1px 8px; border-radius: 10px; background: rgba(255, 191, 90, 0.2); color: #ffcf85; font-size: 13px; white-space: nowrap; }
 .hint-actions, .banner-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+/* After a trace: "Trace next: Eave / Window / Bush / More / Done". */
+.hint-next { display: flex; flex: 1 1 100%; flex-wrap: wrap; align-items: center; gap: 6px; }
+.hint-next-label { font-size: 13px; font-weight: 700; color: #cfd8e2; margin-right: 2px; }
+.hint-next-chips { display: contents; }
+.hint-next #hint-done { margin-left: auto; }
 .hintbar .btn, .sample-banner .btn:not(.primary) { background: rgba(255, 255, 255, 0.1); border-color: rgba(255, 255, 255, 0.25); color: #f2f5f8; }
 .hintbar .btn.primary, .sample-banner .btn.primary { background: #ffbf5a; border-color: #ffbf5a; color: #1d1305; }
 .sample-banner p { flex: 1 1 200px; margin: 0; font-size: 14px; }
@@ -542,8 +547,21 @@ body {
   overflow-x: hidden;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  padding: 0 var(--gutter-r) calc(24px + env(safe-area-inset-bottom, 0px)) var(--gutter-l);
+  padding: 0 var(--gutter-r) 20px var(--gutter-l);
 }
+/* The one next-action button, pinned under the panel so it is in view at every sheet size. */
+.action-bar {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px var(--gutter-r) calc(8px + env(safe-area-inset-bottom, 0px)) var(--gutter-l);
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 -6px 14px rgba(0, 0, 0, 0.06);
+}
+.action-note { margin: 0; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lp-app[data-sheet="min"] .action-note { display: none; }
 .panel-loading { color: var(--muted); padding: 16px 0; }
 .panel-content { display: flex; flex-direction: column; gap: 18px; padding-top: 2px; }
 
@@ -559,7 +577,6 @@ body {
 .sub h4, .disclosure-body h4 { margin: 0; font-size: 15px; }
 .hint { margin: 0; color: var(--muted); font-size: 14px; }
 .hint.center { text-align: center; }
-.panel-next { padding-top: 4px; display: flex; flex-direction: column; gap: 8px; }
 
 /* fields */
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -958,6 +975,7 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
   .lp-app[data-sheet="full"][data-has-image="true"] .canvas-controls { display: flex; }
   .sheet-handle { display: none; }
   .panel-root { padding-top: 16px; }
+  .lp-app[data-sheet="min"] .action-note { display: block; }
   .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tiles.small { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .export-grid { grid-template-columns: minmax(0, 1fr); }
@@ -986,6 +1004,11 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
 .lp-app[data-mode="line"] .toast-region,
 .lp-app[data-mode="trace"] .toast-region,
 .lp-app[data-mode="outlet"] .toast-region { top: auto; bottom: 68px; }
+/* An upright phone shows the tracing buttons once, in the hint bar on the photo: the panel's own bar is for the
+   layouts where the panel sits beside the photo (desktop, a phone held sideways). */
+@media (max-width: 899px) {
+  .trace-bar { display: none; }
+}
 @media (max-width: 899px) {
   /* Below 900 px the zoom buttons sit at the bottom right of the photo: keep the toast clear of them. */
   .lp-app[data-mode="rect"] .toast-region,
@@ -1027,6 +1050,9 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
   }
   .sheet-handle { display: none; }
   .panel-root { padding-top: 12px; }
+  .trace-bar { display: flex; }
+  .action-bar { padding-top: 6px; padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px)); }
+  .lp-app[data-sheet="min"] .action-note { display: block; }
   .lp-app[data-sheet="full"][data-has-image="true"] .canvas-controls { display: flex; }
   .stage-top { top: 6px; gap: 6px; }
   .hintbar { padding: 4px 4px 4px 10px; gap: 4px 8px; }

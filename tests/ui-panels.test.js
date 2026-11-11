@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
 
-for (const f of ['persist', 'store', 'imagesource', 'actions', 'export', 'panels']) require(path.join(__dirname, '..', 'src', 'ui', f + '.js'));
+for (const f of ['persist', 'store', 'imagesource', 'actions', 'export', 'panels', 'app']) require(path.join(__dirname, '..', 'src', 'ui', f + '.js'));
 
 const catalog = LP.require('catalog');
 const schema = LP.require('schema');
@@ -64,6 +64,134 @@ test('warnings are routed to the step that can fix them', () => {
   assert.equal(counts[5].count, step5.length);
   assert.equal(counts[5].level, 'warn');
   assert.equal(counts[1].count, 0, 'info and the disclaimer are not counted');
+});
+
+// ---------------------------------------------------------------- Phase 1.1: flow (UX-05, UX-06, UX-17, SPEC §8.5 "Flow")
+const app = LP.require('ui.app');
+const uiAt = (step, mode, extra) => Object.assign(storeMod.defaultUI(), { step, mode: { name: mode || 'select', opts: {} } }, extra || {});
+const nextAt = (project, step, mode, extra) => panels.nextAction(project, uiAt(step, mode, extra), plan.computePlan(project));
+
+test('UX-05 the pinned button says the next thing to do from the plan\'s state', () => {
+  // Nothing yet: choose a photo, whatever step is open.
+  const empty = schema.createProject({ now: '2026-11-11T10:00:00.000Z' });
+  for (const step of [1, 3, 6]) assert.deepEqual([nextAt(empty, step).id, nextAt(empty, step).label], ['pick-photo', 'Choose photo']);
+  // A photo with no scale (the practice sample): set the scale, then mark the corners.
+  const blank = schema.normalizeProject(sample.createSample({ traced: false }).project);
+  assert.equal(panels.planProgress(blank, plan.computePlan(blank)).scaled, false);
+  assert.deepEqual([nextAt(blank, 1).id, nextAt(blank, 1).label], ['go-2', 'Set the scale']);
+  const mark = nextAt(blank, 2, 'select', { activePlaneId: 'pl_front' });
+  assert.deepEqual([mark.id, mark.label, mark.planeId], ['mark-rect', 'Mark the 4 corners', 'pl_front']);
+  assert.equal(nextAt(blank, 3).label, 'Set the scale', 'tracing before the scale is set leads back to it');
+  assert.match(nextAt(blank, 1).note, /^Left to do: set the scale, trace the lights, place an outlet\.$/);
+  // A rectangle of unknown size alone does not set the scale: one known length does.
+  const rectOnly = clone(blank);
+  rectOnly.planes.find((pl) => pl.id === 'pl_front').rect = { corners: [[480, 660], [960, 655], [962, 810], [478, 815]], widthFt: null, heightFt: null, presetId: 'unknown' };
+  assert.equal(nextAt(rectOnly, 2, 'select', { activePlaneId: 'pl_front' }).label, 'Add a known length');
+  // Scale set, nothing traced.
+  const scaled = tracedSample();
+  scaled.features = [];
+  scaled.outlets = [];
+  assert.equal(nextAt(scaled, 1).label, 'Next: Calibrate');
+  assert.equal(nextAt(scaled, 2).label, 'Trace the lights');
+  assert.deepEqual([nextAt(scaled, 3).id, nextAt(scaled, 3).label], ['trace-roofline', 'Trace the roofline']);
+  assert.equal(nextAt(scaled, 5).label, 'Trace the lights');
+  assert.equal(nextAt(scaled, 6).label, 'Trace the lights', 'nothing to save yet');
+  // Traced, no outlet.
+  const noOutlet = tracedSample();
+  noOutlet.outlets = [];
+  assert.equal(nextAt(noOutlet, 2).label, 'Next: Trace');
+  assert.equal(nextAt(noOutlet, 3).label, 'Next: Design');
+  assert.equal(nextAt(noOutlet, 4).label, 'Next: Power');
+  assert.deepEqual([nextAt(noOutlet, 5).id, nextAt(noOutlet, 5).label], ['place-outlet', 'Place an outlet']);
+  assert.equal(nextAt(noOutlet, 5).note, 'Left to do: place an outlet.');
+  // Everything in place.
+  const full = tracedSample();
+  assert.equal(nextAt(full, 5).label, 'See the shopping list');
+  assert.deepEqual([nextAt(full, 6).id, nextAt(full, 6).label], ['save-pdf', 'Save PDF']);
+  assert.equal(nextAt(full, 6).note, '');
+  // While a tool is in use the button is the way out of it.
+  assert.deepEqual([nextAt(full, 3, 'trace').id, nextAt(full, 3, 'trace').label], ['trace-done', 'Done tracing']);
+  for (const m of ['rect', 'line', 'outlet']) assert.deepEqual([nextAt(full, 2, m).id, nextAt(full, 2, m).primary], ['cancel-tool', false]);
+});
+
+test('UX-17 the step bar marks a step done from the plan, not from the step that is open', () => {
+  const steps = (p) => panels.planProgress(p, plan.computePlan(p)).steps;
+  assert.deepEqual(steps(schema.createProject({ now: '2026-11-11T10:00:00.000Z' })), { 1: false, 2: false, 3: false, 4: false, 5: false, 6: false });
+  const blank = schema.normalizeProject(sample.createSample({ traced: false }).project);
+  assert.deepEqual(steps(blank), { 1: true, 2: false, 3: false, 4: false, 5: false, 6: false });
+  const full = tracedSample();
+  assert.deepEqual(steps(full), { 1: true, 2: true, 3: true, 4: true, 5: true, 6: false }, 'the traced sample: all done, whichever step is open');
+  const noOutlet = tracedSample();
+  noOutlet.outlets = [];
+  assert.equal(steps(noOutlet)[5], false, 'Power is not done until an outlet is placed');
+  assert.equal(steps(noOutlet)[4], true);
+  assert.deepEqual(panels.planProgress(noOutlet, plan.computePlan(noOutlet)).left, ['place an outlet']);
+});
+
+test('UX-06 after Finish the hint bar shows the result and what to trace next', () => {
+  const store = storeMod.createStore({ project: tracedSample(), persist: null, now: () => '2026-11-11T12:00:00.000Z' });
+  const actions = actionsMod.createActions(store);
+  actions.goStep(3);
+  actions.startTrace('roofline');
+  let hint = app.hintFor(store.ui(), store.project(), store.plan());
+  assert.match(hint.text, /^Tap along the roofline/);
+  assert.ok(!hint.after);
+  actions.addDraftPoint([480, 700]);
+  actions.addDraftPoint([700, 700]);
+  actions.completeDraft();
+  const f = store.project().features[store.project().features.length - 1];
+  hint = app.hintFor(store.ui(), store.project(), store.plan());
+  assert.equal(hint.after, true);
+  assert.match(hint.text, new RegExp('^' + f.label + ': \\d+′ \\d+″'), 'the result: ' + hint.text);
+  assert.ok(!/0 points/.test(hint.text + hint.count));
+  assert.deepEqual(hint.next, ['roofline', 'window', 'bush'], 'the same kind again, then the usual next ones');
+  // After a window the window comes first.
+  actions.startTrace('window');
+  for (const pt of [[500, 700], [560, 700], [560, 760], [500, 760]]) actions.addDraftPoint(pt);
+  actions.completeDraft();
+  hint = app.hintFor(store.ui(), store.project(), store.plan());
+  assert.deepEqual(hint.next, ['window', 'roofline', 'bush']);
+  // Picking another item, or nothing, ends the offer; so does Done.
+  actions.select({ kind: 'feature', id: 'ft_eave' });
+  assert.equal(store.ui().afterTrace, null);
+  assert.equal(app.hintFor(store.ui(), store.project(), store.plan()), null);
+  actions.startTrace('bush');
+  for (const pt of [[600, 780], [650, 780], [650, 810], [600, 810]]) actions.addDraftPoint(pt);
+  actions.completeDraft();
+  assert.equal(store.ui().afterTrace.type, 'bush');
+  actions.finishTracing();
+  assert.deepEqual([store.ui().afterTrace, store.ui().selection, store.ui().mode.name], [null, null, 'select']);
+  // Done while a run is half traced keeps it when it has enough points, and drops a lone point.
+  const n = store.project().features.length;
+  actions.startTrace('roofline');
+  actions.addDraftPoint([480, 720]);
+  actions.addDraftPoint([700, 720]);
+  actions.finishTracing();
+  assert.equal(store.project().features.length, n + 1);
+  assert.equal(store.ui().mode.name, 'select');
+  actions.startTrace('roofline');
+  actions.addDraftPoint([480, 730]);
+  actions.finishTracing();
+  assert.equal(store.project().features.length, n + 1);
+  // Undoing the trace takes the offer with it; a new step does too.
+  actions.startTrace('roofline');
+  actions.addDraftPoint([480, 740]);
+  actions.addDraftPoint([700, 740]);
+  actions.completeDraft();
+  assert.ok(store.ui().afterTrace);
+  store.undo();
+  assert.equal(store.ui().afterTrace, null);
+  store.redo();
+  actions.goStep(4);
+  assert.equal(store.ui().afterTrace, null);
+  // An item with no scale says so instead of a length.
+  const blankStore = storeMod.createStore({ project: schema.normalizeProject(sample.createSample({ traced: false }).project), persist: null });
+  const blankActions = actionsMod.createActions(blankStore);
+  blankActions.startTrace('roofline');
+  blankActions.addDraftPoint([480, 640]);
+  blankActions.addDraftPoint([990, 640]);
+  blankActions.completeDraft();
+  assert.match(app.hintFor(blankStore.ui(), blankStore.project(), blankStore.plan()).text, /no length yet: set the scale in step 2/);
 });
 
 // ---------------------------------------------------------------- Phase 1.1: rough measurements (UX-03, SPEC §8.5 "Step 6")

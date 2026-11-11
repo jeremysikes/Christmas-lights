@@ -17,7 +17,11 @@
  *  - completeDraft({close}) accepts close:true (used when the first point is tapped again).
  *  - Extra actions: undo, undoLabel, canUndo (a draft point first), hasUserWork, setActiveVertex, setActivePlane, setView, setCalib, setSheet, startPlaneRect, startReference, startTrace,
  *    startOutlet, redrawPlaneLine, changeFeatureType, resetAutoPlan, setProjectName, dismissBanner,
- *    dismissToast, confirmReplace, hydrateImages, removePlaneRect, setOwnCord(featureIds, on).
+ *    dismissToast, confirmReplace, hydrateImages, removePlaneRect, setOwnCord(featureIds, on), finishTracing.
+ *  - Finishing a trace puts the tool down (mode 'select', the new item picked) and sets ui.afterTrace
+ *    {featureId, type}: the hint bar then shows the item's length and offers what to trace next. It is cleared by
+ *    starting any tool, picking something else, changing step, or finishTracing().
+ *  - loadImageFile opens step 2 (set the scale) once the photo is in, and says so.
  *  - deletePlane(id) returns a Promise<bool> (it asks first when traced items would be deleted with it).
  *  - addCircuit() returns the new circuit id; addPlane('wall') returns the new plane id.
  *  - loadSample({traced, confirm}) asks before replacing the user's work (confirm:false skips) and is undoable.
@@ -190,7 +194,7 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       let toastSeq = 0;
       let pendingConfirm = null;
 
-      const SELECT = () => ({ mode: { name: 'select', opts: {} }, draft: { points: [] } });
+      const SELECT = () => ({ mode: { name: 'select', opts: {} }, draft: { points: [] }, afterTrace: null });
 
       const actions = {};
 
@@ -236,8 +240,12 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
         store.setUI(Object.assign({ step, selection: null }, SELECT()));
       };
       actions.select = (sel) => {
-        if (!sel) { store.setUI({ selection: null }); return; }
+        // Picking anything but the item just traced (or nothing) ends the "trace next" offer in the hint bar.
+        const at = U().afterTrace;
+        const keep = !!(at && sel && sel.kind === 'feature' && sel.id === at.featureId);
+        if (!sel) { store.setUI(at ? { selection: null, afterTrace: null } : { selection: null }); return; }
         const patch = { selection: Object.assign({}, sel) };
+        if (at && !keep) patch.afterTrace = null;
         const p = P();
         if (sel.kind === 'plane' && findPlane(p, sel.id)) patch.activePlaneId = sel.id;
         else if (sel.kind === 'ref' && findPlane(p, sel.planeId)) patch.activePlaneId = sel.planeId;
@@ -263,7 +271,7 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
 
       // ------------------------------------------------------------ tools and drafts
       actions.setMode = (name, opts) => {
-        const patch = { mode: { name: name || 'select', opts: Object.assign({}, opts || {}) }, draft: { points: [] } };
+        const patch = { mode: { name: name || 'select', opts: Object.assign({}, opts || {}) }, draft: { points: [] }, afterTrace: null };
         if (name && name !== 'select' && name !== 'pan') patch.selection = null;
         store.setUI(patch);
       };
@@ -397,11 +405,26 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
             label: nextFeatureLabel(p, o.type),
           });
           store.commit('Trace ' + ft.short.toLowerCase(), (d) => { d.features.push(feature); });
-          // Stay in trace mode with the same type so the next run can be traced straight away.
-          store.setUI({ draft: { points: [] }, selection: { kind: 'feature', id: feature.id } });
+          // The tool is put down: the new item is picked (its points can be dragged) and the hint bar shows its
+          // length and offers what to trace next (ui.afterTrace) instead of an empty trace with a disabled Finish.
+          store.setUI(Object.assign(SELECT(), { selection: { kind: 'feature', id: feature.id }, afterTrace: { featureId: feature.id, type: o.type } }));
           return true;
         }
         return false;
+      };
+
+      /**
+       * "Done" after tracing (hint bar, pinned button): what is being traced is kept when it has enough points,
+       * then the tool is put down and nothing is picked.
+       */
+      actions.finishTracing = () => {
+        const ui = U();
+        if (ui.mode.name === 'trace') {
+          const ft = FEATURE_TYPES[ui.mode.opts && ui.mode.opts.type];
+          const need = ft ? Math.max(ft.minPoints || 2, ft.geometry === 'polygon' || ft.geometry === 'area' ? 3 : 2) : 2;
+          if (arr(ui.draft && ui.draft.points).length >= need) actions.completeDraft();
+        }
+        store.setUI(Object.assign(SELECT(), { selection: null }));
       };
 
       actions.startPlaneRect = (planeId) => {
@@ -963,12 +986,13 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           store.replaceProject(proj, { resetHistory: true });
           store.setImage(imageId, el, img.dataUrl);
           // Day view: a new photo has no lights yet, and calibrating needs the photo at full brightness.
+          // Straight on to step 2: with the photo in, setting the scale is the next thing to do.
           store.setUI(Object.assign(SELECT(), {
-            busy: null, step: 1, activePlaneId: wall.id, selection: null, bannerDismissed: false,
+            busy: null, step: 2, activePlaneId: wall.id, selection: null, bannerDismissed: false,
             view: Object.assign({}, U().view, { night: false, twinkle: false }),
           }));
-          const lens = img.exif && img.exif.focal35 ? 'The lens was read from the photo.' : 'The photo has no lens data, so LightPlan will work it out.';
-          actions.toast('Photo added. ' + lens + ' Tap Next to calibrate.', 'ok');
+          const lens = img.exif && img.exif.focal35 ? ' The lens was read from the photo.' : '';
+          actions.toast('Photo added.' + lens + ' You are now on step 2: set the scale by marking something whose size you know.', 'ok');
           return true;
         })).catch((e) => {
           store.setUI({ busy: null });
