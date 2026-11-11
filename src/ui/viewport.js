@@ -34,8 +34,21 @@
  *  - Extra viewport members: canvas, getView() → {scale, tx, ty, cssW, cssH, dpr, fitScale},
  *    setView({scale, tx, ty}), zoomIn(), zoomOut(), isAnimating().
  *  - Extra keys (desktop, focus not in a field): + / - zoom, 0 fits the photo; Delete works like Backspace.
- *  - Step 5 also labels each cord path with its length ("18 ft cord") when labels are on.
- *  - Module extras for tests: selectionHandles(project, sel), snapCandidates(project, imageId), layersFor(step, mode).
+ *  - Step 5 cords (SPEC §8.5): each cord is drawn along feed.cordPath in the colour of its outlet's circuit. A cord
+ *    from an outlet (home run) is a solid line starting at the outlet's marker; a jumper cord (run to run) is thinner
+ *    and dashed; pieces on the ground are a little heavier than risers. A 3-way tap is a small white diamond, a run
+ *    that plugs straight into its source (feed.plugIn) a ring with "plugs in". With labels on, a cord carries the
+ *    length that is bought ("25 ft cord" / "6 ft jumper"). A cord label sits beside a stretch of its own cord that
+ *    is on screen, or is left out: it never covers an outlet, an outlet label or another label, and never slides
+ *    along the edge of the photo. Short jumpers get their label once the view is zoomed in.
+ *  - Tap precision (SPEC §8.4): every point placed or dragged here is passed to the actions with its expected
+ *    error in stored-image px, tapErrorPx(scale, pointerType, loupeZoom) = clamp(k / s, 2.5, 80) (k = 3 for a
+ *    finger, 1.5 for a mouse or pen; s = CSS px per image px, times the loupe's 2.5 when the press was held at least
+ *    300 ms, long enough to aim with the loupe: a quick tap does not get the loupe's benefit). A point snapped onto
+ *    an existing vertex takes that vertex's stored value instead (none when it has none).
+ *  - Module extras for tests: selectionHandles(project, sel), snapCandidates(project, imageId), layersFor(step, mode),
+ *    cordLabelText(feed), cordPieces(feed), tapMarkers(power), cordLabelSpots(screenPath, w, h), clipSegment,
+ *    tapErrorPx.
  */
 LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], function (g, catalog, measure, preview) {
   'use strict';
@@ -56,6 +69,10 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
   const LOUPE_SIZE = 110;
   const LOUPE_ZOOM = 2.5;
   const LOUPE_GAP = 34;
+  const LOUPE_AIM_MS = 300;       // a press held this long was aimed with the loupe (a quick tap was not)
+  const TAP_K = { touch: 3, pen: 1.5, mouse: 1.5 };   // how far off a tap lands, in CSS px (1 sigma)
+  const TAP_ERR_MIN = 2.5;        // image px: the precision assumed when nothing is known (measure.js)
+  const TAP_ERR_MAX = 80;
   const MAX_ZOOM = 12;          // CSS px per image px
   const FIT_MARGIN = 0.96;
   const AMBER = '#ffbf5a';
@@ -191,21 +208,34 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     const m = candMemo.get(project);
     if (m && m.imageId === imageId) return m.list;
     const list = [];
+    // Each candidate carries the tap precision stored for that point (tapErr), when there is one: a point snapped
+    // onto it is exactly as good as it is.
+    const errAt = (holder, n, i) => {
+      const t = holder && Array.isArray(holder.tapErr) && holder.tapErr.length === n ? holder.tapErr[i] : null;
+      return isNum(t) && t > 0 ? t : null;
+    };
     for (const f of arr(project.features)) {
       if (!onImage(f, imageId)) continue;
       const planes = f.planeId ? [f.planeId] : [];
-      arr(f.points).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'feature:' + f.id, index: i, planes }); });
+      const n = arr(f.points).length;
+      arr(f.points).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'feature:' + f.id, index: i, planes, tapErr: errAt(f, n, i) }); });
     }
     for (const pl of arr(project.planes)) {
       if (!onImage(pl, imageId)) continue;
       const own = [pl.id];
-      if (pl.rect) arr(pl.rect.corners).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'planeRect:' + pl.id, index: i, planes: own }); });
+      if (pl.rect) {
+        const n = arr(pl.rect.corners).length;
+        arr(pl.rect.corners).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'planeRect:' + pl.id, index: i, planes: own, tapErr: errAt(pl.rect, n, i) }); });
+      }
       if (pl.derived) {
         const both = pl.derived.parentPlaneId ? [pl.id, pl.derived.parentPlaneId] : own;
-        arr(pl.derived.line).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'planeLine:' + pl.id, index: i, planes: both }); });
+        const n = arr(pl.derived.line).length;
+        arr(pl.derived.line).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'planeLine:' + pl.id, index: i, planes: both, tapErr: errAt(pl.derived, n, i) }); });
       }
       for (const ref of arr(pl.refs)) {
-        if (ref) arr(ref.points).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'ref:' + pl.id + ':' + ref.id, index: i, planes: own }); });
+        if (!ref) continue;
+        const n = arr(ref.points).length;
+        arr(ref.points).forEach((p, i) => { if (okPt(p)) list.push({ p, key: 'ref:' + pl.id + ':' + ref.id, index: i, planes: own, tapErr: errAt(ref, n, i) }); });
       }
     }
     for (const o of arr(project.outlets)) {
@@ -240,6 +270,115 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     pts.forEach((p, i) => { const d = g.dist(p, start); if (d < bd) { bd = d; best = i; } });
     if (closed) return pts.slice(best).concat(pts.slice(0, best));
     return best === pts.length - 1 ? pts.slice().reverse() : pts;
+  }
+
+  /**
+   * Expected error (1 sigma) of a point placed on the photo, in stored-image px (SPEC §8.4):
+   * e = clamp(k / s, 2.5, 80), with s = CSS px per image px (times the loupe's magnification when the point was
+   * aimed with the loupe) and k = 3 for a finger, 1.5 for a mouse or pen. At fit zoom on a phone one CSS px is
+   * about 4 to 5 photo px, so a finger tap is good to about 13 px, not the 2.5 px measure.js assumes otherwise.
+   */
+  function tapErrorPx(scale, pointerType, loupeZoom) {
+    const k = TAP_K[pointerType] || TAP_K.mouse;
+    const s = (isNum(scale) && scale > 0 ? scale : 1) * (isNum(loupeZoom) && loupeZoom > 1 ? loupeZoom : 1);
+    return Math.round(clamp(k / s, TAP_ERR_MIN, TAP_ERR_MAX) * 100) / 100;
+  }
+
+  /**
+   * The words on a cord's photo label: the cord that is bought for it, "25 ft cord" for a cord from an outlet and
+   * "6 ft jumper" for a jumper cord from one run to the next. null when the feed has no cord of its own.
+   */
+  function cordLabelText(feed) {
+    const c = isObj(feed) ? feed.cord : null;
+    if (!isObj(c)) return null;
+    const ft = isNum(c.boughtFt) && c.boughtFt > 0 ? c.boughtFt : isNum(c.lengthFt) && c.lengthFt > 0 ? Math.ceil(c.lengthFt) : null;
+    if (ft == null) return null;
+    return Math.round(ft) + ' ft ' + (c.kind === 'jumper' ? 'jumper' : 'cord');
+  }
+
+  /**
+   * The pieces a cord is drawn in: [{pts: [image points], ground: bool}]. The route's own pieces when every one
+   * carries its two ends (so pieces lying on the ground can be drawn a little heavier than risers), else the whole
+   * cordPath as one piece.
+   */
+  function cordPieces(feed) {
+    const route = arr(isObj(feed) && isObj(feed.cord) ? feed.cord.route : null).filter(isObj);
+    if (route.length && route.every((r) => okPt(r.from) && okPt(r.to))) {
+      return route.map((r) => ({ pts: [r.from, r.to], ground: r.kind === 'ground' }));
+    }
+    const path = validPts(isObj(feed) ? feed.cordPath : null);
+    return path.length >= 2 ? [{ pts: path, ground: false }] : [];
+  }
+
+  /**
+   * Where the 3-way taps sit: [{feedId, port, point, imageId}] in image px. A tap at a run's start is where its own
+   * cord meets the lights (feed.start.point); a tap at its end is where two or more jumpers leave its last string
+   * (the first point of those jumpers).
+   */
+  function tapMarkers(power) {
+    const feeds = arr(isObj(power) ? power.feeds : null).filter(isObj);
+    const out = [];
+    for (const f of feeds) {
+      if (!(f.taps > 0)) continue;
+      const kids = feeds.filter((c) => isObj(c.source) && c.source.kind === 'feed' && c.source.feedId === f.id);
+      const start = isObj(f.start) ? f.start : {};
+      if (kids.some((c) => c.source.port === 'start') && okPt(start.point)) {
+        out.push({ feedId: f.id, port: 'start', point: start.point, imageId: start.imageId });
+      }
+      const atEnd = kids.filter((c) => c.source.port === 'end');
+      if (atEnd.length > 1) {
+        const k = atEnd.find((c) => okPt(arr(c.cordPath)[0]));
+        if (k) out.push({ feedId: f.id, port: 'end', point: k.cordPath[0], imageId: isObj(k.start) ? k.start.imageId : start.imageId });
+      }
+    }
+    return out;
+  }
+
+  /** The part of segment a-b inside the box [0, w] × [0, h] (Liang-Barsky), or null when none of it is. */
+  function clipSegment(a, b, w, h) {
+    let t0 = 0, t1 = 1;
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    const tests = [[-dx, a[0]], [dx, w - a[0]], [-dy, a[1]], [dy, h - a[1]]];
+    for (const [p, q] of tests) {
+      if (p === 0) { if (q < 0) return null; continue; }
+      const r = q / p;
+      if (p < 0) { if (r > t1) return null; if (r > t0) t0 = r; }
+      else { if (r < t0) return null; if (r < t1) t1 = r; }
+    }
+    return [[a[0] + t0 * dx, a[1] + t0 * dy], [a[0] + t1 * dx, a[1] + t1 * dy]];
+  }
+
+  /**
+   * Where a cord's label may go, best first: beside the middle of each stretch of the cord that is on screen,
+   * longest stretch first, on either side of it. S is the cord in CSS px. Returns {visible (px on screen), alts:
+   * [{x, y, nx, ny}]}: a point on the cord and the unit direction to push the label away from it (drawLabels moves
+   * the pill just clear of the cord, whatever its width). A label is only ever placed at one of these spots, so it
+   * never drifts away from its cord or piles up at the edge of the photo when the cord itself is off screen.
+   */
+  function cordLabelSpots(S, cssW, cssH) {
+    const segs = [];
+    let visible = 0;
+    for (let i = 0; i + 1 < S.length; i++) {
+      const c = clipSegment(S[i], S[i + 1], cssW, cssH);
+      if (!c) continue;
+      const len = Math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1]);
+      if (len <= 0) continue;
+      visible += len;
+      segs.push({ a: c[0], b: c[1], len });
+    }
+    segs.sort((p, q) => q.len - p.len);
+    const alts = [];
+    for (const s of segs) {
+      if (alts.length && s.len < 24) break;
+      let nx = -(s.b[1] - s.a[1]) / s.len, ny = (s.b[0] - s.a[0]) / s.len;
+      if (ny > 0 || (Math.abs(ny) < 1e-9 && nx < 0)) { nx = -nx; ny = -ny; }   // above the cord first (to its right when it is upright)
+      // The middle of the stretch first; on a long stretch also nearer to either end.
+      for (const k of s.len >= 60 ? [0.5, 0.3, 0.7, 0.15, 0.85] : [0.5]) {
+        const x = s.a[0] + (s.b[0] - s.a[0]) * k, y = s.a[1] + (s.b[1] - s.a[1]) * k;
+        alts.push({ x, y, nx, ny }, { x, y, nx: -nx, ny: -ny });
+      }
+    }
+    return { visible, alts };
   }
 
   function isTypingTarget(el) {
@@ -286,6 +425,9 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     let bgColor = '#0f1620';
     let lastProject = null;
     const textWidths = new Map();
+    let lastLabels = [];            // pills drawn in the last frame: [{text, x, y, w, h, anchored}] (CSS px), for tests
+    let occl = { t: -1e9, list: [] }; // boxes of the buttons and bars that float over the canvas (labels keep clear)
+    let occlTimer = 0;
     const gridMemo = new WeakMap();
 
     // ---------------- coordinate transforms
@@ -348,6 +490,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       const dpr = Math.max(1, Math.min(3, (typeof window !== 'undefined' && window.devicePixelRatio) || 1));
       const changed = w !== view.cssW || h !== view.cssH || dpr !== view.dpr;
       if (!changed) return false;
+      occl.t = -1e9;
       const oldW = view.cssW, oldH = view.cssH;
       view.cssW = w; view.cssH = h; view.dpr = dpr;
       canvas.width = Math.max(1, Math.round(w * dpr));
@@ -377,6 +520,27 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       view.fitted = false;
       clampView();
       requestRedraw();
+    }
+
+    /**
+     * The controls and bars the page floats over the canvas (zoom and view buttons, the hint bar, the sample note),
+     * as boxes in canvas CSS px, so labels are not drawn underneath them. Read from the page at most every 300 ms.
+     */
+    function occluders() {
+      const now = typeof performance !== 'undefined' ? performance.now() : 0;
+      if (now - occl.t < 300) return occl.list;
+      const list = [];
+      try {
+        const stage = host.parentElement;
+        const c = canvas.getBoundingClientRect();
+        const els = stage ? stage.querySelectorAll('.canvas-controls, .hintbar, .sample-banner') : [];
+        for (const el of Array.from(els)) {
+          const r = el.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) list.push({ x: r.left - c.left, y: r.top - c.top, w: r.width, h: r.height });
+        }
+      } catch (e) { /* no page around the canvas: nothing floats over it */ }
+      occl = { t: now, list };
+      return list;
     }
 
     // ---------------- redraw scheduling
@@ -414,9 +578,21 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     }
 
     /**
+     * The tap precision to record for a point just placed or dragged: the snapped-onto point's own value (null when
+     * it has none), else what this pointer manages at this zoom. heldMs is how long the press lasted: a finger held
+     * down long enough to aim with the loupe gets the loupe's magnification.
+     */
+    function tapErrFor(snap, pointerType, heldMs) {
+      if (snap && snap.kind === 'vertex') return isNum(snap.tapErr) ? snap.tapErr : null;
+      const aimed = pointerType === 'touch' && heldMs >= LOUPE_AIM_MS;
+      return tapErrorPx(view.scale, pointerType, aimed ? LOUPE_ZOOM : 1);
+    }
+
+    /**
      * Snap image point ip. opt: {exclude: {key, index}, excludeKeys: [key], anchors: [img pts], planeId,
      * surface: plane id whose points may be snapped to (null = any), noAxis, closeFirst: img pt|null}.
-     * Returns {pt, kind: null|'vertex'|'close'|'axis', anchor?, axis?}.
+     * Returns {pt, kind: null|'vertex'|'close'|'axis', anchor?, axis?}; a vertex snap also carries tapErr, the
+     * precision stored for the point snapped onto (null when it has none).
      */
     function snapPoint(ip, opt) {
       const op = opt || {};
@@ -434,10 +610,10 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
           if (op.excludeKeys && op.excludeKeys.includes(c.key)) continue;
           if (op.surface && c.planes && c.planes.length && !c.planes.includes(op.surface)) continue;
           const d = g.dist(ip, c.p);
-          if (d <= rv && (!best || d < best.d)) best = { d, p: c.p };
+          if (d <= rv && (!best || d < best.d)) best = { d, p: c.p, tapErr: c.tapErr };
         }
       }
-      if (best) return { pt: best.p.slice(), kind: 'vertex' };
+      if (best) return { pt: best.p.slice(), kind: 'vertex', tapErr: isNum(best.tapErr) ? best.tapErr : null };
       if (op.noAxis) return { pt: ip, kind: null };
       const sol = planeSolution(safePlan(), op.planeId);
       let axisBest = null;
@@ -754,7 +930,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         }
         try { store.beginGesture(); } catch (err) { /* ignore */ }
         const ip = screenToImage(sp);
-        drag = { type: 'handle', id: e.pointerId, handle: h, grab: [h.p[0] - ip[0], h.p[1] - ip[1]], pointerType: type, opts: dragSnapOptions(h), moved: false };
+        drag = { type: 'handle', id: e.pointerId, handle: h, grab: [h.p[0] - ip[0], h.p[1] - ip[1]], pointerType: type, opts: dragSnapOptions(h), moved: false, t0: e.timeStamp || performance.now() };
         if (type === 'touch') loupe = { screen: sp, img: h.p.slice() };
         hover = null;
         requestRedraw();
@@ -821,7 +997,9 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         drag.current = pt;
         drag.moved = true;
         if (drag.pointerType === 'touch') loupe = { screen: sp, img: pt };
-        try { actions.moveVertex(drag.handle.target, drag.handle.index, pt, { gesture: true }); } catch (err) { /* actions toast their own errors */ }
+        // The dragged point is as good as this pointer at this zoom (SPEC §8.4); actions keep the tapErr list aligned.
+        const tapErr = tapErrFor(snap, drag.pointerType, (e.timeStamp || performance.now()) - drag.t0);
+        try { actions.moveVertex(drag.handle.target, drag.handle.index, pt, { gesture: true, tapErr }); } catch (err) { /* actions toast their own errors */ }
         requestRedraw();
         return;
       }
@@ -875,14 +1053,14 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         const elapsed = (e.timeStamp || performance.now()) - d.t0;
         const moved = Math.hypot(sp[0] - d.start[0], sp[1] - d.start[1]);
         const placing = PLACING_MODES[modeOf(uiState()).name];
-        if (moved <= TAP_SLOP && (elapsed < TAP_MS || placing)) handleTap(sp, d.pointerType, e.timeStamp || performance.now());
+        if (moved <= TAP_SLOP && (elapsed < TAP_MS || placing)) handleTap(sp, d.pointerType, e.timeStamp || performance.now(), elapsed);
       }
       loupe = null;
       if (d.pointerType === 'touch') hover = null;
       requestRedraw();
     }
 
-    function handleTap(sp, type, t) {
+    function handleTap(sp, type, t, heldMs) {
       const ui = uiState();
       const mode = modeOf(ui);
       const draftLen = draftPoints(ui).length;
@@ -904,7 +1082,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       if (DRAFT_MODES[mode.name]) {
         const snap = snapPoint(raw, draftSnapOptions(ui));
         const pt = clampToImage(snap.pt);
-        if (typeof actions.addDraftPoint === 'function') actions.addDraftPoint(pt);
+        if (typeof actions.addDraftPoint === 'function') actions.addDraftPoint(pt, { tapErr: tapErrFor(snap, type, heldMs || 0) });
         hover = type === 'touch' ? null : { raw, img: pt, snap };
         return;
       }
@@ -1082,7 +1260,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       if (!source) drawCenterText('Loading the photo…');
       const labels = [];
-      labels.obstacles = [];   // screen boxes labels must not cover (outlet icons)
+      labels.obstacles = occluders().slice();   // screen boxes labels must not cover (floating controls, outlet icons, taps)
       const mode = modeOf(ui);
       if (flags.overlay) drawOverlay(prj, plan, ui, img, flags, labels, mode);
       drawSelection(prj, plan, ui, img);
@@ -1349,22 +1527,46 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       if (!plan) return;
       const power = isObj(plan.power) ? plan.power : {};
       const outletsById = new Map(arr(prj.outlets).filter(isObj).map((x) => [x.id, x]));
-      // Cord paths (dashed, circuit color).
-      for (const feed of arr(power.feeds)) {
-        if (!isObj(feed)) continue;
+      const onPhoto = (feed) => {
         const start = isObj(feed.start) ? feed.start : {};
         const outlet = outletsById.get(feed.outletId);
-        if (start.imageId !== img.id && !(outlet && onImage(outlet, img.id))) continue;
-        const path = validPts(feed.cordPath);
-        if (path.length < 2) continue;
+        return start.imageId === img.id || !!(outlet && onImage(outlet, img.id));
+      };
+      // Cords, in the colour of their outlet's circuit. A cord from an outlet is a solid line; a jumper cord (run to
+      // run) is thinner and dashed. The pieces lying on the ground are drawn a little heavier than the risers.
+      const plugIns = [];
+      for (const feed of arr(power.feeds)) {
+        if (!isObj(feed) || !onPhoto(feed)) continue;
         const color = circuitColor(prj, feed.circuitId);
-        pathFrom(path, false);
-        strokeOutlined(color, 2.2, 0.95, [7, 5]);
-        const S = path.map(imageToScreen);
-        if (flags.labels && feed.cord && isNum(feed.cord.lengthFt) && g.polylineLength(S, false) >= 70) {
-          const mp = polylineMidpoint(S);
-          labels.push({ text: Math.ceil(feed.cord.lengthFt) + ' ft cord', x: mp.p[0] + mp.n[0] * 13, y: mp.p[1] + mp.n[1] * 13, swatch: color, priority: 0 });
+        if (feed.plugIn === true) {
+          const sp = isObj(feed.start) ? feed.start.point : null;
+          if (okPt(sp)) plugIns.push({ p: sp, color });
+          continue;
         }
+        const pieces = cordPieces(feed);
+        if (!pieces.length) continue;
+        const jumper = isObj(feed.cord) && feed.cord.kind === 'jumper';
+        for (const piece of pieces) {
+          pathFrom(piece.pts, false);
+          if (jumper) strokeOutlined(color, piece.ground ? 2 : 1.6, 0.95, [6, 4]);
+          else strokeOutlined(color, piece.ground ? 3.4 : 2.6, 0.97);
+        }
+        const text = flags.labels ? cordLabelText(feed) : null;
+        if (!text) continue;
+        const S = validPts(feed.cordPath).map(imageToScreen);
+        const spots = cordLabelSpots(S, view.cssW, view.cssH);
+        // Short jumpers stay unlabelled until the view is zoomed in far enough to tell them apart.
+        if (spots.visible < (jumper ? 56 : 24) || !spots.alts.length) continue;
+        const alts = spots.alts.slice();
+        if (!jumper && S.length) {
+          // A cord from an outlet may also sit right beside the outlet's marker (short cords have no room of their own).
+          const o = S[0];
+          if (o[0] >= 0 && o[0] <= view.cssW && o[1] >= 0 && o[1] <= view.cssH) {
+            alts.push({ x: o[0], y: o[1], nx: 1, ny: 0, gap: 17 }, { x: o[0], y: o[1], nx: -1, ny: 0, gap: 17 }, { x: o[0], y: o[1], nx: 0, ny: -1, gap: 18 });
+          }
+        }
+        const ft = isNum(feed.cord.lengthFt) ? feed.cord.lengthFt : 0;
+        labels.push({ text, alts, swatch: color, priority: jumper ? 0.4 + Math.min(0.5, ft / 100) : 1.5, dashed: jumper });
       }
       // Run start arrows: where each run is plugged in, pointing the way the lights run.
       const features = new Map(arr(prj.features).filter(isObj).map((f) => [f.id, f]));
@@ -1385,6 +1587,40 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         if (!next) continue;
         drawArrow(a, next, circuitColor(prj, run.circuitId));
       }
+      // A run that plugs straight into the one before it (no cord of its own): a ring around its first plug.
+      for (const pi of plugIns) {
+        const s = imageToScreen(pi.p);
+        dot(s, 9, null, 'rgba(4,8,14,0.6)', 4.5);
+        dot(s, 9, null, '#ffffff', 2);
+        if (flags.labels) labels.push({ text: 'plugs in', alts: [{ x: s[0], y: s[1], nx: 0, ny: -1 }, { x: s[0], y: s[1], nx: 0, ny: 1 }], gap: 12, swatch: pi.color, priority: 0.3 });
+      }
+      // 3-way taps: a small diamond where one plug becomes three.
+      for (const tap of tapMarkers(power)) {
+        if (tap.imageId != null && tap.imageId !== img.id) continue;
+        const feed = byId(power.feeds, tap.feedId);
+        const s = imageToScreen(tap.point);
+        const r = drawTap(s, circuitColor(prj, feed ? feed.circuitId : null));
+        labels.obstacles.push({ x: s[0] - r, y: s[1] - r, w: 2 * r, h: 2 * r });
+      }
+    }
+
+    function drawTap(s, color) {
+      const r = clamp(view.scale * 14, 4.5, 6.5);   // a little smaller when the whole house is on a phone screen
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(s[0], s[1] - r); ctx.lineTo(s[0] + r, s[1]); ctx.lineTo(s[0], s[1] + r); ctx.lineTo(s[0] - r, s[1]);
+      ctx.closePath();
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = 'rgba(4,8,14,0.75)';
+      ctx.lineWidth = 4.5;
+      ctx.stroke();
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
+      return r;
     }
 
     function drawArrow(a, toward, color) {
@@ -1622,6 +1858,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       return w;
     }
     function drawLabels(list) {
+      lastLabels = [];
       if (!list.length) return;
       ctx.save();
       ctx.font = LABEL_FONT;
@@ -1633,19 +1870,33 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         const extra = l.dot || l.swatch ? 13 : 0;
         const w = Math.ceil(textWidth(l.text)) + 14 + extra;
         const h = LABEL_H;
-        const tries = [[0, 0], [0, -h - 3], [0, h + 3], [w * 0.6, 0], [-w * 0.6, 0], [0, -2 * h - 6], [0, 2 * h + 6]];
+        const free = (b) => !placed.some((q) => b.x < q.x + q.w + 3 && q.x < b.x + b.w + 3 && b.y < q.y + q.h + 2 && q.y < b.y + b.h + 2);
         let box = null;
-        for (const t of tries) {
-          const x = clamp(l.x + t[0] - w / 2, 2, view.cssW - w - 2);
-          const y = clamp(l.y + t[1] - h / 2, 2, view.cssH - h - 2);
-          const b = { x, y, w, h };
-          if (!placed.some((q) => b.x < q.x + q.w + 3 && q.x < b.x + b.w + 3 && b.y < q.y + q.h + 2 && q.y < b.y + b.h + 2)) { box = b; break; }
-        }
-        if (!box) {
-          if (l.priority < 4) continue;
-          box = { x: clamp(l.x - w / 2, 2, view.cssW - w - 2), y: clamp(l.y - h / 2, 2, view.cssH - h - 2), w, h };
+        if (Array.isArray(l.alts)) {
+          // Anchored labels (cords): only at one of their own spots, wholly on the canvas, or not at all.
+          const gap = isNum(l.gap) ? l.gap : 5;
+          for (const a of l.alts) {
+            const t = Math.abs(a.nx) * w / 2 + Math.abs(a.ny) * h / 2 + (isNum(a.gap) ? a.gap : gap);
+            const b = { x: a.x + a.nx * t - w / 2, y: a.y + a.ny * t - h / 2, w, h };
+            if (b.x < 2 || b.y < 2 || b.x + w > view.cssW - 2 || b.y + h > view.cssH - 2) continue;
+            if (free(b)) { box = b; break; }
+          }
+          if (!box) continue;
+        } else {
+          const tries = [[0, 0], [0, -h - 3], [0, h + 3], [w * 0.6, 0], [-w * 0.6, 0], [0, -2 * h - 6], [0, 2 * h + 6]];
+          for (const t of tries) {
+            const x = clamp(l.x + t[0] - w / 2, 2, view.cssW - w - 2);
+            const y = clamp(l.y + t[1] - h / 2, 2, view.cssH - h - 2);
+            const b = { x, y, w, h };
+            if (free(b)) { box = b; break; }
+          }
+          if (!box) {
+            if (l.priority < 4) continue;
+            box = { x: clamp(l.x - w / 2, 2, view.cssW - w - 2), y: clamp(l.y - h / 2, 2, view.cssH - h - 2), w, h };
+          }
         }
         placed.push(box);
+        lastLabels.push({ text: l.text, x: box.x, y: box.y, w: box.w, h: box.h, anchored: Array.isArray(l.alts) });
         ctx.globalAlpha = l.faint ? 0.82 : 1;
         preview.roundRectPath(ctx, box.x, box.y, box.w, box.h, h / 2);
         ctx.fillStyle = 'rgba(9,14,22,0.86)';
@@ -1655,7 +1906,9 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         ctx.stroke();
         let tx = box.x + 7;
         if (l.dot || l.swatch) {
-          dot([box.x + 11, box.y + h / 2], l.dot ? 4 : 3.5, l.dot || l.swatch, l.dot ? null : 'rgba(255,255,255,0.4)', 1);
+          // A jumper cord's label carries a ring, a cord from an outlet a filled dot (like their lines: dashed, solid).
+          if (l.dashed) dot([box.x + 11, box.y + h / 2], 3.2, null, l.swatch, 1.8);
+          else dot([box.x + 11, box.y + h / 2], l.dot ? 4 : 3.5, l.dot || l.swatch, l.dot ? null : 'rgba(255,255,255,0.4)', 1);
           tx += extra;
         }
         ctx.fillStyle = '#eef3f8';
@@ -1733,6 +1986,12 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       if (prj !== lastProject) { lastProject = prj; syncImage(); }
       else if (info && info.imageChanged) syncImage();
       if (info && info.uiChanged) {
+        // A bar over the canvas may have appeared or gone. The page updates its bars a frame later than this, so
+        // look again shortly after.
+        occl.t = -1e9;
+        if (!occlTimer) {
+          occlTimer = setTimeout(function () { occlTimer = 0; occl.t = -1e9; requestRedraw(); }, 150);
+        }
         const mode = modeOf(uiState()).name;
         if (!PLACING_MODES[mode]) hover = null;
         if (mode !== 'select') hoverHandle = null;
@@ -1792,6 +2051,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       destroyed = true;
       if (frame) cancelAnimationFrame(frame);
       if (zoomAnim) cancelAnimationFrame(zoomAnim);
+      if (occlTimer) clearTimeout(occlTimer);
       frame = 0;
       try { if (typeof unsubscribe === 'function') unsubscribe(); } catch (e) { /* ignore */ }
       if (ro) ro.disconnect();
@@ -1832,9 +2092,14 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         requestRedraw();
       },
       isAnimating: animating,
+      /** The label pills drawn in the last frame, [{text, x, y, w, h, anchored}] in CSS px (for tests). */
+      labelBoxes: () => lastLabels.map((b) => Object.assign({}, b)),
       destroy,
     };
   }
 
-  return { createViewport, selectionHandles, snapCandidates, layersFor, targetKey, midpointHandles, isDoubleTap, snapRadiusImg };
+  return {
+    createViewport, selectionHandles, snapCandidates, layersFor, targetKey, midpointHandles, isDoubleTap, snapRadiusImg,
+    cordLabelText, cordPieces, tapMarkers, cordLabelSpots, clipSegment, tapErrorPx,
+  };
 });

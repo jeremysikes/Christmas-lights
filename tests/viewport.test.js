@@ -112,3 +112,80 @@ test('completeness:F8 / mobile-ux:UX-08 a selected line shows + handles between 
   assert.equal(vp.midpointHandles(project, { kind: 'feature', id: 'ft_window_left' }).length, win.points.length, 'closed outlines get one per side');
   assert.equal(vp.midpointHandles(project, { kind: 'feature', id: 'ft_tree' }).length, 0);
 });
+
+// ---------------------------------------------------------------- Phase 1.1: cords on the photo (SPEC §8.5)
+const planMod = LP.require('plan');
+const samplePower = planMod.computePlan(project).power;
+
+test('8.5 cord labels say what is bought: "25 ft cord" for a cord from an outlet, "6 ft jumper" for a jumper', () => {
+  const home = samplePower.feeds.find((f) => f.id === 'feed_ft_garage_gutter_1');
+  const jumper = samplePower.feeds.find((f) => f.id === 'feed_ft_door_1');
+  assert.equal(home.cord.kind, 'home');
+  assert.equal(vp.cordLabelText(home), '25 ft cord');
+  assert.equal(jumper.cord.kind, 'jumper');
+  assert.equal(vp.cordLabelText(jumper), '6 ft jumper');
+  // Two pieces joined are one cord run: the label adds them up. No pieces: the length needed, rounded up.
+  assert.equal(vp.cordLabelText({ cord: { kind: 'home', boughtFt: 150, lengthFt: 131.2 } }), '150 ft cord');
+  assert.equal(vp.cordLabelText({ cord: { kind: 'jumper', lengthFt: 4.2 } }), '5 ft jumper');
+  // A run that plugs straight in, or one with no measurable cord, has no cord label.
+  assert.equal(vp.cordLabelText({ plugIn: true, cord: null }), null);
+  assert.equal(vp.cordLabelText({ cordUnknown: true, cord: null }), null);
+  assert.equal(vp.cordLabelText(null), null);
+});
+
+test('8.5 a cord is drawn in the pieces of its route, with the pieces on the ground marked', () => {
+  const home = samplePower.feeds.find((f) => f.id === 'feed_ft_garage_gutter_1');
+  const pieces = vp.cordPieces(home);
+  assert.deepEqual(pieces.map((p) => p.ground), [false, true, false], 'down from the outlet, along the ground, up to the gutter');
+  // The pieces join up into the cord path, outlet first.
+  assert.deepEqual(pieces[0].pts[0], home.cordPath[0]);
+  assert.deepEqual(pieces[pieces.length - 1].pts[1], home.cordPath[home.cordPath.length - 1]);
+  for (let i = 1; i < pieces.length; i++) assert.deepEqual(pieces[i].pts[0], pieces[i - 1].pts[1]);
+  // Routes without end points (older plans, uncalibrated fallbacks) fall back to the whole path as one piece.
+  const bare = { cord: { kind: 'home', route: [{ kind: 'drop', lengthFt: 2 }] }, cordPath: [[0, 0], [0, 10], [50, 10]] };
+  assert.deepEqual(vp.cordPieces(bare), [{ pts: [[0, 0], [0, 10], [50, 10]], ground: false }]);
+  assert.deepEqual(vp.cordPieces({ cord: null, cordPath: null }), []);
+  assert.deepEqual(vp.cordPieces(null), []);
+});
+
+test('8.5 3-way taps are marked where they sit: at a run\'s start, or at its end when two jumpers leave it', () => {
+  const taps = vp.tapMarkers(samplePower);
+  const tapped = samplePower.feeds.filter((f) => f.taps > 0).map((f) => f.id).sort();
+  assert.deepEqual(Array.from(new Set(taps.map((t) => t.feedId))).sort(), tapped, 'every feed that needs a tap gets a marker');
+  assert.equal(samplePower.counts.taps, 4);
+  const byFeed = (id) => taps.filter((t) => t.feedId === id);
+  // The cord from the Porch outlet ends in a tap at the start of the walkway lights (two jumpers branch off there).
+  const walk = samplePower.feeds.find((f) => f.id === 'feed_ft_walk_left_1');
+  assert.deepEqual(byFeed(walk.id).map((t) => [t.port, t.point]), [['start', walk.start.point]]);
+  // Two jumpers leave the end of Bush 1: the tap sits where those jumpers begin.
+  const bush = byFeed('feed_ft_bush_1_1');
+  assert.equal(bush.length, 1);
+  assert.equal(bush[0].port, 'end');
+  const kid = samplePower.feeds.find((f) => f.source.kind === 'feed' && f.source.feedId === 'feed_ft_bush_1_1');
+  assert.deepEqual(bush[0].point, kid.cordPath[0]);
+  assert.deepEqual(vp.tapMarkers({ feeds: [{ id: 'a', taps: 0 }] }), []);
+  assert.deepEqual(vp.tapMarkers(null), []);
+});
+
+test('8.5 a cord label only goes beside a stretch of its own cord that is on screen', () => {
+  // A level cord across the middle of a 400 x 300 canvas: above it first, then below, at the middle and nearer the ends.
+  const mid = vp.cordLabelSpots([[100, 150], [300, 150]], 400, 300);
+  assert.equal(mid.visible, 200);
+  assert.deepEqual([mid.alts[0].x, mid.alts[0].y, mid.alts[0].ny], [200, 150, -1], 'above the middle of the cord first');
+  assert.deepEqual([mid.alts[1].x, mid.alts[1].y, mid.alts[1].ny], [200, 150, 1], 'then below it');
+  assert.ok(mid.alts.length >= 6, 'a long stretch offers spots nearer its ends too');
+  assert.ok(mid.alts.every((a) => a.x >= 100 && a.x <= 300 && a.y === 150));
+  // Zoomed in so that the cord runs off the left edge: the spots stay on the part that can be seen.
+  const cut = vp.cordLabelSpots([[-500, 150], [80, 150]], 400, 300);
+  assert.ok(Math.abs(cut.visible - 80) < 1e-6);
+  assert.ok(cut.alts.length > 0 && cut.alts.every((a) => a.x >= 0 && a.x <= 80 + 1e-6), 'no spot is made up for the part off screen');
+  // Wholly off screen: nothing (the old overlay slid such labels along the edge of the photo, on top of each other).
+  const off = vp.cordLabelSpots([[-500, 150], [-20, 150]], 400, 300);
+  assert.equal(off.visible, 0);
+  assert.deepEqual(off.alts, []);
+  // An upright riser: the label goes to one side of it, not across it.
+  const riser = vp.cordLabelSpots([[200, 250], [200, 50]], 400, 300);
+  assert.ok(Math.abs(Math.abs(riser.alts[0].nx) - 1) < 1e-9 && Math.abs(riser.alts[0].ny) < 1e-9);
+  assert.deepEqual(vp.clipSegment([-10, 10], [30, 10], 20, 20), [[0, 10], [20, 10]]);
+  assert.equal(vp.clipSegment([-10, -10], [-5, 30], 20, 20), null);
+});

@@ -182,9 +182,15 @@ test('trace tool: polylines, closing polygons, verticals, default labels', () =>
   assert.equal(fs[0].label, 'Eave 1');
   assert.equal(fs[0].closed, false);
   assert.equal(fs[0].planeId, 'pl_front');
-  assert.equal(store.ui().mode.name, 'trace', 'stays in trace mode for the next run');
+  // Phase 1.1 (SPEC §8.5, UX-06): finishing puts the tool down and offers what to trace next, instead of staying in
+  // trace mode with "0 points" and a disabled Finish.
+  assert.equal(store.ui().mode.name, 'select', 'the trace tool is put down after Finish');
+  assert.deepEqual(store.ui().afterTrace, { featureId: fs[0].id, type: 'roofline' });
+  assert.deepEqual(store.ui().selection, { kind: 'feature', id: fs[0].id });
   assert.deepEqual(store.ui().draft.points, []);
 
+  actions.startTrace('roofline');
+  assert.equal(store.ui().afterTrace, null, 'picking the next item ends the offer');
   actions.addDraftPoint([0, 50]);
   actions.addDraftPoint([100, 50]);
   actions.completeDraft();

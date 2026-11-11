@@ -49,7 +49,7 @@
         <div class="empty-card">
           <span class="empty-icon" data-icon="house"></span>
           <h2>Start with a photo of the house</h2>
-          <p>Stand across the street and fit the whole front of the house in the picture, or drop a photo here.</p>
+          <p>Stand across the street and fit the whole front of the house in the picture<span class="desk-only">, or drop a photo anywhere on this page</span>.</p>
           <div class="btn-row center">
             <button type="button" class="btn primary" data-pick="file"><span data-icon="image"></span><span>Choose photo</span></button>
             <button type="button" class="btn" data-pick="camera"><span data-icon="camera"></span><span>Take photo</span></button>
@@ -62,10 +62,16 @@
         <div id="hintbar" class="hintbar" role="status" hidden>
           <p class="hint-line"><span id="hint-text"></span> <span id="hint-count" class="hint-count num" hidden></span></p>
           <label id="hint-plane-wrap" class="hint-plane" hidden><span>On</span><select id="hint-plane" aria-label="Surface to trace on"></select></label>
-          <div class="hint-actions">
+          <div id="hint-actions" class="hint-actions">
             <button id="hint-undo" type="button" class="btn small">Undo point</button>
             <button id="hint-cancel" type="button" class="btn small">Cancel</button>
             <button id="hint-finish" type="button" class="btn small primary">Finish</button>
+          </div>
+          <div id="hint-next" class="hint-next" role="group" aria-label="Trace next" hidden>
+            <span class="hint-next-label">Trace next:</span>
+            <span id="hint-next-chips" class="hint-next-chips"></span>
+            <button id="hint-more" type="button" class="btn small">More</button>
+            <button id="hint-done" type="button" class="btn small primary">Done</button>
           </div>
         </div>
         <div id="notice" class="sample-banner notice" role="alert" hidden>
@@ -110,6 +116,10 @@
     <aside id="panel" class="panel" aria-label="Step details">
       <button id="sheet-handle" class="sheet-handle" type="button" aria-label="Change the panel size"><span class="grip" aria-hidden="true"></span></button>
       <div id="panel-root" class="panel-root"><p class="panel-loading">Loading LightPlan…</p></div>
+      <div id="action-bar" class="action-bar" hidden>
+        <p id="action-note" class="action-note" hidden></p>
+        <button id="action-btn" type="button" class="btn primary block"><span id="action-label">Next</span></button>
+      </div>
     </aside>
   </div>
 

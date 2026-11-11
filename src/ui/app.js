@@ -9,9 +9,15 @@
  * registers none (only Escape inside the menu and the dialog, which the viewport never sees).
  *
  * Every optional piece (viewport, export) is guarded, so the panels still work if one of them fails to load.
+ *
+ * Flow (SPEC §8.5): one primary button is pinned under the panel (#action-btn); panels.nextAction decides what
+ * it says from the plan's state and the open step, so the way forward is always in view. The step bar marks a
+ * step done from the plan (photo in, scale set, items traced, outlet placed), not from its position. After a
+ * trace is finished the hint bar shows its length and offers what to trace next (ui.afterTrace); on a phone the
+ * sheet stays collapsed until Done or More.
  */
-LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'ui.imagesource', 'ui.actions', 'ui.panels'],
-  function (schema, sample, catalog, persist, storeModule, imagesource, actionsModule, panels) {
+LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui.store', 'ui.imagesource', 'ui.actions', 'ui.panels'],
+  function (schema, sample, catalog, measure, persist, storeModule, imagesource, actionsModule, panels) {
     'use strict';
 
     const $ = (id) => document.getElementById(id);
@@ -145,10 +151,39 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
     }
 
     // ================================================================ shell wiring
-    function hintFor(ui, project) {
+    /** "Eave 1: 38′ 5″." for the hint bar right after a trace (says so when the length is rough or missing). */
+    function tracedText(f, project, plan) {
+      const ft = FEATURE_TYPES[f.type] || {};
+      const label = f.label || ft.label || 'Item';
+      const m = plan && plan.measured && plan.measured.features ? plan.measured.features[f.id] : null;
+      if (!m || !m.ok) return label + ' is traced. It has no length yet: set the scale in step 2.';
+      const fmt = (v) => measure.formatLength(v, project.settings && project.settings.lengthFormat);
+      let size;
+      if (f.type === 'bush') size = fmt(m.widthFt) + ' wide, ' + fmt(m.heightFt) + ' tall';
+      else if (ft.geometry === 'vertical') size = fmt(m.heightFt != null ? m.heightFt : m.measuredFt) + ' tall';
+      else size = fmt(m.lengthFt);
+      const rough = m.confidence && m.confidence.level === 'low' ? ' (rough: check it with a tape)' : '';
+      return label + ': ' + size + rough + '.';
+    }
+    /** The three quick picks after a trace: the same kind again, then the usual next ones. */
+    function nextTraceTypes(type) {
+      const out = [];
+      for (const t of [type, 'roofline', 'window', 'bush']) if (FEATURE_TYPES[t] && out.indexOf(t) < 0) out.push(t);
+      return out.slice(0, 3);
+    }
+
+    /**
+     * What the hint bar says: {text, count, finish} while a tool is in use; {after: true, text, next: [types]}
+     * right after a trace is finished; null otherwise. plan is only needed for the after-trace length.
+     */
+    function hintFor(ui, project, plan) {
       const mode = ui.mode || {};
       const o = mode.opts || {};
       const pts = ui.draft && Array.isArray(ui.draft.points) ? ui.draft.points.length : 0;
+      if (ui.afterTrace && (!mode.name || mode.name === 'select')) {
+        const f = (project.features || []).find((x) => x && x.id === ui.afterTrace.featureId);
+        if (f) return { after: true, text: tracedText(f, project, plan), next: nextTraceTypes(f.type), count: '', finish: false };
+      }
       const plane = project.planes.find((p) => p.id === o.planeId);
       const pname = plane ? "'" + plane.name + "'" : 'this wall';
       if (mode.name === 'rect') {
@@ -157,10 +192,15 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
       }
       if (mode.name === 'line') {
         if (o.purpose === 'roofEave') return { text: 'Tap both ends of the eave where the roof slope meets ' + pname + '.', count: pts + ' of 2', finish: false };
-        if (o.purpose === 'groundBase') return { text: 'Tap two points along the bottom of ' + pname + ', where it meets the ground.', count: pts + ' of 2', finish: false };
+        if (o.purpose === 'groundBase') {
+          // On the way to a walkway or stake lights: say why the ground comes first (the hint bar says it once;
+          // no toast repeats it over the wall being tapped).
+          const then = o.thenTrace && FEATURE_TYPES[o.thenTrace] ? FEATURE_TYPES[o.thenTrace].short : null;
+          return { text: (then ? then + ' lights lie on the ground, so mark the ground first: tap' : 'Tap') + ' two points along the bottom of ' + pname + ', where it meets the ground.', count: pts + ' of 2', finish: false };
+        }
         if (o.purpose === 'planeLine') return { text: plane && plane.kind === 'roof' ? 'Tap both ends of the eave again.' : 'Tap two points along the bottom of the wall again.', count: pts + ' of 2', finish: false };
         if (o.courses) return { text: 'Tap the bottom edge of one course, then the bottom edge of the course ' + o.courses + ' courses up.', count: pts + ' of 2', finish: false };
-        return { text: 'Tap both ends of the ' + referenceName(o.presetId).replace(/^an? /, '') + ' on ' + pname + '.', count: pts + ' of 2', finish: false };
+        return { text: 'Tap both ends of ' + referenceName(o.presetId) + ' on ' + pname + '.', count: pts + ' of 2', finish: false };
       }
       if (mode.name === 'trace') {
         const ft = FEATURE_TYPES[o.type];
@@ -179,12 +219,18 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
         'custom-rect': 'the rectangle', unknown: 'the rectangle (for example the wall corners)',
       }[presetId] || 'the rectangle';
     }
+    /** "the entry door height": a reference by name, with its article, for "Tap both ends of …". */
     function referenceName(presetId) {
-      return {
+      const known = {
         'door-height': 'the entry door height', 'door-width': 'the entry door width', 'door-rect': 'the entry door',
         'garage-single': 'the garage door', 'garage-double': 'the garage door', 'garage-height': 'the garage door height',
         'custom-line': 'the line you measured', 'custom-rect': 'the rectangle you measured',
-      }[presetId] || 'the reference';
+      }[presetId];
+      if (known) return known;
+      // Presets this file does not list (new ones in measure.REF_PRESETS): their own label, without the size.
+      const preset = measure.getRefPreset ? measure.getRefPreset(presetId) : null;
+      const label = preset && typeof preset.label === 'string' ? preset.label.replace(/\s*\(.*\)\s*$/, '').trim() : '';
+      return label ? 'the ' + label.charAt(0).toLowerCase() + label.slice(1) : 'the reference';
     }
 
     function wireShell(env) {
@@ -204,6 +250,14 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
       const hintFinish = $('hint-finish');
       const hintPlaneWrap = $('hint-plane-wrap');
       const hintPlane = $('hint-plane');
+      const hintActions = $('hint-actions');
+      const hintNext = $('hint-next');
+      const hintNextChips = $('hint-next-chips');
+      const actionBar = $('action-bar');
+      const actionBtn = $('action-btn');
+      const actionLabel = $('action-label');
+      const actionNote = $('action-note');
+      const panelRoot = $('panel-root');
       const notice = $('notice');
       const noticeText = $('notice-text');
       const noticeA = $('notice-a');
@@ -233,7 +287,11 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
       let lastImageEl = null;
       let lastDialog = null;
       let restoreSheet = null;
-      let lastModeName = 'select';
+      let lastDrawing = false;
+      let lastToolKey = '';
+      let hintNextKey = null;
+      let currentAction = null;
+      let pdfBusy = false;
       let dialogReturnFocus = null;
       let lastPref = null;
       let lastSelKey = null;
@@ -308,6 +366,32 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
       on(hintCancel, 'click', () => actions.cancelDraft());
       on(hintFinish, 'click', () => actions.completeDraft());
       on(hintPlane, 'change', () => actions.setActivePlane(hintPlane.value));
+      // After a trace: pick what to trace next, open the full list (More) or stop (Done).
+      on(hintNextChips, 'click', (e) => {
+        const b = e.target && e.target.closest ? e.target.closest('[data-next]') : null;
+        if (b) actions.startTrace(b.getAttribute('data-next'));
+      });
+      on($('hint-done'), 'click', () => actions.finishTracing());
+      on($('hint-more'), 'click', () => {
+        restoreSheet = null;
+        actions.finishTracing();
+        if (!isDesktop() && store.ui().sheet === 'min') actions.setSheet('half');
+        if (panelRoot) panelRoot.scrollTop = 0;   // "What to light" is at the top of the Trace panel
+      });
+
+      // ---------------------------------------------------------------- the pinned next-action button
+      on(actionBtn, 'click', () => {
+        const next = currentAction;
+        if (!next || pdfBusy) return;
+        const result = panels.runNextAction(next, { store, actions });
+        if (next.id === 'save-pdf' && result && typeof result.then === 'function') {
+          pdfBusy = true;
+          schedule();
+          const done = () => { pdfBusy = false; schedule(); };
+          result.then(done, done);
+        }
+        if (/^go-/.test(next.id) && !isDesktop() && store.ui().sheet === 'min') actions.setSheet('half');
+      });
 
       // ---------------------------------------------------------------- notice (storage, unreadable autosave, other tab)
       function saveRaw(raw) {
@@ -562,29 +646,34 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
         appEl.setAttribute('data-mode', ui.mode.name);
         appEl.setAttribute('data-has-image', image ? 'true' : 'false');
 
-        // Phone: collapse the sheet while a drawing tool is active, restore it afterwards.
-        const drawing = DRAW_MODES.includes(ui.mode.name);
-        if (drawing && !DRAW_MODES.includes(lastModeName) && !isDesktop() && ui.sheet !== 'min') {
-          restoreSheet = ui.sheet;
-          lastModeName = ui.mode.name;
+        // Phone: collapse the sheet while a drawing tool is active and while the hint bar offers what to trace
+        // next, and again whenever another tool is picked from a raised sheet; restore it afterwards.
+        const toolOn = DRAW_MODES.includes(ui.mode.name);
+        const drawing = toolOn || !!ui.afterTrace;
+        const toolKey = toolOn ? ui.mode.name + '|' + ((ui.mode.opts && (ui.mode.opts.type || ui.mode.opts.purpose)) || '') : '';
+        const toolStarted = !!toolKey && toolKey !== lastToolKey;
+        lastToolKey = toolKey;
+        if (((drawing && !lastDrawing) || toolStarted) && !isDesktop() && ui.sheet !== 'min') {
+          if (!restoreSheet) restoreSheet = ui.sheet;
+          lastDrawing = drawing;
           actions.setSheet('min');
           return;
         }
-        if (!drawing && DRAW_MODES.includes(lastModeName) && restoreSheet) {
+        if (!drawing && lastDrawing && restoreSheet) {
           const s = restoreSheet;
           restoreSheet = null;
-          lastModeName = ui.mode.name;
+          lastDrawing = false;
           actions.setSheet(s);
           return;
         }
-        lastModeName = ui.mode.name;
+        lastDrawing = drawing;
         // Phone: a canvas tap that selects an item raises a collapsed sheet so its editor (and Delete) can be seen.
         const sel = ui.selection;
         const selKey = sel ? sel.kind + ':' + sel.id : null;
         if (selKey !== lastSelKey) {
           const was = lastSelKey;
           lastSelKey = selKey;
-          if (selKey && was !== selKey && ui.mode.name === 'select' && !isDesktop() && ui.sheet === 'min') {
+          if (selKey && was !== selKey && ui.mode.name === 'select' && !ui.afterTrace && !isDesktop() && ui.sheet === 'min') {
             actions.setSheet('half');
             return;
           }
@@ -611,22 +700,32 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
         redoBtn.title = rl ? 'Redo: ' + rl : 'Redo';
         redoBtn.setAttribute('aria-label', redoBtn.title);
 
-        // Step bar
-        const counts = panels.stepWarnings(store.plan());
+        // Step bar: a step is marked done by what the plan holds (photo, scale, traced items, an outlet), wherever
+        // the user happens to be.
+        let plan = null;
+        try { plan = store.plan(); } catch (e) { plan = null; }
+        const counts = panels.stepWarnings(plan);
+        const progress = panels.planProgress(project, plan);
         for (const b of stepButtons) {
           const n = Number(b.getAttribute('data-step'));
           const cur = n === ui.step;
           if (cur) b.setAttribute('aria-current', 'step'); else b.removeAttribute('aria-current');
-          b.classList.toggle('done', n < ui.step);
+          const done = !!progress.steps[n];
+          b.classList.toggle('done', done);
+          b.setAttribute('data-done', String(done));
           const badge = b.querySelector('.step-badge');
           const c = counts[n];
+          // Warnings first; a step with none shows how many of its measurements are rough (Low), in a neutral colour.
+          const lowOnly = !c.count && c.low > 0;
+          const shown = c.count || (lowOnly ? c.low : 0);
           if (badge) {
-            badge.hidden = !c.count;
-            badge.textContent = c.count ? String(c.count) : '';
-            badge.className = 'step-badge ' + (c.level || '');
+            badge.hidden = !shown;
+            badge.textContent = shown ? String(shown) : '';
+            badge.className = 'step-badge ' + (lowOnly ? 'neutral' : c.level || '');
           }
           const label = panels.STEPS[n - 1].label;
-          b.setAttribute('aria-label', 'Step ' + n + ': ' + label + (c.count ? ', ' + c.count + (c.count === 1 ? ' warning' : ' warnings') : ''));
+          b.setAttribute('aria-label', 'Step ' + n + ': ' + label + (done ? ', done' : '') + (c.count ? ', ' + c.count + (c.count === 1 ? ' warning' : ' warnings') : '') +
+            (c.low ? ', ' + c.low + (c.low === 1 ? ' rough measurement' : ' rough measurements') : ''));
         }
 
         // Canvas controls
@@ -644,16 +743,30 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
         for (const k of ['zoomIn', 'zoomOut', 'fit']) if (ctl[k]) ctl[k].disabled = !image;
 
         // Hint bar
-        const hint = hintFor(ui, project);
+        const hint = hintFor(ui, project, plan);
         hintbar.hidden = !hint;
         if (hint) {
           hintText.textContent = hint.text;
           if (hintCount) { hintCount.textContent = hint.count || ''; hintCount.hidden = !hint.count; }
-          const pts = ui.draft && ui.draft.points ? ui.draft.points.length : 0;
-          hintUndo.disabled = !pts;
-          hintUndo.hidden = ui.mode.name === 'outlet';
-          hintFinish.hidden = !(ui.mode.name === 'trace' && FEATURE_TYPES[ui.mode.opts.type] && FEATURE_TYPES[ui.mode.opts.type].geometry !== 'vertical');
-          hintFinish.disabled = !hint.finish;
+          if (hintActions) hintActions.hidden = !!hint.after;
+          if (hintNext) hintNext.hidden = !hint.after;
+          if (hint.after) {
+            // The result of the trace just finished, and what to trace next.
+            const key = hint.next.join(',');
+            if (key !== hintNextKey && hintNextChips) {
+              hintNextKey = key;
+              hintNextChips.textContent = '';
+              for (const t of hint.next) {
+                hintNextChips.appendChild(panels.h('button', { type: 'button', class: 'btn small', data: { next: t } }, FEATURE_TYPES[t].short));
+              }
+            }
+          } else {
+            const pts = ui.draft && ui.draft.points ? ui.draft.points.length : 0;
+            hintUndo.disabled = !pts;
+            hintUndo.hidden = ui.mode.name === 'outlet';
+            hintFinish.hidden = !(ui.mode.name === 'trace' && FEATURE_TYPES[ui.mode.opts.type] && FEATURE_TYPES[ui.mode.opts.type].geometry !== 'vertical');
+            hintFinish.disabled = !hint.finish;
+          }
         }
         // The surface being traced on, with a picker, right in the hint bar (the panel is collapsed while tracing).
         const tracing = ui.mode.name === 'trace';
@@ -702,6 +815,19 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
         if (el !== lastImageEl) {
           lastImageEl = el;
           if (el) { try { viewport.fit(); } catch (e) { /* ignore */ } }
+        }
+
+        // The pinned button: the next thing to do, always in view.
+        if (actionBar && actionBtn) {
+          const next = panels.nextAction(project, ui, plan);
+          currentAction = next;
+          const making = pdfBusy && next.id === 'save-pdf';
+          actionBar.hidden = false;
+          if (actionLabel) actionLabel.textContent = making ? 'Making PDF…' : next.label;
+          actionBtn.disabled = making;
+          actionBtn.className = 'btn block' + (next.primary ? ' primary' : '');
+          actionBtn.setAttribute('data-action', next.id);
+          if (actionNote) { actionNote.textContent = next.note || ''; actionNote.hidden = !next.note; }
         }
 
         renderToast(ui);

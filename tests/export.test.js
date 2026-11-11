@@ -415,7 +415,8 @@ test('buildReportPdf lays out the full report for the sample house', () => {
   if (!HAS_PDFTOTEXT) return;
   const all = pdfText(file);
   for (const s of ['LightPlan', 'Sample house', 'Dana Whitfield · 123 Maple St, Springfield', 'November 9, 2026', 'Summary', 'Measurements',
-    'Bill of materials', 'Power plan', 'Circuits', 'Outlets', 'Cords and feeds', 'Warnings', 'Install checklist', 'About this plan',
+    'Bill of materials', 'Power plan', 'Circuits', 'Outlets', 'Cords', 'Listed in the order they are put up', 'PLUGS INTO', 'CORD AND ROUTE',
+    'Cords to outlets', 'Jumper cords', '3-way taps', 'Measurements to double-check', 'Warnings', 'Install checklist', 'About this plan',
     'Subtotal', exp.formatMoney(plan.bom.subtotal), 'Porch circuit', 'Garage outlet', '1,440 W', 'Front eave', 'Walkway right edge']) {
     assert.ok(all.includes(s), 'report mentions ' + s);
   }

@@ -35,6 +35,11 @@
  *  - Extra exports: buildReportPdf, buildQuotePdf, parseJpeg, toWinAnsi, fromWinAnsi, textWidth, wrapText,
  *    base64ToBytes, dataUrlToBytes, slug, formatMoney, formatNumber, formatDate, quoteNumber, exportFilename,
  *    collectImages, HELVETICA_WIDTHS, HELVETICA_BOLD_WIDTHS, and _resetDownloads (tests only).
+ *  - describeCords(plan, project) puts the power plan into plain words, cord by cord, grouped by outlet and
+ *    supply tree (SPEC §8.2, §8.5). The PDF report and the Power step both read it, so they say the same thing.
+ *    gaugeText(awg) → "16-gauge". roughMeasurements(plan, project) lists the Low-confidence items with the range
+ *    each could be ("about 38 ft, could be 33 to 44 ft"); the report prints them under the measurements table and
+ *    marks the materials cost "rough", and the Review step shows the same list with tape-measure fields.
  */
 LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModule, schema) {
   'use strict';
@@ -685,6 +690,7 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     const power = isObj(p.power) ? p.power : {};
     const bom = isObj(p.bom) ? p.bom : {};
     return {
+      plan: p,
       runs: arr(p.runs).filter(isObj),
       measuredFeatures: isObj(measured.features) ? measured.features : {},
       totals: isObj(measured.totals) ? measured.totals : {},
@@ -704,6 +710,192 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
       summary: isObj(p.summary) ? p.summary : {},
       config: isObj(p.library) && isObj(p.library.config) ? p.library.config : catalog.DEFAULT_CONFIG,
     };
+  }
+
+  // ================================================================ cords in plain words (PDF report and Power step)
+  /** "16-gauge": how a cord's thickness is said to a homeowner. The trade name (16 AWG) is kept for detail lines. */
+  function gaugeText(awg) { return isNum(awg) ? formatNumber(awg, 0) + '-gauge' : ''; }
+  function capFirst(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
+
+  /**
+   * The power plan in the order it is put up, in plain words. One row per feed (the lights on one cord): a cord
+   * from an outlet, a jumper cord from one run to the next, or a run that plugs straight in. Rows are grouped by
+   * outlet and, under each outlet, by supply tree (the cord from the outlet first, then everything hanging off it,
+   * depth-first, as plan.power.groups lists them). Pure; tolerates partial plans.
+   *
+   * → { outlets: [{ id, label, cords (cords plugged into the outlet), runs (light runs it powers), feeds, watts,
+   *                 splitters, trees: [[row, …]] }],
+   *     loose: [row] (lights with no outlet yet), rows: [row] (everything, same order) }
+   * row = { feedId, outletId, depth, kind: 'home' | 'jumper' | 'plugIn' | 'unknown' | 'none',
+   *         names: [run labels], lights: 'Front eave, Ridge', featureIds, ownCord,
+   *         what: '25 ft cord' | '6 ft jumper cord' | 'Plugs straight in' | 'Cord length unknown' | 'No outlet yet',
+   *         source: 'Porch outlet' | 'the end of Front door' | 'the 3-way tap at the start of Walkway left edge' | '',
+   *         line: what + where it comes from, as one sentence part ('6 ft jumper cord from the end of Front door'),
+   *         route: cord.routeText | '', startLabel, pieces, boughtFt, neededFt (rounded up), awg, gauge: '16-gauge',
+   *         dropPct, pathDropPct, watts (its own lights), carriesW (everything on its cord), strings, unit, taps,
+   *         tapText: '' | '3-way tap at its start' | …, cover (needs a cord cover), doorway }
+   */
+  function describeCords(plan, project) {
+    const p = isObj(plan) ? plan : {};
+    const power = isObj(p.power) ? p.power : {};
+    const prj = isObj(project) ? project : {};
+    const feeds = arr(power.feeds).filter(isObj);
+    const feedById = new Map(feeds.map((f) => [f.id, f]));
+    const runById = new Map(arr(p.runs).filter(isObj).map((r) => [r.id, r]));
+    const featureById = new Map(arr(prj.features).filter(isObj).map((f) => [f.id, f]));
+    const outletLabel = (id) => { const o = byId(prj.outlets, id) || byId(power.outlets, id); return o ? str(o.label) || 'Outlet' : null; };
+    const runsOf = (f) => arr(f.runIds).map((id) => runById.get(id)).filter(Boolean);
+    const namesOf = (f) => runsOf(f).map((r) => str(r.label)).filter(Boolean);
+
+    const makeRow = (f) => {
+      const fruns = runsOf(f);
+      const names = namesOf(f);
+      const src = isObj(f.source) ? f.source : null;
+      const parent = src && src.kind === 'feed' ? feedById.get(src.feedId) || null : null;
+      const pn = parent ? namesOf(parent) : [];
+      const cord = isObj(f.cord) ? f.cord : null;
+      let kind;
+      if (!f.outletId && !src) kind = 'none';
+      else if (f.plugIn === true) kind = 'plugIn';
+      else if (cord) kind = cord.kind === 'jumper' || (src && src.kind === 'feed') ? 'jumper' : 'home';
+      else kind = 'unknown';
+      let source = '';
+      if (parent) source = src.port === 'start' ? 'the 3-way tap at the start of ' + (pn[0] || 'the run before it') : 'the end of ' + (pn[pn.length - 1] || 'the run before it');
+      else if (f.outletId || (src && src.kind === 'outlet')) source = outletLabel(src && src.outletId ? src.outletId : f.outletId) || 'the outlet';
+      const pieces = cord ? arr(cord.pieces).filter(isNum) : [];
+      const length = pieces.length ? pieces.map((x) => formatNumber(x, 0) + ' ft').join(' + ')
+        : cord && isNum(cord.lengthFt) ? formatNumber(Math.ceil(cord.lengthFt), 0) + ' ft' : '';
+      let what;
+      let line;
+      if (kind === 'home') { what = length + ' cord'; line = what + ' from ' + source; }
+      else if (kind === 'jumper') { what = length + ' jumper cord'; line = what + ' from ' + source; }
+      else if (kind === 'plugIn') { what = 'Plugs straight in'; line = 'Plugs straight into ' + (source || 'the run before it') + ' (no cord needed)'; }
+      else if (kind === 'unknown') { what = 'Cord length unknown'; line = 'Cord from ' + (source || 'the outlet') + ': length unknown (set the scale of its wall in step 2)'; }
+      else { what = 'No outlet yet'; line = 'No outlet yet'; }
+      const kids = feeds.filter((c) => isObj(c.source) && c.source.kind === 'feed' && c.source.feedId === f.id);
+      const atStart = kids.some((c) => c.source.port === 'start');
+      const atEnd = kids.filter((c) => c.source.port === 'end').length > 1;
+      const taps = isNum(f.taps) && f.taps > 0 ? f.taps : 0;
+      const tapWhere = atStart && atEnd ? 'its start and its end' : atEnd ? 'its end' : 'its start';
+      const units = Array.from(new Set(fruns.map((r) => r.unit)));
+      const featureIds = fruns.map((r) => r.featureId).filter(Boolean);
+      return {
+        feedId: f.id, outletId: f.outletId || null, depth: isNum(f.depth) ? f.depth : 0, kind,
+        names, lights: names.join(', ') || 'Lights', featureIds,
+        ownCord: featureIds.some((id) => { const ft = featureById.get(id); return !!(ft && isObj(ft.params) && ft.params.ownCord === true); }),
+        what, source, line, route: cord ? str(cord.routeText) : '', startLabel: isObj(f.start) ? str(f.start.label) : '',
+        pieces, boughtFt: cord && isNum(cord.boughtFt) ? cord.boughtFt : null,
+        neededFt: cord && isNum(cord.lengthFt) ? Math.ceil(cord.lengthFt) : null,
+        awg: cord && isNum(cord.awg) ? cord.awg : null, gauge: cord ? gaugeText(cord.awg) : '',
+        dropPct: cord && isNum(cord.voltageDropPct) ? cord.voltageDropPct : null,
+        pathDropPct: isNum(f.pathDropPct) ? f.pathDropPct : null,
+        watts: isNum(f.watts) ? f.watts : 0, carriesW: isNum(f.supplyW) ? f.supplyW : isNum(f.watts) ? f.watts : 0,
+        strings: isNum(f.strings) ? f.strings : null, unit: units.length === 1 ? units[0] : null,
+        taps, tapText: taps ? (taps === 1 ? '3-way tap' : formatNumber(taps, 0) + ' 3-way taps') + ' at ' + tapWhere : '',
+        cover: !!f.crossesWalkway, doorway: f.crossesDoorway ? str(f.doorway) || 'a doorway' : '',
+        cordOk: !(cord && cord.ok === false),
+      };
+    };
+
+    const rows = [];
+    const seen = new Set();
+    const groups = arr(power.groups).filter(isObj);
+    const outlets = [];
+    for (const o of arr(power.outlets).filter(isObj)) {
+      const trees = [];
+      for (const g of groups) {
+        if (g.outletId !== o.id) continue;
+        const tree = [];
+        for (const id of arr(g.feedIds)) {
+          const f = feedById.get(id);
+          if (!f || seen.has(id)) continue;
+          seen.add(id);
+          tree.push(makeRow(f));
+        }
+        if (tree.length) trees.push(tree);
+      }
+      // Feeds on this outlet that no supply tree lists (plans made before supply trees): one tree each.
+      for (const f of feeds) {
+        if (f.outletId !== o.id || seen.has(f.id)) continue;
+        seen.add(f.id);
+        trees.push([makeRow(f)]);
+      }
+      const all = trees.reduce((a, t) => a.concat(t), []);
+      rows.push(...all);
+      const runIds = new Set();
+      for (const id of arr(o.feedIds)) { const f = feedById.get(id); if (f) arr(f.runIds).forEach((r) => runIds.add(r)); }
+      outlets.push({
+        id: o.id, label: str(o.label) || outletLabel(o.id) || 'Outlet',
+        cords: Array.isArray(o.directFeedIds) ? o.directFeedIds.length : all.filter((r) => r.kind === 'home').length,
+        runs: runIds.size, feeds: arr(o.feedIds).length, watts: isNum(o.watts) ? o.watts : 0,
+        splitters: isNum(o.splitters) ? o.splitters : 0, trees,
+      });
+    }
+    const loose = feeds.filter((f) => !seen.has(f.id)).map(makeRow);
+    rows.push(...loose);
+    return { outlets, loose, rows };
+  }
+
+  // ================================================================ measurements worth a tape measure
+  const ROUGH_MEDIUM_PCT = 6;   // a Medium item is listed too when its expected error is above this
+  /** Feet for a rough length: whole feet from 10 ft up, half feet below ("38 ft", "6.5 ft"). */
+  function roughFeet(ft) {
+    if (!isNum(ft)) return '?';
+    const v = Math.abs(ft) >= 10 ? Math.round(ft) : Math.round(ft * 2) / 2;
+    return formatNumber(v, Number.isInteger(v) ? 0 : 1) + ' ft';
+  }
+  /**
+   * The traced items whose size should be checked with a tape before buying: every item rated Low and every
+   * Medium item whose expected error is above 6%. Items that already use a tape-measured size are left out.
+   * → [{ featureId, label, type, level, kind: 'length' | 'height' | 'bush', pct (expected error, % or null),
+   *      lengthFt, lowFt, highFt, widthFt, heightFt, lights,
+   *      text: 'about 38 ft, could be 33 to 44 ft' }]   (text never claims more precision than the photo gives)
+   */
+  function roughMeasurements(plan, project) {
+    const p = isObj(plan) ? plan : {};
+    const measured = isObj(p.measured) && isObj(p.measured.features) ? p.measured.features : {};
+    const out = [];
+    for (const f of arr(isObj(project) ? project.features : null)) {
+      if (!isObj(f)) continue;
+      const m = measured[f.id];
+      if (!isObj(m) || m.ok === false || m.overridden) continue;
+      const level = isObj(m.confidence) ? m.confidence.level : null;
+      const pct = isNum(m.uncertaintyPct) && m.uncertaintyPct >= 0 ? m.uncertaintyPct : m.uncertaintyPct === Infinity ? Infinity : null;
+      if (!(level === 'low' || (level === 'medium' && pct !== null && pct > ROUGH_MEDIUM_PCT))) continue;
+      const t = FEATURE_TYPES[f.type];
+      const label = str(f.label) || (t ? t.label : 'Item');
+      const item = { featureId: f.id, label, type: f.type, level, pct, kind: 'length', lengthFt: null, lowFt: null, highFt: null,
+        widthFt: null, heightFt: null, lights: isNum(m.lights) ? m.lights : null, text: '' };
+      const offBy = pct !== null && pct !== Infinity ? 'about ' + formatNumber(Math.max(1, Math.round(pct)), 0) + '%' : null;
+      if (f.type === 'bush') {
+        item.kind = 'bush';
+        item.widthFt = isNum(m.widthFt) ? m.widthFt : null;
+        item.heightFt = isNum(m.heightFt) ? m.heightFt : null;
+        if (item.widthFt === null || item.heightFt === null) continue;
+        item.text = 'about ' + roughFeet(item.widthFt) + ' wide by ' + roughFeet(item.heightFt) + ' tall' +
+          (offBy ? ', each side could be off by ' + offBy : ', a rough size');
+      } else {
+        const vertical = !!(t && t.geometry === 'vertical');
+        // A tree or column is checked by its height (the tape field sets the height; the wrap follows from it).
+        const base = vertical ? (isNum(m.heightFt) ? m.heightFt : m.measuredFt) : m.lengthFt;
+        if (!isNum(base) || base <= 0) continue;
+        item.kind = vertical ? 'height' : 'length';
+        item.lengthFt = base;
+        const tail = vertical ? ' tall' : '';
+        if (pct !== null && pct <= 60) {
+          item.lowFt = base * (1 - pct / 100);
+          item.highFt = base * (1 + pct / 100);
+          const lo = roughFeet(item.lowFt), hi = roughFeet(item.highFt);
+          item.text = 'about ' + roughFeet(base) + tail + (lo === hi ? ' (within ' + offBy + ')' : ', could be ' + lo.replace(/ ft$/, '') + ' to ' + hi);
+        } else if (pct !== null) {
+          item.text = 'about ' + roughFeet(base) + tail + ', but that is a rough guess: it could be far off';
+        } else {
+          item.text = 'about ' + roughFeet(base) + tail + ', a rough measurement';
+        }
+      }
+      out.push(item);
+    }
+    return out;
   }
 
   // ================================================================ page layout
@@ -1008,7 +1200,7 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     L.y += 16;
   }
 
-  function reportSummary(L, parts, fmtLen) {
+  function reportSummary(L, parts, fmtLen, rough) {
     const s = parts.summary;
     const bushLights = isObj(s.byType) && isObj(s.byType.bush) && isNum(s.byType.bush.lights) ? s.byType.bush.lights : 0;
     heading(L, 'Summary', 110);
@@ -1020,7 +1212,8 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
       { label: 'Timers', value: formatNumber(s.timers, 0) },
       { label: 'Total load', value: watts(s.watts), sub: isNum(s.amps) ? formatNumber(s.amps, 1) + ' A at 120 V' : null },
       { label: 'Circuits used', value: formatNumber(s.circuits, 0), sub: isNum(s.outletsUsed) ? plural(s.outletsUsed, 'outlet', 'outlets') : null },
-      { label: 'Materials cost', value: formatMoney(s.cost), sub: isNum(s.quoteTotal) ? 'Customer quote ' + formatMoney(s.quoteTotal) : null, accent: true },
+      { label: rough ? 'Materials cost (rough)' : 'Materials cost', value: formatMoney(s.cost),
+        sub: isNum(s.quoteTotal) ? 'Customer quote ' + formatMoney(s.quoteTotal) : rough ? plural(rough, 'length', 'lengths') + ' to double-check' : null, accent: true },
     ]);
   }
 
@@ -1045,6 +1238,17 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
       { title: 'With ' + formatNumber(wastePct, 0) + '% waste', w: 70, align: 'right' },
       { title: 'Confidence', w: 92 },
     ], rows, { empty: 'Nothing traced yet. Trace rooflines, windows and other features to measure them.' });
+  }
+
+  /** The Low-confidence measurements, each with the range it could be, right under the measurements table. */
+  function reportRough(L, list) {
+    if (!list.length) return;
+    L.ensure(64);
+    L.doc.text('Measurements to double-check (' + formatNumber(list.length, 0) + ')', L.left, L.y, { size: 10, bold: true, color: C.ink });
+    L.y += 15;
+    paragraph(L, 'The photo could not measure these well. Check each one with a tape measure before you buy, then type the tape length into LightPlan (step 6) so the shopping list and the cost follow it.', { size: 8.5, color: C.muted, after: 4 });
+    for (const it of list) paragraph(L, '-  ' + it.label + ': ' + it.text + '.', { size: 8.5, indent: 6, after: 1.5 });
+    L.y += 8;
   }
 
   function reportBom(L, parts) {
@@ -1120,10 +1324,16 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     L.ensure(60);
     L.doc.text('Outlets', L.left, L.y, { size: 10, bold: true, color: C.ink });
     L.y += 15;
+    let described = { outlets: [], loose: [], rows: [] };
+    try { described = describeCords(parts.plan, project); } catch (e) { /* the tables below fall back to plain counts */ }
+    const outletInfo = new Map(described.outlets.map((o) => [o.id, o]));
     const outletRows = pw.outlets.map((o) => {
       const src = byId(project.outlets, o.id) || {};
       const circuit = byId(project.circuits, o.circuitId) || byId(pw.circuits, o.circuitId);
+      const info = outletInfo.get(o.id);
       const feeds = arr(o.feedIds).length;
+      // The cords that plug into the outlet itself, and the light runs they feed (jumper cords carry on from run to run).
+      const cords = info ? info.cords : Array.isArray(o.directFeedIds) ? o.directFeedIds.length : feeds;
       const extras = [];
       if (o.timer) extras.push('Timer');
       if (isNum(o.splitters) && o.splitters > 0) extras.push(plural(o.splitters, 'power stake', 'power stakes'));
@@ -1132,68 +1342,85 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
         { text: str(o.label) || str(src.label) || 'Outlet', bold: true },
         circuit ? str(circuit.name) || 'Circuit' : 'Not set',
         src.gfci === false ? { text: 'No', color: C.danger } : src.gfci === true ? 'Yes' : '—',
-        formatNumber(feeds, 0),
+        formatNumber(cords, 0),
+        info ? formatNumber(info.runs, 0) : '—',
         watts(o.watts),
         extras.join(', ') || (feeds ? '—' : 'Not used'),
       ];
     });
     table(L, [
-      { title: 'Outlet', w: 128 },
-      { title: 'Circuit', w: 108 },
-      { title: 'GFCI', w: 38 },
-      { title: 'Cords', w: 42, align: 'right' },
-      { title: 'Load', w: 60, align: 'right' },
-      { title: 'Also needs', w: 156 },
+      { title: 'Outlet', w: 120 },
+      { title: 'Circuit', w: 100 },
+      { title: 'GFCI', w: 36 },
+      { title: 'Cords here', w: 44, align: 'right' },
+      { title: 'Runs fed', w: 40, align: 'right' },
+      { title: 'Load', w: 56, align: 'right' },
+      { title: 'Also needs', w: 136 },
     ], outletRows, { empty: 'No outlets placed yet. Place each outdoor outlet you can use on the photo.' });
 
-    L.ensure(60);
-    L.doc.text('Cords and feeds', L.left, L.y, { size: 10, bold: true, color: C.ink });
+    L.ensure(74);
+    L.doc.text('Cords', L.left, L.y, { size: 10, bold: true, color: C.ink });
     L.y += 15;
-    const runById = new Map(parts.runs.map((r) => [r.id, r]));
-    const feedRows = pw.feeds.map((f, i) => {
-      const fruns = arr(f.runIds).map((id) => runById.get(id)).filter(Boolean);
-      const names = fruns.map((r) => str(r.label)).filter(Boolean);
-      const units = Array.from(new Set(fruns.map((r) => r.unit)));
-      const outlet = byId(project.outlets, f.outletId) || byId(pw.outlets, f.outletId);
-      let cord = f.outletId ? 'Length unknown' : 'No outlet yet';
+    if (described.rows.length) {
+      paragraph(L, 'Listed in the order they are put up: a cord from an outlet first, then what plugs into it. A jumper cord is a short cord from one run of lights to the next. A 3-way tap is a plug with three outlets.', { size: 8, color: C.muted, after: 5 });
+    }
+    const feedRows = described.rows.map((r, i) => {
+      let cord = r.what;
       let cordSub = null;
-      if (isObj(f.cord) && arr(f.cord.pieces).length) {
-        cord = arr(f.cord.pieces).map((p) => formatNumber(p, 0) + ' ft').join(' + ') + ', ' + f.cord.awg + ' AWG';
+      if (r.kind === 'home' || r.kind === 'jumper') {
+        cord = (r.pieces.length ? r.pieces.map((x) => formatNumber(x, 0) + ' ft').join(' + ') : formatNumber(r.neededFt, 0) + ' ft') +
+          (r.kind === 'jumper' ? ' jumper cord' : ' cord') + (r.awg !== null ? ', ' + r.awg + ' AWG' : '');
         // Rounded up, like the install checklist ("about N ft needed"), so one report gives one length per cord.
-        cordSub = 'Needs ' + formatNumber(Math.ceil(f.cord.lengthFt), 0) + ' ft' + (isNum(f.cord.voltageDropPct) ? ', ' + formatNumber(f.cord.voltageDropPct, 1) + '% voltage drop' : '');
+        // A voltage drop that rounds to 0.0% is left out: it says nothing a buyer needs.
+        cordSub = (r.route ? capFirst(r.route) + '. ' : '') + 'Needs ' + formatNumber(r.neededFt, 0) + ' ft' +
+          (r.dropPct !== null && r.dropPct >= 0.05 ? ', ' + formatNumber(r.dropPct, 1) + '% voltage drop' : '') + '.';
+      } else if (r.kind === 'plugIn') {
+        cord = 'Plugs straight in';
+        cordSub = 'No cord needed.';
+      } else if (r.kind === 'unknown') {
+        cord = 'Length unknown';
+        cordSub = 'Set the scale of its wall to size this cord.';
       }
       const notes = [];
-      if (f.crossesWalkway) notes.push('Cord cover');
-      if (isObj(f.cord) && f.cord.ok === false) notes.push('Check cord');
+      if (r.tapText) notes.push(capFirst(r.tapText));
+      if (r.cover) notes.push('Cord cover');
+      if (!r.cordOk) notes.push('Check cord');
+      const loadSub = [];
+      if (r.strings !== null && r.unit) loadSub.push(qtyText(r.strings, r.unit));
+      if (r.carriesW > r.watts + 0.5) loadSub.push('cord carries ' + watts(r.carriesW));
       return [
         { text: String(i + 1), color: C.muted },
-        { text: names.join(', ') || 'Lights', sub: f.start && str(f.start.label) ? 'Starts at the ' + f.start.label : null },
-        outlet ? str(outlet.label) || 'Outlet' : { text: 'None', color: C.danger },
-        { text: watts(f.watts), sub: isNum(f.strings) && units.length === 1 ? qtyText(f.strings, units[0]) : null },
-        { text: cord, sub: cordSub },
-        notes.length ? { text: notes.join(', '), color: C.warn } : '',
+        { text: r.lights, bold: r.kind === 'home', sub: r.startLabel ? 'Starts at the ' + r.startLabel : null },
+        r.kind === 'none' ? { text: 'No outlet yet', color: C.danger } : capFirst(r.source) || '—',
+        { text: watts(r.watts), sub: loadSub.join('; ') || null },
+        { text: cord, sub: cordSub, color: r.kind === 'unknown' ? C.warn : undefined },
+        notes.length ? { text: notes.join('. '), color: C.warn } : '',
       ];
     });
     table(L, [
-      { title: '#', w: 20, align: 'right' },
-      { title: 'Lights on this cord', w: 168 },
-      { title: 'Outlet', w: 86 },
+      { title: '#', w: 22, align: 'right' },
+      { title: 'Lights on this cord', w: 114 },
+      { title: 'Plugs into', w: 104 },
       { title: 'Load', w: 58, align: 'right' },
-      { title: 'Cord', w: 136 },
+      { title: 'Cord and route', w: 170 },
       { title: 'Note', w: 64 },
     ], feedRows, { empty: 'Cords appear once there are lights and an outlet.' });
 
     const c = pw.counts;
+    const cnt = (v) => formatNumber(isNum(v) ? v : 0, 0);
     const cordsToBuy = pw.cords.slice().sort((a, b) => (a.awg - b.awg) || (a.lengthFt - b.lengthFt))
       .map((x) => formatNumber(x.count, 0) + ' × ' + formatNumber(x.lengthFt, 0) + ' ft ' + x.awg + ' AWG');
-    L.ensure(70);
+    L.ensure(110);
     tiles(L, [
-      { label: 'Timers', value: formatNumber(isNum(c.timers) ? c.timers : 0, 0) },
-      { label: 'Power stakes (3-outlet)', value: formatNumber(isNum(c.splitters) ? c.splitters : 0, 0) },
-      { label: 'Walkway cord covers', value: formatNumber(isNum(c.cordCovers) ? c.cordCovers : 0, 0) },
-      { label: 'GFCI adapters', value: formatNumber(isNum(c.gfciAdapters) ? c.gfciAdapters : 0, 0) },
+      { label: 'Cords to outlets', value: cnt(c.homeRuns) },
+      { label: 'Jumper cords', value: cnt(c.jumpers) },
+      { label: '3-way taps', value: cnt(c.taps) },
+      { label: 'Timers', value: cnt(c.timers) },
+      { label: 'Power stakes (3-outlet)', value: cnt(c.splitters) },
+      { label: 'Walkway cord covers', value: cnt(c.cordCovers) },
+      { label: 'GFCI adapters', value: cnt(c.gfciAdapters) },
     ], { height: 40, valueSize: 13 });
-    if (cordsToBuy.length) paragraph(L, 'Extension cords to buy: ' + cordsToBuy.join(', ') + '.', { size: 8.5, after: 8 });
+    if (cordsToBuy.length) paragraph(L, 'Extension cords to buy (cords to outlets and jumper cords together): ' + cordsToBuy.join(', ') + '.', { size: 8.5, after: 8 });
   }
 
   const WARN_LABEL = { danger: 'DANGER', warn: 'WARNING', info: 'NOTE' };
@@ -1302,8 +1529,11 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     L.newPage();
     section(L, () => reportHeader(L, project, name, date));
     section(L, () => reportPreview(L, project, pictureOf(o.image)));
-    section(L, () => reportSummary(L, parts, fmtLen));
+    let roughList = [];
+    try { roughList = roughMeasurements(o.plan, project); } catch (e) { roughList = []; }
+    section(L, () => reportSummary(L, parts, fmtLen, roughList.length));
     section(L, () => reportMeasurements(L, project, parts, fmtLen));
+    section(L, () => reportRough(L, roughList));
     section(L, () => reportBom(L, parts));
     section(L, () => reportPower(L, project, parts));
     section(L, () => reportWarnings(L, parts));
@@ -1801,5 +2031,6 @@ LP.define('ui.export', ['catalog', 'bom', 'schema'], function (catalog, bomModul
     PdfDoc, buildReportPdf, buildQuotePdf, parseJpeg, toWinAnsi, fromWinAnsi, textWidth, wrapText,
     base64ToBytes, dataUrlToBytes, slug, formatMoney, formatNumber, formatDate, quoteNumber, exportFilename,
     collectImages, HELVETICA_WIDTHS, HELVETICA_BOLD_WIDTHS, _resetDownloads,
+    describeCords, gaugeText, roughMeasurements, roughFeet,
   };
 });

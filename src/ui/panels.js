@@ -13,6 +13,11 @@
  * Deviations from SPEC §6.6 (additive): mount() returns {render, destroy}. Module exports also icon(name),
  * h(), morph(), pickFile(actions, kind), exportFile(store, actions, kind), stepWarnings(plan), STEPS,
  * validateProducts(list).
+ *
+ * Phase 1.1 (SPEC §8.5): the panels no longer end in a "Next" button. One button is pinned under the panel by
+ * app.js; nextAction(project, ui, plan) says what it reads and runNextAction does it, and planProgress(project,
+ * plan) tells the step bar what is done. The Power step is built from powerVerdict(plan) and
+ * ui.export.describeCords; Review opens with ui.export.roughMeasurements.
  */
 LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.actions', 'ui.persist', 'ui.store'],
   function (catalog, measure, camera, design, power, actionsModule, persist, storeModule) {
@@ -227,17 +232,113 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       if (w.featureId) return 3;
       return 6;
     }
-    /** {step: {count, level}} of warn/danger warnings per step (info and the disclaimer are not counted). */
+    /**
+     * {step: {count, level, low}} per step: `count` warn/danger warnings (info and the disclaimer are not counted)
+     * and their worst `level`; `low` is the number of traced items rated Low that have no tape-measured size yet
+     * (step 3 only: the step bar shows it in a neutral colour when the step has no warnings).
+     */
     function stepWarnings(plan) {
       const out = {};
-      for (const s of STEPS) out[s.n] = { count: 0, level: null };
+      for (const s of STEPS) out[s.n] = { count: 0, level: null, low: 0 };
       for (const w of arr(plan && plan.warnings)) {
         if (!w || w.code === 'disclaimer' || (w.level !== 'warn' && w.level !== 'danger')) continue;
         const s = out[warningStep(w)];
         s.count += 1;
         if (w.level === 'danger' || !s.level) s.level = w.level;
       }
+      const measured = plan && plan.measured && plan.measured.features;
+      if (measured && typeof measured === 'object') {
+        for (const id of Object.keys(measured)) {
+          const m = measured[id];
+          if (m && m.ok && !m.overridden && m.confidence && m.confidence.level === 'low') out[3].low += 1;
+        }
+      }
       return out;
+    }
+
+    // ================================================================ progress and the next thing to do
+    /**
+     * Where the plan stands, read from the plan itself (never from which step happens to be open).
+     * → { photo, scaled, traced (items on this photo), outlets (on this photo),
+     *     steps: {1: photo in, 2: scale set, 3: something traced, 4: lights planned, 5: outlet placed, 6: false},
+     *     left: ['set the scale', …]  (what is still to do, in order) }
+     */
+    function planProgress(project, plan) {
+      const image = storeModule.activeImageOf(project);
+      const onPhoto = (x) => !!x && (!image || x.imageId === image.id || x.imageId == null);
+      const sols = (plan && plan.measured && plan.measured.planes) || {};
+      const scaled = !!image && arr(project && project.planes).some((pl) => pl && pl.imageId === image.id && sols[pl.id] && sols[pl.id].ok);
+      const traced = image ? arr(project && project.features).filter(onPhoto).length : 0;
+      const outlets = image ? arr(project && project.outlets).filter(onPhoto).length : 0;
+      const left = [];
+      if (!image) left.push('add a photo');
+      else {
+        if (!scaled) left.push('set the scale');
+        if (!traced) left.push('trace the lights');
+        if (!outlets) left.push('place an outlet');
+      }
+      return {
+        photo: !!image, scaled, traced, outlets, left,
+        steps: { 1: !!image, 2: scaled, 3: traced > 0, 4: traced > 0, 5: outlets > 0, 6: false },
+      };
+    }
+
+    /**
+     * The one button pinned under the panel: what to do next, from the plan's state and the open step.
+     * → { id, label, primary, note }   id is handled by runNextAction; note is the "Left to do" line (may be '').
+     */
+    function nextAction(project, ui, plan) {
+      const pr = planProgress(project, plan);
+      const mode = (ui && ui.mode && ui.mode.name) || 'select';
+      const step = (ui && ui.step) || 1;
+      const note = pr.photo && pr.left.length ? 'Left to do: ' + pr.left.join(', ') + '.' : '';
+      const act = (id, label, primary) => ({ id, label, primary: primary !== false, note });
+      // A tool is in use: the button is the way out of it (the hint bar on the photo says what to tap).
+      if (mode === 'trace') return { id: 'trace-done', label: 'Done tracing', primary: true, note: '' };
+      if (mode === 'rect' || mode === 'line' || mode === 'outlet') return { id: 'cancel-tool', label: 'Cancel', primary: false, note: '' };
+      if (!pr.photo) return { id: 'pick-photo', label: 'Choose photo', primary: true, note: '' };
+      const toScale = () => act('go-2', pr.scaled ? 'Next: ' + STEPS[1].label : 'Set the scale');
+      const toTrace = () => act('go-3', pr.traced ? 'Next: ' + STEPS[2].label : 'Trace the lights');
+      if (step <= 1) return toScale();
+      if (step === 2) {
+        if (pr.scaled) return toTrace();
+        const planes = arr(project.planes).filter((pl) => pl && storeModule.activeImageOf(project) && pl.imageId === storeModule.activeImageOf(project).id);
+        const active = byId(planes, ui.activePlaneId);
+        const wall = active && active.kind === 'wall' ? active : planes.find((pl) => pl.kind === 'wall') || null;
+        if (!wall) return act('add-wall', 'Add a wall');
+        if (!wall.rect && !arr(wall.refs).length) return Object.assign(act('mark-rect', 'Mark the 4 corners'), { planeId: wall.id });
+        // A rectangle of unknown size (or references that do not solve yet): one known length sets the scale.
+        return Object.assign(act('draw-ref', 'Add a known length'), { planeId: wall.id });
+      }
+      if (step === 3) {
+        if (!pr.traced) return pr.scaled ? act('trace-roofline', 'Trace the roofline') : act('go-2', 'Set the scale');
+        return act('go-4', 'Next: ' + STEPS[3].label);
+      }
+      if (step === 4) return pr.traced ? act('go-5', 'Next: ' + STEPS[4].label) : toTrace();
+      if (step === 5) {
+        if (!pr.traced) return toTrace();
+        return pr.outlets ? act('go-6', 'See the shopping list') : act('place-outlet', 'Place an outlet');
+      }
+      return pr.traced ? act('save-pdf', 'Save PDF') : toTrace();
+    }
+
+    /** Do what the pinned button says. env: {store, actions}. Returns a promise for 'save-pdf', else undefined. */
+    function runNextAction(next, env) {
+      const actions = env.actions;
+      const id = next && next.id;
+      if (!id) return undefined;
+      if (id === 'pick-photo') return void pickFile(actions, 'file');
+      if (id === 'trace-done') return void actions.finishTracing();
+      if (id === 'cancel-tool') return void actions.cancelDraft();
+      if (id === 'add-wall') return void actions.addPlane('wall');
+      if (id === 'mark-rect') return void actions.startPlaneRect(next.planeId);
+      if (id === 'draw-ref') return void actions.startReference(next.planeId);
+      if (id === 'trace-roofline') return void actions.startTrace('roofline');
+      if (id === 'place-outlet') return void actions.startOutlet();
+      if (id === 'save-pdf') return exportFile(env.store, actions, 'pdf');
+      const m = /^go-(\d)$/.exec(id);
+      if (m) return void actions.goStep(Number(m[1]));
+      return undefined;
     }
 
     // ================================================================ files and exports (shared with app.js)
@@ -361,7 +462,14 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
 
     // ================================================================ text tables
     const PLANE_KIND = { wall: 'Wall', roof: 'Roof slope', ground: 'Ground' };
-    const SOURCE_KIND = { upload: 'Uploaded photo', camera: 'Phone camera', sample: 'Sample house', streetview: 'Street View', aerial: 'Aerial view' };
+    const SOURCE_KIND = { upload: 'Uploaded photo', camera: 'Phone camera', sample: 'Sample house', streetview: 'Street-level screenshot', aerial: 'Aerial view' };
+    /**
+     * Lens wording as shown on screen: the wide-view preset is called "Screenshot (wide view)" (SPEC §8.4), whatever
+     * an older catalog or message still calls it.
+     */
+    const OLD_WIDE_NAME = new RegExp(['Street', 'View'].join(' ') + '( screenshots?)?', 'gi');   // the preset's Phase 1 name
+    const lensWords = (t) => String(t == null ? '' : t).replace(OLD_WIDE_NAME, 'Screenshot (wide view)');
+    const smallPhotoText = (image) => 'This photo is small (' + fmtNum(image.width, 0) + ' px wide), so corners are hard to place and lengths come out rough. Use the original photo from the camera if you can.';
     const FOCAL_SOURCE = { exif: 'From the photo', rectangle: 'Measured', manual: 'Entered by hand', preset: 'Preset', default: 'Assumed' };
     const MODE_TEXT = {
       'rect-known': 'Measured from a rectangle of known size.',
@@ -477,15 +585,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         h('h2', { class: 'panel-title' }, STEPS[n - 1].title),
         sub ? h('p', { class: 'panel-sub' }, sub) : null);
     }
-    function nextButton(n) {
-      if (n >= 6) {
-        return h('div', { class: 'panel-next' },
-          button('Save project (JSON)', { act: 'export', data: { kind: 'json' }, cls: 'primary block', icon: 'download', disabled: savingUnavailable }),
-          h('p', { class: 'hint center' }, 'Saving keeps the photo, tracing and settings in one file you can open later.'));
-      }
-      return h('div', { class: 'panel-next' },
-        button('Next: ' + STEPS[n].label, { act: 'go-step', data: { step: n + 1 }, cls: 'primary block', icon: 'arrowRight' }));
-    }
     function dl(rows) {
       return h('dl', { class: 'facts' }, rows.filter(Boolean).map((r) => h('div', { class: 'fact' }, h('dt', null, r[0]), h('dd', { class: r[2] || null }, r[1]))));
     }
@@ -533,13 +632,19 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const { image, plan } = ctx;
       const isSample = !!(image && image.source && image.source.kind === 'sample');
       const kids = [head(1, 'Use a photo of the front of the house. Every measurement comes from it.')];
-      kids.push(h('div', { class: 'dropzone', 'data-key': 'dropzone' },
-        icon('image', 'dz-icon'),
-        h('p', { class: 'dz-title' }, 'Drop a photo here'),
-        h('p', { class: 'dz-sub' }, 'You can also drop it anywhere on the picture.'),
-        h('div', { class: 'btn-row' },
-          button('Choose photo', { act: 'pick', data: { kind: 'file' }, cls: 'primary', icon: 'image' }),
-          button('Take photo', { act: 'pick', data: { kind: 'camera' }, icon: 'camera' }))));
+      // The two photo buttons are shown once: on the picture while there is no photo (the empty card there has
+      // them), here once there is one (to use a different photo). Dropping a file is a desktop extra.
+      if (image) {
+        kids.push(h('div', { class: 'dropzone', 'data-key': 'dropzone' },
+          h('p', { class: 'dz-title' }, 'Use a different photo'),
+          h('p', { class: 'dz-sub' }, 'Choose or take a photo', h('span', { class: 'desk-only' }, ', or drop one anywhere on the picture'), '.'),
+          h('div', { class: 'btn-row' },
+            button('Choose photo', { act: 'pick', data: { kind: 'file' }, icon: 'image' }),
+            button('Take photo', { act: 'pick', data: { kind: 'camera' }, icon: 'camera' }))));
+      } else {
+        kids.push(h('p', { class: 'lead', 'data-key': 'dropzone' }, 'Choose or take a photo to start',
+          h('span', { class: 'desk-only' }, ', or drop one anywhere on the page'), '.'));
+      }
       kids.push(section('Or try it first', [
         h('div', { class: 'btn-col' },
           button('Use sample house (traced)', { act: 'load-sample', data: { traced: '1' }, icon: 'house' }),
@@ -557,11 +662,10 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           ['Size', fmtNum(image.width, 0) + ' × ' + fmtNum(image.height, 0) + ' px', 'num'],
           ['Source', SOURCE_KIND[image.source && image.source.kind] || 'Photo'],
           isSample ? null : ['Camera', exText],
-        ])], { key: 'photo' }));
+        ]), actionsModule.isSmallPhoto(image) ? callout('warn', smallPhotoText(image), { key: 'small-photo' }) : null], { key: 'photo' }));
         kids.push(lensSection(ctx));
       }
       kids.push(disclosure('Photo tips', h('ul', { class: 'tips' }, PHOTO_TIPS.map((t) => h('li', null, t))), { open: !image || isSample, key: 'tips' }));
-      if (image && plan) kids.push(nextButton(1));
       return kids;
     }
 
@@ -574,7 +678,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const options = [
         ['auto', 'Automatic (recommended)'],
         ['exif', hasExif ? 'From the photo data' : 'From the photo data (none in this photo)', !hasExif && value !== 'exif'],
-      ].concat(camera.CAMERA_PRESETS.map((p) => ['preset:' + p.id, p.label]))
+      ].concat(camera.CAMERA_PRESETS.map((p) => ['preset:' + p.id, lensWords(p.label)]))
         .concat([['manual', 'Enter the focal length in pixels']]);
       const kids = [
         field('Lens', selectInput({ act: 'lens-mode', value, options, data: { id: image.id } })),
@@ -586,18 +690,18 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       if (K && K.ok !== false) {
         kids.push(h('div', { class: 'lens-status' },
           h('span', { class: 'badge ' + (K.source === 'default' ? 'warn' : 'ok') }, FOCAL_SOURCE[K.source] || 'Lens'),
-          h('span', null, K.label + (isNum(K.f) ? ' · ' : ''), isNum(K.f) ? h('span', { class: 'num' }, fmtNum(K.f, 0) + ' px') : null)));
+          h('span', null, lensWords(K.label) + (isNum(K.f) ? ' · ' : ''), isNum(K.f) ? h('span', { class: 'num' }, fmtNum(K.f, 0) + ' px') : null)));
       }
-      // The lens setting disagrees with what the rectangles in the photo measure (zoomed Street View, a crop...).
+      // The lens setting disagrees with what the rectangles in the photo measure (a zoomed screenshot, a crop...).
       const mismatch = arr(plan.measured && plan.measured.warnings).find((w) => w && w.code === 'focal-mismatch' && w.imageId === image.id);
       if (mismatch) {
-        kids.push(callout('warn', mismatch.message, {
+        kids.push(callout('warn', lensWords(mismatch.message), {
           key: 'lens-mismatch',
           after: isNum(mismatch.suggestedFocalPx) ? button('Use ' + fmtNum(mismatch.suggestedFocalPx, 0) + ' px', { act: 'lens-use', data: { id: image.id, f: mismatch.suggestedFocalPx }, cls: 'small' }) : null,
         }));
       }
-      if (K && K.exifIgnored) kids.push(callout('info', K.exifIgnored, { key: 'lens-exif-ignored' }));
-      kids.push(h('p', { class: 'hint' }, 'Automatic uses the lens data in the photo, then measures it from a perspective rectangle, and otherwise assumes a phone main camera. For a Street View screenshot, keep Automatic once a rectangle is marked: Street View zooms, so its field of view is not fixed.'));
+      if (K && K.exifIgnored) kids.push(callout('info', lensWords(K.exifIgnored), { key: 'lens-exif-ignored' }));
+      kids.push(h('p', { class: 'hint' }, 'Automatic uses the lens data in the photo, then measures the lens from the rectangle you mark in step 2, and otherwise assumes a phone main camera. For a screenshot, keep Automatic once a rectangle is marked: a screenshot can be zoomed, so how wide it sees is not fixed.'));
       return section('Lens', kids, { key: 'lens' });
     }
 
@@ -609,6 +713,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         kids.push(callout('info', 'Add a photo first.', { after: button('Go to Upload', { act: 'go-step', data: { step: 1 }, cls: 'small' }) }));
         return kids;
       }
+      if (actionsModule.isSmallPhoto(image)) kids.push(callout('warn', smallPhotoText(image), { key: 'small-photo' }));
       // Surfaces
       const rows = planes.map((pl) => {
         const sol = sols[pl.id];
@@ -634,7 +739,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const pl = ctx.activePlane;
       if (pl) kids.push(planeEditor(ctx, pl, sols[pl.id]));
       kids.push(pitchSection(ctx));
-      kids.push(nextButton(2));
       return kids;
     }
 
@@ -658,7 +762,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       } else {
         statusRows.push(['How', 'Not measured yet. ' + ((sol && sol.reason) || (pl.kind === 'wall' ? 'Mark a rectangle or add a reference length below.' : ''))]);
       }
-      if (K && K.ok !== false) statusRows.push(['Lens', K.label + (isNum(K.f) ? ' (' + fmtNum(K.f, 0) + ' px)' : '')]);
+      if (K && K.ok !== false) statusRows.push(['Lens', lensWords(K.label) + (isNum(K.f) ? ' (' + fmtNum(K.f, 0) + ' px)' : '')]);
       if (pl.kind === 'roof' && sol && sol.pitch) statusRows.push(['Pitch', sol.pitch.rise + '/' + sol.pitch.run + (sol.pitch.source === 'estimated' ? ' (estimated)' : sol.pitch.source === 'default' ? ' (assumed)' : '')]);
       kids.push(h('div', { class: 'status-card' }, dl(statusRows), conf ? confidenceBlock(conf, 'plane-conf-' + pl.id) : null));
 
@@ -858,7 +962,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         : h('p', { class: 'hint' }, 'Nothing traced yet. Pick a type above, then tap along it on the photo.'), { key: 'features' }));
 
       kids.push(totalsSection(ctx));
-      kids.push(nextButton(3));
       return kids;
     }
 
@@ -1019,7 +1122,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
 
       kids.push(productEditor(ctx));
       kids.push(configEditor(ctx));
-      kids.push(nextButton(4));
       return kids;
     }
 
@@ -1102,99 +1204,210 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
     }
 
     // ================================================================ step 5: Power
+    const exportModule = () => (typeof LP !== 'undefined' && LP.has('ui.export') ? LP.require('ui.export') : null);
+    /** The power plan in plain words, cord by cord (ui.export.describeCords); empty when that module is missing. */
+    function cordInfo(plan, project) {
+      const exp = exportModule();
+      return exp && typeof exp.describeCords === 'function' ? exp.describeCords(plan, project) : { outlets: [], loose: [], rows: [] };
+    }
+    const capFirst = (t) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
+    function pctText(share) {
+      if (!(share > 0)) return '0%';
+      const v = Math.round(share * 100);
+      return v < 1 ? 'under 1%' : fmtNum(v, 0) + '%';
+    }
+
+    /**
+     * The Power step's opening sentence: is the plan safe to plug in, and if not, what to fix first.
+     * → {level: 'ok' | 'info' | 'warn' | 'danger', lead: 'Good to go:', text: ' …', more: other problems below}
+     */
+    function powerVerdict(plan) {
+      const pw = (plan && plan.power) || {};
+      const runs = arr(plan && plan.runs);
+      const total = plan && plan.summary && isNum(plan.summary.watts) ? plan.summary.watts : pw.totals && isNum(pw.totals.watts) ? pw.totals.watts : 0;
+      if (!runs.length) return { level: 'info', lead: 'Nothing to power yet:', text: ' trace the lights in step 3 first, then mark an outlet here.', more: 0 };
+      const used = arr(pw.outlets).filter((o) => o && arr(o.feedIds).length > 0);
+      if (!used.length) {
+        return { level: 'warn', lead: 'Place an outlet:', text: ' these lights use ' + watts(total) + '. Tap Place outlet, then tap where the outlet is on the photo.', more: 0 };
+      }
+      const issues = arr(pw.warnings).filter((w) => w && w.code !== 'disclaimer' && (w.level === 'danger' || w.level === 'warn'));
+      const danger = issues.find((w) => w.level === 'danger');
+      if (danger) return { level: 'danger', lead: 'Not safe yet:', text: ' ' + danger.message, more: issues.length - 1 };
+      if (issues.length) {
+        return { level: 'warn', lead: issues.length === 1 ? 'One thing to fix first:' : issues.length + ' things to fix first:', text: ' ' + issues[0].message, more: issues.length - 1 };
+      }
+      const limit = Math.max.apply(null, used.map((o) => (isNum(o.limitW) && o.limitW > 0 ? o.limitW : 0))) || 1440;
+      if (total <= limit) {
+        return { level: 'ok', lead: 'Good to go:', text: ' these lights use ' + watts(total) + ', ' + pctText(total / limit) + ' of one outlet\'s safe limit.', more: 0 };
+      }
+      const busiest = Math.max.apply(null, used.map((o) => (isNum(o.limitW) && o.limitW > 0 && isNum(o.watts) ? o.watts / o.limitW : 0)));
+      return {
+        level: 'ok', lead: 'Good to go:', more: 0,
+        text: ' these lights use ' + watts(total) + ' across ' + plural(used.length, 'outlet', 'outlets') + '; the busiest is at ' + pctText(busiest) + ' of its safe limit.',
+      };
+    }
+
+    /** "1 cord at this outlet feeding 10 runs · 185 W" (the cords that plug into the outlet, not every run it powers). */
+    function outletSummaryText(o) {
+      if (!o || !(o.feeds > 0)) return 'Nothing plugged in yet';
+      return plural(o.cords, 'cord', 'cords') + ' at this outlet feeding ' + plural(o.runs, 'run', 'runs') + ' · ' + watts(o.watts) +
+        (o.splitters ? ' · ' + plural(o.splitters, 'power stake', 'power stakes') : '');
+    }
+
     function stepPower(ctx) {
       const { ui, project, plan, image } = ctx;
       const pw = plan.power;
-      const kids = [head(5, 'Mark the outdoor outlets. LightPlan chains the runs, sizes the cords and checks each circuit.')];
-      kids.push(callout('info', power.DISCLAIMER, { key: 'disclaimer' }));
+      const kids = [head(5, 'Mark the outlets you can use. LightPlan links the runs, picks the cords and checks that nothing is overloaded.')];
       if (!image) {
         kids.push(callout('info', 'Add a photo first.', { after: button('Go to Upload', { act: 'go-step', data: { step: 1 }, cls: 'small' }) }));
         return kids;
       }
+      // One sentence first: is it safe, and if not, what to fix.
+      const verdict = powerVerdict(plan);
+      kids.push(h('div', { class: 'verdict ' + verdict.level, role: verdict.level === 'danger' ? 'alert' : 'status', 'data-key': 'verdict' },
+        icon(verdict.level === 'ok' ? 'check' : verdict.level === 'info' ? 'info' : 'warning'),
+        h('div', { class: 'verdict-body' },
+          h('p', { class: 'verdict-text' }, h('strong', null, verdict.lead), verdict.text),
+          verdict.more > 0 ? h('p', { class: 'verdict-more' }, 'And ' + (verdict.more === 1 ? '1 more thing' : verdict.more + ' more things') + ' to check, listed under Warnings below.') : null)));
+
+      const cords = cordInfo(plan, project);
+      const cordsByOutlet = {};
+      for (const o of cords.outlets) cordsByOutlet[o.id] = o;
       const placing = ui.mode.name === 'outlet';
       const sel = ui.selection;
-      const outletInfo = (id) => byId(pw.outlets, id);
-      const circuitOpts = [['', 'Unknown circuit']].concat(project.circuits.map((c) => [c.id, c.name]));
+      const circuitOpts = [['', 'Not sure']].concat(project.circuits.map((c) => [c.id, c.name]));
       const outletItems = project.outlets.filter((o) => !image || o.imageId === image.id || o.imageId == null).map((o) => {
-        const info = outletInfo(o.id);
         const selected = !!(sel && sel.kind === 'outlet' && sel.id === o.id);
-        const nFeeds = info ? info.feedIds.length : 0;
-        const infoText = nFeeds ? plural(nFeeds, 'cord', 'cords') + ' · ' + watts(info.watts) + (info.splitters ? ' · ' + plural(info.splitters, 'power stake', 'power stakes') : '') : 'Nothing plugged in yet';
+        const opl = byId(ctx.planes, o.planeId);
         return h('li', { class: 'outlet-card' + (selected ? ' selected' : ''), 'data-key': o.id },
           h('div', { class: 'outlet-head' },
             h('button', { type: 'button', class: 'outlet-pick', data: { act: 'select-outlet', id: o.id }, 'aria-label': 'Show ' + o.label + ' on the photo' }, icon('plug')),
             textInput({ act: 'outlet-field', value: o.label, data: { id: o.id, field: 'label' }, aria: 'Outlet name', cls: 'grow', maxlength: 60 }),
             iconButton('trash', 'Delete ' + o.label, { act: 'delete-outlet', data: { id: o.id }, cls: 'small' })),
-          h('div', { class: 'row-2' },
-            field('Type', selectInput({ act: 'outlet-type', value: o.type, options: OUTLET_TYPES, data: { id: o.id } })),
-            field('Circuit', selectInput({ act: 'outlet-circuit', value: o.circuitId || '', options: circuitOpts, data: { id: o.id } }))),
-          field('Surface', selectInput({ act: 'outlet-plane', value: o.planeId || '', options: [['', 'None']].concat(ctx.planes.map((p) => [p.id, planeOptionLabel(p)])), data: { id: o.id } })),
-          (() => {
-            const opl = byId(ctx.planes, o.planeId);
-            return opl && opl.kind !== 'wall' ? callout('warn', 'This outlet is on \'' + opl.name + '\'. Outlets are on walls: pick the wall it is on, or the cord lengths come out wrong.', { key: 'op-' + o.id }) : null;
-          })(),
-          h('div', { class: 'row-2 align-center' },
-            toggle('GFCI protected', { act: 'outlet-gfci', data: { id: o.id }, checked: o.gfci }),
-            h('p', { class: 'outlet-info num' }, infoText)));
+          h('p', { class: 'outlet-info' }, outletSummaryText(cordsByOutlet[o.id])),
+          h('div', { class: 'row-2 align-end' },
+            field('Kind of outlet', selectInput({ act: 'outlet-type', value: o.type, options: OUTLET_TYPES, data: { id: o.id } })),
+            toggle('GFCI protected', { act: 'outlet-gfci', data: { id: o.id }, checked: o.gfci })),
+          opl && opl.kind !== 'wall' ? callout('warn', 'This outlet is on \'' + opl.name + '\'. Outlets are on walls: pick the wall it is on under More about this outlet, or the cord lengths come out wrong.', { key: 'op-' + o.id }) : null,
+          h('details', { class: 'outlet-more', 'data-key': 'more-' + o.id },
+            h('summary', null, h('span', null, 'More about this outlet'), icon('chevronDown', 'chev')),
+            h('div', { class: 'row-2' },
+              field('Breaker it is on', selectInput({ act: 'outlet-circuit', value: o.circuitId || '', options: circuitOpts, data: { id: o.id } })),
+              field('Wall it is on', selectInput({ act: 'outlet-plane', value: o.planeId || '', options: [['', 'None']].concat(ctx.planes.map((p) => [p.id, planeOptionLabel(p)])), data: { id: o.id } })))));
       });
       kids.push(section('Outlets', [
         h('div', { class: 'btn-row' }, button(placing ? 'Tap the photo to place it' : 'Place outlet', { act: 'place-outlet', icon: 'plug', cls: placing ? 'on' : 'primary', pressed: placing })),
         outletItems.length ? h('ul', { class: 'outlet-list' }, outletItems) : h('p', { class: 'hint' }, 'Place each outdoor outlet you can use. Garage outlets work too.'),
+        outletItems.length ? h('p', { class: 'hint' }, 'GFCI protected means the outlet (or its breaker) has TEST and RESET buttons. For an outlet without it, the shopping list adds a plug-in GFCI adapter.') : null,
       ], { key: 'outlets' }));
+      kids.push(callout('info', power.DISCLAIMER, { key: 'disclaimer' }));
+
+      // How the power runs: outlet → cord → run → jumper cord → run.
+      const daisy = !(ctx.config.power && ctx.config.power.daisyChain === false);
+      const treeKids = [
+        toggle('Link nearby runs with jumper cords', { act: 'power-daisy', checked: daisy }),
+        h('p', { class: 'hint' }, daisy
+          ? 'On: runs that sit close together are joined with a jumper cord (a short cord from one run to the next), so only a few cords go back to the outlets.'
+          : 'Off: every run gets its own cord from an outlet. Turn it on to join nearby runs with jumper cords (short cords from one run to the next).'),
+      ];
+      for (const o of cords.outlets) {
+        if (!o.trees.length) continue;
+        treeKids.push(h('div', { class: 'tree', 'data-key': 'tree-' + o.id },
+          h('p', { class: 'tree-head' }, icon('plug'), h('strong', null, o.label), h('span', { class: 'num' }, plural(o.cords, 'cord', 'cords') + ' · ' + watts(o.watts))),
+          h('ul', { class: 'feed-list' }, o.trees.map((tree) => tree.map((r) => cordRow(r, daisy))))));
+      }
+      if (cords.loose.length) {
+        treeKids.push(h('div', { class: 'tree', 'data-key': 'tree-none' },
+          h('p', { class: 'tree-head' }, icon('warning'), h('strong', null, 'No outlet yet'), h('span', { class: 'num' }, plural(cords.loose.length, 'run', 'runs'))),
+          h('ul', { class: 'feed-list' }, cords.loose.map((r) => cordRow(r, false)))));
+      }
+      if (!cords.rows.length) treeKids.push(h('p', { class: 'hint' }, 'Cords appear here once there are lights and an outlet.'));
+      else {
+        treeKids.push(h('p', { class: 'hint legend' },
+          h('span', { class: 'lg' }, h('i', { class: 'lg-line home', 'aria-hidden': 'true' }), 'cord from an outlet'),
+          h('span', { class: 'lg' }, h('i', { class: 'lg-line jumper', 'aria-hidden': 'true' }), 'jumper cord'),
+          h('span', { class: 'lg' }, h('i', { class: 'lg-tap', 'aria-hidden': 'true' }), '3-way tap (a plug with three outlets)')));
+        const detail = cords.rows.filter((r) => r.kind === 'home' || r.kind === 'jumper').map((r) => h('li', { 'data-key': 'cd-' + r.feedId },
+          h('strong', null, r.lights + ': '),
+          h('span', { class: 'num' }, [
+            r.pieces.length ? r.pieces.map((x) => fmtNum(x, 0) + ' ft').join(' + ') + ' bought' : null,
+            r.neededFt != null ? fmtNum(r.neededFt, 0) + ' ft needed' : null,
+            r.awg != null ? r.awg + ' AWG' : null,
+            'carries ' + watts(r.carriesW),
+            r.dropPct != null ? fmtNum(r.dropPct, 1) + '% voltage drop' + (r.pathDropPct != null && r.pathDropPct > r.dropPct + 0.05 ? ' (' + fmtNum(r.pathDropPct, 1) + '% back to the outlet)' : '') : null,
+          ].filter(Boolean).join(', '))));
+        if (detail.length) {
+          treeKids.push(disclosure('Cord details (wire gauge, voltage drop)', [
+            h('p', { class: 'hint' }, 'AWG is the wire gauge printed on the cord: a smaller number is a thicker cord. Voltage drop is how much the lights dim at the far end.'),
+            h('ul', { class: 'cord-detail' }, detail),
+          ], { key: 'cord-detail' }));
+        }
+      }
+      kids.push(section('How the power runs', treeKids, { key: 'feeds' }));
+
+      const c = pw.counts || {};
+      const n = (v) => fmtNum(isNum(v) ? v : 0, 0);
+      kids.push(section('Power parts to buy', h('div', { class: 'tiles small' },
+        tile('Cords to outlets', n(c.homeRuns)),
+        tile('Jumper cords', n(c.jumpers), 'short cords from one run to the next'),
+        tile('3-way taps', n(c.taps), 'plugs with three outlets'),
+        tile('Timers', n(c.timers)), tile('Power stakes', n(c.splitters)), tile('Cord covers', n(c.cordCovers)), tile('GFCI adapters', n(c.gfciAdapters))), { key: 'counts' }));
 
       // Circuits
-      const circuitItems = project.circuits.map((c) => {
-        const info = byId(pw.circuits, c.id);
+      const circuitItems = project.circuits.map((ci) => {
+        const info = byId(pw.circuits, ci.id);
         const sharePct = Math.round(power.continuousFactorOf(ctx.config.power.continuousFactor).factor * 100);
-        const limit = info ? info.limitW : power.limitW(c.breakerAmps, c.voltage || 120, ctx.config.power.continuousFactor);
-        const load = info ? info.loadW : c.existingLoadW || 0;
+        const limit = info ? info.limitW : power.limitW(ci.breakerAmps, ci.voltage || 120, ctx.config.power.continuousFactor);
+        const load = info ? info.loadW : ci.existingLoadW || 0;
         const pct = limit > 0 ? (load / limit) * 100 : 0;
         const cls = pct > 100 ? 'danger' : pct > 90 ? 'warn' : 'ok';
         const breakerOpts = [['15', '15 A'], ['20', '20 A']];
-        if (![15, 20].includes(c.breakerAmps)) breakerOpts.push([String(c.breakerAmps), c.breakerAmps + ' A']);
-        return h('li', { class: 'circuit-card', 'data-key': c.id },
+        if (![15, 20].includes(ci.breakerAmps)) breakerOpts.push([String(ci.breakerAmps), ci.breakerAmps + ' A']);
+        return h('li', { class: 'circuit-card', 'data-key': ci.id },
           h('div', { class: 'outlet-head' },
-            textInput({ act: 'circuit-field', value: c.name, data: { id: c.id, field: 'name' }, aria: 'Circuit name', cls: 'grow', maxlength: 60 }),
-            iconButton('trash', 'Delete ' + c.name, { act: 'delete-circuit', data: { id: c.id }, cls: 'small', disabled: project.circuits.length <= 1 })),
+            textInput({ act: 'circuit-field', value: ci.name, data: { id: ci.id, field: 'name' }, aria: 'Circuit name', cls: 'grow', maxlength: 60 }),
+            iconButton('trash', 'Delete ' + ci.name, { act: 'delete-circuit', data: { id: ci.id }, cls: 'small', disabled: project.circuits.length <= 1 })),
           h('div', { class: 'row-2' },
-            field('Breaker', selectInput({ act: 'circuit-breaker', value: String(c.breakerAmps), options: breakerOpts, data: { id: c.id } })),
-            field('Already on it (W)', numInput({ act: 'circuit-existing', value: c.existingLoadW, min: 0, step: 10, decimals: 0, data: { id: c.id } }))),
-          h('div', { class: 'meter ' + cls, role: 'meter', 'aria-valuemin': '0', 'aria-valuemax': String(Math.round(limit)), 'aria-valuenow': String(Math.round(load)), 'aria-label': c.name + ' load' },
+            field('Breaker', selectInput({ act: 'circuit-breaker', value: String(ci.breakerAmps), options: breakerOpts, data: { id: ci.id } })),
+            field('Already on it (W)', numInput({ act: 'circuit-existing', value: ci.existingLoadW, min: 0, step: 10, decimals: 0, data: { id: ci.id } }))),
+          h('div', { class: 'meter ' + cls, role: 'meter', 'aria-valuemin': '0', 'aria-valuemax': String(Math.round(limit)), 'aria-valuenow': String(Math.round(load)), 'aria-label': ci.name + ' load' },
             h('span', { class: 'meter-fill', style: 'width:' + Math.min(100, Math.max(0, pct)).toFixed(1) + '%' })),
-          h('p', { class: 'meter-text num' }, watts(load) + ' of ' + fmtNum(limit, 0) + ' W safe limit (' + sharePct + '% of ' + c.breakerAmps + ' A) · ' + fmtNum(pct, 0) + '%'));
+          h('p', { class: 'meter-text num' }, watts(load) + ' of ' + fmtNum(limit, 0) + ' W safe limit (' + sharePct + '% of ' + ci.breakerAmps + ' A) · ' + fmtNum(pct, 0) + '%'));
       });
-      kids.push(section('Circuits', [
+      kids.push(section('Breakers (circuits)', [
+        h('p', { class: 'hint' }, 'A circuit is everything on one breaker in the panel. Outlets on the same breaker share its limit: say which breaker each outlet is on under More about this outlet, and add what else runs on it (a garage freezer, porch lights) so the check is honest.'),
         h('ul', { class: 'circuit-list' }, circuitItems),
         h('div', { class: 'btn-row' }, button('Add circuit', { act: 'add-circuit', icon: 'plus', cls: 'small' })),
-        h('p', { class: 'hint' }, 'Outlets on the same breaker share one circuit. Add what else runs on it (a garage freezer, porch lights) so the check is honest.'),
       ], { key: 'circuits' }));
 
-      // Feeds
-      const runById = (id) => byId(plan.runs, id);
-      const outletLabel = (id) => { const o = byId(project.outlets, id); return o ? o.label : null; };
-      const feedItems = pw.feeds.map((f, i) => {
-        const fruns = arr(f.runIds).map(runById).filter(Boolean);
-        const names = fruns.map((r) => r.label);
-        const units = Array.from(new Set(fruns.map((r) => r.unit)));
-        const unitText = units.length === 1 ? fmtNum(f.strings, units[0] === 'foot' ? 1 : 0) + ' ' + unitWord(units[0], f.strings) : plural(f.strings, 'unit', 'units');
-        const cord = f.cord ? arr(f.cord.pieces).map((p) => p + ' ft').join(' + ') + ' cord, ' + f.cord.awg + ' AWG (needs ' + fmtNum(Math.ceil(f.cord.lengthFt), 0) + ' ft)'
-          : f.outletId ? 'Cord length unknown' : 'No outlet yet';
-        return h('li', { class: 'feed-item', 'data-key': f.id },
-          h('p', { class: 'feed-title' }, h('span', { class: 'num feed-num' }, String(i + 1)), h('span', null, names.join(', ') || 'Lights'),
-            icon('arrowRight', 'feed-arrow'), h('strong', null, outletLabel(f.outletId) || 'No outlet')),
-          h('p', { class: 'feed-meta num' }, watts(f.watts) + ' · ' + unitText + ' · ' + cord + (f.crossesWalkway ? ' · needs a cord cover' : '')));
-      });
-      kids.push(section('Cords (' + pw.feeds.length + ')', feedItems.length ? h('ul', { class: 'feed-list' }, feedItems) : h('p', { class: 'hint' }, 'Cords appear once there are lights and an outlet.'), { key: 'feeds' }));
-
-      const c = pw.counts;
-      kids.push(section('Power extras to buy', h('div', { class: 'tiles small' },
-        tile('Timers', fmtNum(c.timers, 0)), tile('Power stakes', fmtNum(c.splitters, 0)), tile('Cord covers', fmtNum(c.cordCovers, 0)), tile('GFCI adapters', fmtNum(c.gfciAdapters, 0))), { key: 'counts' }));
-
       const order = { danger: 0, warn: 1, info: 2 };
-      const warns = arr(pw.warnings).filter((w) => w.code !== 'disclaimer').slice().sort((a, b) => order[a.level] - order[b.level]);
-      kids.push(section('Warnings', warns.length ? warningList(warns, false) : h('p', { class: 'ok-line' }, icon('check'), h('span', null, 'No power problems found.')), { key: 'pwarn' }));
-      kids.push(nextButton(5));
+      // With no outlet placed the sentence at the top already says so, in plainer words.
+      const noOutlet = verdict.level === 'warn' && verdict.lead === 'Place an outlet:';
+      const warns = arr(pw.warnings).filter((w) => w.code !== 'disclaimer' && !(noOutlet && w.code === 'no-outlets')).slice().sort((a, b) => order[a.level] - order[b.level]);
+      kids.push(section('Warnings', warns.length ? warningList(warns, false) : h('p', { class: 'ok-line' }, icon('check'), h('span', null, noOutlet ? 'Nothing else to check.' : 'No power problems found.')), { key: 'pwarn' }));
       return kids;
+    }
+
+    /** One row of the supply tree: the lights on one cord, where the cord comes from and how it runs. */
+    function cordRow(r, daisy) {
+      const unitText = r.strings != null && r.unit ? fmtNum(r.strings, r.unit === 'foot' ? 1 : 0) + ' ' + unitWord(r.unit, r.strings) : null;
+      const meta = [r.route ? capFirst(r.route) : null];
+      if (r.gauge && (r.kind === 'home' || r.kind === 'jumper')) meta.push(r.gauge + ' cord');
+      if (r.neededFt != null) meta.push('needs ' + fmtNum(r.neededFt, 0) + ' ft');
+      if (r.carriesW > r.watts + 0.5) meta.push('carries ' + fmtNum(r.carriesW, 0) + ' W in all');
+      const notes = [];
+      if (r.tapText) notes.push(capFirst(r.tapText) + ' (a plug with three outlets)');
+      if (r.cover) notes.push('Needs a cord cover where it crosses the walkway');
+      if (r.doorway) notes.push('Passes ' + r.doorway + ': keep it clear of the door');
+      const showOwn = daisy && r.featureIds.length > 0 && (r.kind === 'jumper' || r.kind === 'plugIn' || r.ownCord);
+      const depth = Math.max(0, Math.min(5, r.depth || 0));
+      return h('li', { class: 'feed-item ' + r.kind + (depth ? ' child' : ''), 'data-key': r.feedId, 'data-kind': r.kind, style: depth ? 'margin-left:' + depth * 12 + 'px' : null },
+        h('p', { class: 'feed-title' }, h('i', { class: 'lg-line ' + (r.kind === 'jumper' ? 'jumper' : r.kind === 'home' ? 'home' : 'none'), 'aria-hidden': 'true' }),
+          h('strong', null, r.lights), h('span', { class: 'num feed-w' }, (unitText ? unitText + ' · ' : '') + watts(r.watts))),
+        h('p', { class: 'feed-line' }, r.line),
+        meta.filter(Boolean).length ? h('p', { class: 'feed-meta' }, meta.filter(Boolean).join(' · ')) : null,
+        notes.length ? h('p', { class: 'feed-note' }, notes.join('. ') + '.') : null,
+        showOwn ? toggle('Give this run its own cord', { act: 'feed-own-cord', data: { ids: r.featureIds.join(',') }, checked: r.ownCord, cls: 'slim' }) : null);
     }
 
     function tile(label, value, sub) {
@@ -1206,6 +1419,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const { project, plan, local } = ctx;
       const sm = plan.summary;
       const kids = [head(6, 'Everything to buy, what it costs, and the order to put it up.')];
+
+      const rough = roughList(plan, project);
+      if (rough.length) kids.push(roughSection(ctx, rough));
 
       const problems = arr(plan.warnings).filter((w) => w.level === 'danger' || w.level === 'warn');
       if (problems.length) kids.push(section('Check before you buy (' + problems.length + ')', warningList(problems, true), { key: 'problems' }));
@@ -1221,7 +1437,10 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
             h('p', { class: 'tile-sub num' }, ctx.fmt(sm.totalFt) + ' measured'), byType.length ? h('ul', { class: 'type-list' }, byType) : null),
           tile('Strings', fmtNum(sm.strings, 0)), tile('Clips', fmtNum(sm.clips, 0)), tile('Cords', fmtNum(sm.cords, 0)), tile('Timers', fmtNum(sm.timers, 0)),
           tile('Total watts', watts(sm.watts), fmtNum(sm.amps, 1) + ' A'), tile('Circuits', fmtNum(sm.circuits, 0)),
-          h('div', { class: 'tile wide accent' }, h('p', { class: 'tile-value num' }, money(sm.cost)), h('p', { class: 'tile-label' }, 'Estimated materials cost'),
+          h('div', { class: 'tile wide accent', 'data-key': 'cost-tile', 'data-rough': rough.length ? 'true' : null },
+            h('p', { class: 'tile-value num' }, money(sm.cost)),
+            h('p', { class: 'tile-label' }, 'Estimated materials cost', rough.length ? h('span', { class: 'badge warn rough-badge' }, 'rough') : null),
+            rough.length ? h('p', { class: 'tile-sub' }, 'Rough until ' + (rough.length === 1 ? 'the measurement above is' : 'the ' + rough.length + ' measurements above are') + ' checked with a tape.') : null,
             isNum(sm.quoteTotal) ? h('p', { class: 'tile-sub num' }, 'Customer quote ' + money(sm.quoteTotal)) : null)),
       ], { key: 'summary' }));
 
@@ -1237,9 +1456,51 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         button('CSV (shopping list)', { act: 'export', data: { kind: 'csv' }, icon: 'table', disabled: !!busy }),
         button('Save project (JSON)', { act: 'export', data: { kind: 'json' }, icon: 'download', disabled: !!busy }),
         button('Open project (JSON)', { act: 'pick', data: { kind: 'json' }, icon: 'folder' })),
-      project.quote.enabled ? null : h('p', { class: 'hint' }, 'Turn on installer mode above to make a customer quote.')], { key: 'export' }));
-      kids.push(nextButton(6));
+      project.quote.enabled ? null : h('p', { class: 'hint' }, 'Turn on installer mode above to make a customer quote.'),
+      h('p', { class: 'hint' }, 'Save project keeps the photo, tracing and settings in one file you can open later.')], { key: 'export' }));
       return kids;
+    }
+
+    /** The measurements worth a tape measure (ui.export.roughMeasurements); empty when that module is missing. */
+    function roughList(plan, project) {
+      const exp = exportModule();
+      try { return exp && typeof exp.roughMeasurements === 'function' ? exp.roughMeasurements(plan, project) : []; } catch (e) { return []; }
+    }
+
+    /**
+     * "Measurements to double-check (n)" at the top of Review: each Low-confidence item with the range it could be,
+     * a tape-measure field (the same override the Trace step edits) and a link to the item in step 3.
+     */
+    function roughSection(ctx, rough) {
+      // Roughest first, so the ones that matter most are in view; the rest fold away under "more".
+      const rank = (it) => (it.pct === Infinity ? 1e9 : isNum(it.pct) ? it.pct : 0);
+      const sorted = rough.slice().sort((a, b) => rank(b) - rank(a));
+      const items = sorted.map((it) => {
+        const f = byId(ctx.project.features, it.featureId) || { params: {} };
+        const ft = FEATURE_TYPES[it.type] || { color: '#999' };
+        const params = f.params || {};
+        const tape = it.kind === 'bush'
+          ? h('div', { class: 'row-2' },
+            field('Tape width', textInput({ act: 'feature-len', value: params.overrideWidthFt ? ctx.fmt(params.overrideWidthFt) : '', placeholder: 'e.g. 4\'', data: { id: it.featureId, field: 'overrideWidthFt' } })),
+            field('Tape height', textInput({ act: 'feature-len', value: params.overrideHeightFt ? ctx.fmt(params.overrideHeightFt) : '', placeholder: 'e.g. 3\'', data: { id: it.featureId, field: 'overrideHeightFt' } })))
+          : field(it.kind === 'height' ? 'Tape-measured height' : 'Tape-measured length',
+            textInput({ act: 'feature-len', value: f.overrideFt ? ctx.fmt(f.overrideFt) : '', placeholder: 'e.g. ' + ctx.fmt(it.lengthFt), data: { id: it.featureId, field: 'overrideFt' } }));
+        return h('li', { class: 'rough-item', 'data-key': 'rough-' + it.featureId },
+          h('p', { class: 'rough-title' }, swatch(ft.color, 'dot'), h('strong', null, it.label), pill(it.level)),
+          h('p', { class: 'rough-text' }, capFirst(it.text) + '.'),
+          h('div', { class: 'rough-row' }, tape,
+            button('Show it', { act: 'show-feature', data: { id: it.featureId }, icon: 'arrowRight', cls: 'small ghost', aria: 'Show ' + it.label + ' on the photo in step 3' })));
+      });
+      const FIRST = 4;
+      const rest = items.length > FIRST + 1 ? items.slice(FIRST) : [];
+      const first = rest.length ? items.slice(0, FIRST) : items;
+      return section('Measurements to double-check (' + rough.length + ')', [
+        h('p', { class: 'hint' }, 'The photo could not measure these well. Check each one with a tape measure and type what you get: the shopping list and the cost follow it straight away. Show it opens the item on the photo in step 3.'),
+        h('ul', { class: 'rough-list' }, first),
+        rest.length ? h('details', { class: 'disclosure rough-more', 'data-key': 'rough-more' },
+          h('summary', null, h('span', null, rest.length + ' more to double-check'), icon('chevronDown', 'chev')),
+          h('div', { class: 'disclosure-body' }, h('ul', { class: 'rough-list' }, rest))) : null,
+      ], { key: 'rough', cls: 'rough-sec' });
     }
 
     function bomSection(ctx) {
@@ -1561,6 +1822,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           else actions.startOutlet();
         },
         'select-outlet': (el) => actions.select({ kind: 'outlet', id: el.dataset.id }),
+        // From Review: open the Trace step with this item picked (its points and its editor show).
+        'show-feature': (el) => { actions.goStep(3); actions.select({ kind: 'feature', id: el.dataset.id }); },
         'delete-outlet': (el) => actions.deleteOutlet(el.dataset.id),
         'add-circuit': () => actions.addCircuit(),
         'delete-circuit': (el) => actions.deleteCircuit(el.dataset.id),
@@ -1716,6 +1979,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         'outlet-circuit': (el) => actions.updateOutlet(el.dataset.id, { circuitId: el.value || null }),
         'outlet-plane': (el) => actions.updateOutlet(el.dataset.id, { planeId: el.value || null }),
         'outlet-gfci': (el) => actions.updateOutlet(el.dataset.id, { gfci: !!el.checked }),
+        // Daisy chains on or off (config.power.daisyChain, default on), and one run kept off the chains.
+        'power-daisy': (el) => editConfig('power.daisyChain', !!el.checked),
+        'feed-own-cord': (el) => actions.setOwnCord(String(el.dataset.ids || '').split(',').filter(Boolean), !!el.checked),
         'circuit-field': (el) => { const v = el.value.trim(); if (v) actions.updateCircuit(el.dataset.id, { name: v.slice(0, 60) }); else schedule(); },
         'circuit-breaker': (el) => actions.updateCircuit(el.dataset.id, { breakerAmps: Number(el.value) || 15 }),
         'circuit-existing': (el) => { const v = num(el); actions.updateCircuit(el.dataset.id, { existingLoadW: v != null && v >= 0 ? v : 0 }); },
@@ -1784,5 +2050,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       };
     }
 
-    return { mount, icon, h, morph, pickFile, exportFile, stepWarnings, warningStep, STEPS, validateProducts, diffConfig, ICONS };
+    return {
+      mount, icon, h, morph, pickFile, exportFile, stepWarnings, warningStep, STEPS, validateProducts, diffConfig, ICONS,
+      powerVerdict, outletSummaryText, roughList, planProgress, nextAction, runNextAction, lensWords,
+    };
   });
