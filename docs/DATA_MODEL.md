@@ -190,10 +190,21 @@ LightPlan carries a small hand-entered **supplier map** (`src/core/suppliers.js`
 where their category pages are, and a starter set of their products with part numbers and links. No
 supplier offers a public feed or cart link, so nothing is fetched: every address is a link a person opens.
 
-**How far to trust it.** Every price, part number and spec in the map was read from search results on
-2026-11-11. The suppliers' own pages could not be opened that day, so nothing is confirmed: every entry has
-`priceStatus: 'observed'` and `priceAsOf: '2026-11-11'`, and the app must say "check the price". Wholesale
-(account) prices are not public; the user types their own price over any line (`pricing.overrides`).
+**How far to trust it.** Everything in the map was read from the suppliers' own pages on 2026-11-11; the
+check is written up in `docs/SUPPLIER_CHECK.md`. Every entry has `priceAsOf: '2026-11-11'` and a
+`priceStatus`:
+
+- `verified` (59 of the 63 things that can be ordered): the price, part number, pack size and electrical
+  figures were read on the item's own product page that day. The app says "as of Nov 11, 2026".
+- `observed` (4 items, all 1000Bulbs): the item was seen on the supplier's category list only, its own page
+  was not opened. The app adds "check the price", and the line's note says why.
+- Nothing else is entered. A price is still a snapshot: every export says "confirm at checkout".
+- A cut-to-length (bulk) product as a whole is a kit with no part number, and its per-foot `price` is
+  worked out from its parts, not read from a page. It always carries `observed`; its parts carry their own
+  status.
+
+Wholesale (account) prices are not public; the user types their own price over any line
+(`pricing.overrides`).
 
 ### Persisted fields
 
@@ -205,17 +216,30 @@ supplier offers a public feed or cart link, so nothing is fetched: every address
 
 ### Supplier (`suppliers.SUPPLIERS`, also `plan.library.suppliers`)
 
-`{ id, name, short, url, wholesale: {name, url, phone, note} | null, searchUrlTemplate | null, categoryUrls: {role: url}, priceAsOf, notes }`
+`{ id, name, short, url, wholesale: {name, url | null, phone, email?, note} | null, searchUrlTemplate | null,
+searchUrlWorks, searchNote, categoryUrls: {role: url}, priceAsOf, notes }`
 
-- `searchUrlTemplate` has a `{query}` placeholder; `suppliers.supplierSearchUrl(id, query)` fills it. It is
-  null when the supplier's own search address is not known (Christmas Lights Etc).
+- `wholesale` holds what the supplier's own pages say about trade accounts, nothing more.
+  - Christmas Lights Etc: part of the Wintergreen Corporation family; wholesale line 1-855-WGC-7100,
+    sales@wintergreencorp.com; `url` is its own wholesale page (the one that was read). The sign-up form
+    is on Wintergreen's site, which could not be reached and was not checked, so nothing links there.
+  - 1000Bulbs: phone 1-800-624-4488; product pages say an item ships free with orders of $600 or more; no
+    wholesale or contractor account page was seen, so `url` is **null** (show the phone and the note).
+- `searchUrlTemplate` has a `{query}` placeholder; `suppliers.supplierSearchUrl(id, query)` fills it.
+  `searchUrlWorks` says whether the address was tested: `true` for Christmas Lights Etc
+  (`https://www.christmaslightsetc.com/browse/?q={query}`, tested); `null` for 1000Bulbs (the address its
+  own search box uses, but the test was blocked by the site, so it is not confirmed). `searchNote` says the
+  same in plain words.
 - `categoryUrls` roles: `c9Bulbs c7Bulbs spools stringers plugs clips miniLights icicle net rope treeWrap
-  stakes timers extensionCords`. A supplier lists only the roles it has a page for.
+  stakes timers extensionCords`. A supplier lists only the roles it has a page for; every address loaded on
+  the day of the check. Christmas Lights Etc has no page for plugs alone, so its `plugs` role is its
+  electrical accessories page; it has no page for tree wraps, so that role is left out (the search is used).
 - `suppliers.findUrl(id, role, query)`: the category page for the role, else the supplier's search for the
   query, else null. `suppliers.allLinks()` lists every link in the map (`{supplierId, kind: 'site' |
   'wholesale' | 'search' | 'category' | 'product', sku, name, url}`) so they can be checked against the live
-  sites; `suppliers.linkHosts()` are the host names they use (the only external hosts the build test allows
-  besides Google Fonts). `suppliers.safeUrl(u)` returns a link only when it is a plain `https://` address.
+  sites; `suppliers.linkHosts()` are the host names they use: `www.christmaslightsetc.com` and
+  `www.1000bulbs.com` (the only external hosts the build test allows besides Google Fonts).
+  `suppliers.safeUrl(u)` returns a link only when it is a plain `https://` address.
 
 ### Product fields added for suppliers
 
@@ -228,75 +252,133 @@ the id and stays the key for `pricing.overrides`.
 | Field | Type | Meaning |
 |---|---|---|
 | `supplierId` | string | Which supplier it is from. Missing = any store. |
-| `supplierSku` | string \| null | The part number to type at the supplier. null = not confirmed: order from the link. |
+| `supplierSku` | string \| null | The part number to type at the supplier (Christmas Lights Etc: the "Item Number" on the page; 1000Bulbs: the SKU). Every ready-made product has one. null on a bulk product (a kit), and on a user's own product with none. |
 | `url` | https address \| null | The product page. |
 | `priceAsOf` | `YYYY-MM-DD` | The day the price was seen. |
-| `priceStatus` | `verified` \| `observed` | `verified`: seen on the supplier's page that day. `observed`: seen in a search result, not confirmed. |
-| `equiv` | product id | The generic product whose job it does (`c9-led`, `c7-led`, `mini-led-100`, `icicle-led-300`, `net-led-4x6`). The planner swaps it in when the project buys from this supplier. |
+| `priceStatus` | `verified` \| `observed` | `verified`: read on the item's own product page that day. `observed`: seen on the supplier's category list only (or, for a bulk product, worked out from its parts): say "check the price". |
+| `equiv` | product id | The generic product whose job it does (`c9-led`, `c7-led`, `mini-led-100`, `icicle-led-300`, `net-led-4x6`). The planner swaps it in when the project buys from this supplier. When a supplier has two ready-made products for one job, the first in the list is the automatic choice. |
 | `kind` | `bulk` or missing | `bulk`: bought as wire, bulbs and plugs (below). Missing: a ready-made product. |
 | `components` | object | Bulk only: the parts (below). |
-| `maxRunFt`, `maxBulbsPerRun` | number | Bulk only: the limits of one run, 250 and 250 ("250 bulbs or 250 ft of line, whichever comes first"). |
-| `orderNote` | string | A short caution printed on the BOM line (which size to pick on a page that lists several, or "Part number not confirmed"). |
+| `maxRunFt`, `maxBulbsPerRun` | number | Bulk only: the limits of one run, 250 and 250 ("250 bulbs or 250 ft of line, whichever comes first"), whatever larger rating a page prints for the wire. |
+| `tiers` | `[{qty, each, pctOffList}]` | Quantity prices as the supplier's page prints them (below). Data only. |
+| `orderNote` | string | A short caution printed on the BOM line (which size to pick on a page that lists two, "Quantity price from 100 sets: see the supplier's page.", or that the page said stock was limited). |
 
 **Offer** (a bulk component or a supplier accessory): `{ sku, supplierSku, name, url, price, packQty,
-priceAsOf, priceStatus, notes? }`. `sku` is `<supplierId>:<supplierSku>`, the key for `pricing.overrides`
-(a short name stands in for the part number when that is not confirmed). `notes` is a short caution printed
-on the BOM line.
+priceAsOf, priceStatus, notes?, tiers? }`. `sku` is `<supplierId>:<supplierSku>`, the key for
+`pricing.overrides`. `notes` is a short caution printed on the BOM line. Every offer in the map has a part
+number, an https link on the supplier's own site, the date and a status; the tests check this.
+
+**Quantity prices (`tiers`).** Christmas Lights Etc prints "Bulk Discounts" on some pages (bulb boxes, the
+mini, icicle and net sets). They are stored as the page words them, for example
+`[{ qty: '20 - 40 boxes', each: 28.7, pctOffList: 30 }, { qty: '40+ boxes', each: 26.65, pctOffList: 35 }]`:
+`qty` is the page's own text of the range, `each` the price per box or set at that quantity, `pctOffList`
+the percent off the list price. The line gets the note "Quantity price from 20 boxes: see the supplier's
+page." **The BOM never prices with them**: the ranges are ambiguous (does "20 - 40" include 40?) and were
+not tested in a cart. 1000Bulbs pages showed none.
 
 **Bulk C7/C9** is how wholesale C7/C9 is bought. It is a per-foot product (`unit: 'foot'`,
 `stringLengthFt: 1`, `leadFt: 0`) so measuring, chaining and power feeds work unchanged:
 `bulbsPerUnit = 12 / bulbSpacingIn`, `wattsPerUnit = wattsEach × bulbsPerUnit`, `maxEndToEnd` = the feet one
 run may be (250), `maxConnectedW` = the watts one run may carry (`maxBulbsPerRun × wattsEach`, and never more
-than 80% of the wire's amp rating at 120 V), `endConnector: true`, `clipEligible: true`. `price` is a
-per-foot equivalent of the wire and the default bulbs, for display only: the BOM prices the parts.
+than 80% of the lowest amp rating printed for any length of the wire, at 120 V), `endConnector: true`,
+`clipEligible: true`. `price` is a per-foot equivalent of the 1,000 ft spool and the default bulbs, for
+display only: the BOM prices the parts.
 
 ```
 components: {
-  wire:       Offer + { spoolFt, wireType: 'SPT-1' | 'SPT-2', maxAmps, sizes?: [Offer + { lengthFt }] },
-  bulb:       { name, packQty, wattsEach, base: 'E17' | 'E12', defaultVariant, variants: { colour: Offer } },
-  plugMale:   Offer | null,     // null = none on file: the BOM lists a plain plug line with a link to look
-  plugFemale: Offer | null
+  wire:       Offer + { spoolFt, wireType: 'SPT-1' | 'SPT-2', wireGauge, maxAmps?, plugsIncluded: false,
+                        sizes?: [Offer + { lengthFt, wireType, wireGauge, maxAmps?, plugsIncluded }] },
+  bulb:       { name, packQty, wattsEach, base: 'E17' | 'E12', defaultVariant,
+                variants: { colour: Offer + { wattsEach? } } },
+  plugMale:   Offer + { wireType, maxAmps } | null,   // null = none on file: the BOM lists a plain plug line with a link to look
+  plugFemale: Offer + { wireType, maxAmps } | null
 }
 ```
 
-`variants` keys are colours the supplier sells: `warmWhite coolWhite multi red green` (also `blue orange
-yellow purple pink teal` when on file). `sizes` are other lengths of the same wire that can be bought
-instead of a whole spool.
+- `variants` keys are colours the supplier sells: `warmWhite coolWhite multi red green blue` on all four
+  bulk products (also `orange yellow purple pink teal` when on file). A variant carries its own `wattsEach`
+  only when it differs from the family's (the 1000Bulbs blue bulbs are another bulb line); the plan still
+  counts the family figure, and the offer's note says so.
+- `sizes` are other lengths of **the same wire** that can be bought instead of a whole spool: a 500 ft
+  spool, and ready-made 100 ft and 25 ft lengths, longest first. A size is entered only when its wire type
+  and gauge match the spool's (the tests check it); a 20-gauge length is never a size of 18-gauge wire.
+  `plugsIncluded` is `false` (bare), `'both'` (a plug on each end) or `'male'` (a male plug only), and the
+  offer's name says the same in words.
+- `maxAmps` is the lowest figure the item's page prints (Christmas Lights Etc pages give one figure in the
+  table and another in the text). It is left out where the page prints none (the 1000Bulbs spools).
 
 **Supplier accessories** (`suppliers.SUPPLIER_ACCESSORIES[supplierId][accessorySku]` → Offer) map a
 supplier's own item onto a generic accessory sku from `catalog.ACCESSORIES`: `clip-allinone`,
-`clip-shingle`, `clip-ridge`, `light-stakes`, `timer-outdoor`. Extension cords, taps, power stakes, cord
-covers and GFCI adapters stay generic. Two generic accessories were added for bulk wire:
-`plug-spt1-male` and `plug-spt1-female` (used only when a bulk product has no plug of its own on file).
+`clip-shingle`, `clip-ridge`, `light-stakes`, `timer-outdoor` (both suppliers have all five). Extension
+cords, taps, power stakes, cord covers, gutter hooks, adhesive clips and GFCI adapters stay generic. Two
+generic accessories exist for bulk wire: `plug-spt1-male` and `plug-spt1-female` (used only when a bulk
+product has no plug of its own on file).
 
-### What is in the starter catalog, and what was left out
+### What is in the catalog (as of 2026-11-11)
 
-| Supplier | Entered |
+Part number, price and pack for everything entered. All `verified` unless marked *listed only* (`observed`).
+
+**Christmas Lights Etc (`cle`)**
+
+| What | Part number, price |
 |---|---|
-| Christmas Lights Etc (`cle`) | Bulk C9 and bulk C7 on SPT-1 wire with a socket every 12 in (1,000 ft spool; for C9 also 100 ft and 25 ft ready-made lengths; OptiCore bulbs in warm white, cool white, multicolor, red, green at 0.8 W; male and female slide-on plugs). Ready-made 25-bulb, 25 ft OptiCore C9 and C7 strings. 70-light 5 mm mini string. 70-light icicle set. 4 × 6 ft net. All-in-one clips, shingle tabs, light stakes, outdoor timer. |
-| 1000Bulbs (`1000bulbs`) | Bulk C9 and bulk C7 on SPT-1 18-gauge wire with a socket every 12 in (1,000 ft spool; for C9 also a 100 ft ready-made length; VividCore Premium bulbs in warm white, cool white, multicolor, red, green at 0.74 W for C9 and 0.48 W for C7; male slide-on plug). Ready-made 25-bulb, 17 ft C9 string. 50-light 5 mm mini string. 4 × 6 ft net. All-in-one clips, shingle tabs, ridge clips, lawn stakes, outdoor timer. |
+| C9 socket wire, SPT-1, 18 gauge, socket every 12 in, green | 1,000 ft spool 15085 $409.99 · 500 ft spool 81832 $219.99 · 100 ft with plugs 15098 $49.99 · 25 ft with plugs 15100 $15.99 |
+| C7 socket wire, same | 1,000 ft spool 15054 $369.99 · 500 ft spool 72912 $199.99 · 100 ft with plugs 15067 $44.99 · 25 ft with plugs 15071 $11.99 |
+| C9 OptiCore bulbs, 0.8 W, box of 25, $29.99 | warm white 72636 · cool white 72639 · multicolor 72642 · red 72645 · green 72654 · blue 72648 (quantity prices from 20 boxes) |
+| C7 OptiCore bulbs, 0.8 W, box of 25, $24.99 | warm white 72609 · cool white 72606 · multicolor 72612 · red 72615 · green 72624 · blue 72618 (quantity prices from 10 boxes) |
+| SPT-1 slide-on plugs, pack of 10, $12.40 | male 88283 · female 88287 |
+| Ready-made strings | C9 OptiCore 25 bulbs on 25 ft 77667 $49.99 (20 W) · C7 OptiCore 25 bulbs on 25 ft 77653 $39.99 (20 W) · sealed C9 set, 25 bulbs on 17 ft 84095 $14.99 (2.4 W, 90 sets) |
+| Other sets | 5 mm mini, 70 bulbs 83768 $19.99 (4.8 W, 45 sets) · icicle, 70 bulbs 85686 $21.99 (4.8 W, 45 sets) · 4 × 6 ft net 85472 $34.99 (12 W, 18 nets) |
+| Accessories | all-in-one clips 82761 $13.99 / 100 · shingle tabs 83965 $24.99 / 100 · ridge clips 88780 $26.25 / 25 · light stakes 84144 $9.99 / 25 · outdoor timer 80056 $34.99 (15 A) |
 
-Left out on purpose (the research marked them as doubtful, or the power model could not use them):
+**1000Bulbs (`1000bulbs`)**
 
-- **Seen as out of stock:** 1000Bulbs female SPT-1 plug PLUG-10002, 1000Bulbs ready-made C7 string
-  CMS-25C7-8GWW, Christmas Lights Etc ridge clip 86287.
-- **Old product line or incandescent:** 1000Bulbs icicle SHL-LED70ICEWW and trunk wrap TRUNK8CLRG.
-- **No product page:** 1000Bulbs plain warm white C7 bulbs CMS-10284 (the "warm white deluxe" pack
-  CMS-10285 stands in).
-- **No listed watts:** Christmas Lights Etc tree wrap 72526 (so neither supplier has a tree-wrap product;
-  the generic one stays).
-- **A different wire gauge with a load limit that is not believable:** the 1000Bulbs 25 ft, 20-gauge
-  stringers CMS-10126 and CMS-10119 (not offered as shorter lengths of the 18-gauge wire).
-- **Not needed for the starter set:** SPT-2 wire and plugs, 15 in spacing, 500 ft spools, blank wire, rope
-  light, magnetic clips, case packs, the sealed 17 ft Christmas Lights Etc C9 set.
+| What | Part number, price |
+|---|---|
+| C9 socket wire, SPT-1, 18 gauge, socket every 12 in, green | 1,000 ft spool CMS-10105 $391.13 · 500 ft spool CMS-10110 $224.40 · 100 ft with a male plug CMS-10124 $39.43 |
+| C7 socket wire, same | 1,000 ft spool CMS-10095 $481.47 · 500 ft spool CMS-10093 $229.77 *listed only* · 100 ft with plugs CMS-10323 $57.64 *listed only* |
+| C9 VividCore Premium bulbs, 0.74 W, pack of 25 | warm white CMS-10294 $25.42 · cool white CMS-10293 $26.15 · multicolor CMS-10298 $25.52 · red CMS-10288 $25.03 · green CMS-10291 $26.07 · blue (standard line, 0.5 W) CMS-C9BLU $22.33 *listed only* |
+| C7 VividCore Premium bulbs, 0.48 W, pack of 25 | warm white deluxe CMS-10285 $18.62 · cool white CMS-10281 $19.31 · multicolor CMS-10286 $19.03 · red CMS-10276 $19.69 · green CMS-10279 $19.72 · blue (standard line, 0.54 W) CMS-C7BLU $17.29 *listed only* |
+| SPT-1 slide-on plugs, pack of 10, $6.73 | male PLUG-10001 · female PLUG-10002 |
+| Ready-made strings | C9, 25 bulbs on 17 ft CMS-25C9-8GWW $13.97 (2.4 W, 90 sets) · C7, 25 bulbs on 17 ft CMS-25C7-8GWW $12.35 (2.4 W, 90 sets) |
+| Other sets | 5 mm mini, 50 bulbs CMS-50WA-6GWW $14.31 (4.8 W, 45 sets) · icicle, 70 bulbs SHL-LED70ICEWW $21.72 (4.8 W, 45 sets) · 4 × 6 ft net CMS-100L5MMNETWWG $33.08 (9.6 W, 22 nets) |
+| Accessories | all-in-one clips CLIP-10007 $6.83 / 50 · shingle tabs CLIP-10005 $15.49 / 50 · ridge clips CLIP-10003 $17.59 / 25 · lawn stakes STAKE-10001 $7.31 / 25 · outdoor timer PLTS-12336 $15.73 (15 A, 1,000 W) |
 
-Part numbers that could not be trusted are **not shown as part numbers** (`supplierSku: null`, "order from
-the link"): the Christmas Lights Etc spools and ready-made wire lengths (the number seen was the page
-number, not the item number), its C7 warm white and cool white bulbs (two numbers disagreed) and its
-70-light mini set (item number never seen). Where a bulb colour had no watts on its own listing, the bulb
-family's listed figure is used and the offer's note says so. The ready-made 25 ft C7/C9 strings are held to
-10 sets (250 ft) on one run, although the supplier's fuse limit is higher. Where a listing gave two connect
-limits, the lower is used.
+**Decisions where a page was not clear-cut**
+
+- **Two figures on one page: the lower is used.** Christmas Lights Etc wire: 7 A in the table against 8 A
+  in the text (5 A in the table for the 25 ft C9 length). 1000Bulbs mini string: 45 sets in the table, 90
+  in the text. 1000Bulbs ridge clip: 25 to a pack in the title and price, 50 in the table.
+- **A page's figure the plan stays below.** The 1000Bulbs net page says 25 nets end to end (240 W); the
+  plan uses 22 (216 W). The 1000Bulbs 25 ft stringer pages say 1,800 W on 20-gauge wire: not used at all.
+- **No figure on the page.** The Christmas Lights Etc 25-bulb, 25 ft OptiCore strings give no connect
+  limit: the plan uses 10 sets (250 bulbs), the trade rule for the wire. 1000Bulbs spool pages give no amp
+  rating: none is entered. Lit lengths the pages do not state (the 5 mm set and the sealed C9 set at
+  Christmas Lights Etc) are worked out from bulb count and spacing, and the description says so.
+- **A stand-in.** The 1000Bulbs plain warm white C7 pack (CMS-10284, 0.54 W) was "temporarily unavailable",
+  so the warm white deluxe pack (CMS-10285, 0.48 W), which could be ordered, is the warm white; its note
+  says so. No VividCore Premium blue was seen at 1000Bulbs, so blue is its standard bulb (other watts,
+  *listed only*).
+
+### What was left out, and why
+
+- **Could not be ordered on 2026-11-11:** Christmas Lights Etc SPT-1 plug 5-packs 67083 and 67081 and
+  ridge clip 86287 (replaced by 88283, 88287 and 88780); 1000Bulbs blank SPT-2 wire CMS-WIRE1000GR2 ("not
+  for sale"); 1000Bulbs plain warm white C7 bulbs CMS-10284 (see the stand-in above).
+- **Not the same wire as the spool:** the 1000Bulbs 25 ft stringers CMS-10126 and CMS-10119 are 20 gauge,
+  so the 1000Bulbs wire has no 25 ft size.
+- **A shape the planner cannot handle:** trunk-wrap nets (Christmas Lights Etc 72526, 2 × 6 ft, 6.86 W;
+  1000Bulbs HLS-TRUNK8CLRG, 8 × 2 ft, incandescent, 60 W). The planner wraps trunks with a string by its
+  length; it has no rule for a net that wraps a trunk, so neither supplier has a tree-wrap product and
+  the generic string stays. Rope light by the 150 ft spool (80349 has no watts on its page; FT2-L120HA12150
+  needs power cords and end caps that are not on file). Case packs that are a second pack size of an item
+  already entered (C9 bulbs by 500 82958, mini sets by 24 84222 and CMS-50WW6B).
+- **No rating on the page:** Christmas Lights Etc photocell 85135.
+- **Outside the starter set:** SPT-2 wire and plugs, 15 in spacing, blank wire, 50 ft ready-made lengths,
+  magnetic, "plus" and C9-only clips, a second all-in-one clip and shingle tab at 1000Bulbs (listed only), bulb
+  colours with no slot (warm white deluxe and pure white C9), the standard-line warm white C7 bulb
+  CMS-C7SWW, and the 1000Bulbs 100 ft C9 length with two plugs CMS-10324 (the male-plug-only CMS-10124 is
+  the same wire, cheaper and read on its own page).
 
 ## 4. Derived results (`plan.computePlan(project)`)
 
