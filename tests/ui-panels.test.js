@@ -286,14 +286,14 @@ test('8.5 the Power step opens with one plain sentence: good to go, or what to f
   const p = tracedSample();
   const ok = panels.powerVerdict(plan.computePlan(p));
   assert.equal(ok.level, 'ok');
-  assert.equal(ok.lead + ok.text, 'Good to go: these lights use 233 W, 16% of one outlet\'s safe limit.');
+  assert.equal(ok.lead + ok.text, 'Good to go: these lights use 146 W, 10% of one outlet\'s safe limit.');
 
   // No outlet placed: it says so and how, with the load, without the planner's word "feed".
   const none = clone(p);
   none.outlets = [];
   const v0 = panels.powerVerdict(plan.computePlan(none));
   assert.equal(v0.level, 'warn');
-  assert.match(v0.lead + v0.text, /^Place an outlet: these lights use 233 W\. Tap Place outlet/);
+  assert.match(v0.lead + v0.text, /^Place an outlet: these lights use 146 W\. Tap Place outlet/);
   assert.ok(!/feed/i.test(v0.lead + v0.text));
 
   // Nothing traced: nothing to judge yet.
@@ -332,11 +332,11 @@ test('8.5 an outlet card counts the cords plugged into it, not every run it powe
   const pl = plan.computePlan(p);
   const info = exp.describeCords(pl, p);
   const porch = info.outlets.find((o) => o.id === 'out_porch');
-  // The old card read "10 cords · 185 W": ten feeds hang off this outlet, but one cord goes back to it.
+  // The old card counted "10 cords": ten feeds hang off this outlet, but one cord goes back to it.
   assert.equal(pl.power.outlets.find((o) => o.id === 'out_porch').feedIds.length, 10);
   assert.equal(porch.cords, 1);
   assert.equal(porch.runs, 11);
-  assert.equal(panels.outletSummaryText(porch), '1 cord at this outlet feeding 11 runs · 185 W');
+  assert.equal(panels.outletSummaryText(porch), '1 cord at this outlet feeding 11 runs · 98.4 W');
   const garage = info.outlets.find((o) => o.id === 'out_garage');
   assert.equal(panels.outletSummaryText(garage), '1 cord at this outlet feeding 4 runs · 48.0 W');
   assert.equal(porch.runs + garage.runs, pl.runs.length, 'every run is counted once');
@@ -367,7 +367,7 @@ test('8.5 the supply tree lists each cord under its outlet: cord from the outlet
   assert.equal(root.gauge, '16-gauge');
   assert.equal(root.awg, 16);
   assert.equal(root.neededFt, 9);
-  assert.ok(Math.abs(root.carriesW - 184.8) < 1e-9 && root.watts === 6, 'the cord carries everything hanging off it');
+  assert.ok(Math.abs(root.carriesW - 98.4) < 1e-9 && root.watts === 6, 'the cord carries everything hanging off it');
   assert.equal(root.tapText, '3-way tap at its start');
   const door = porch.find((r) => r.lights === 'Front door');
   assert.equal(door.kind, 'jumper');

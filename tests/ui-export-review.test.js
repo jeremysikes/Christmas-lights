@@ -80,7 +80,7 @@ test('8.5 the report\'s cords table says what each cord plugs into, how it runs,
   assert.deepEqual([c.homeRuns, c.jumpers, c.taps], [2, 10, 4]);
   assert.ok(new RegExp('\\b' + c.homeRuns + ' ' + c.jumpers + ' ' + c.taps + ' ' + c.timers + ' Cords to outlets Jumper cords 3-way taps Timers').test(text), 'counts: cords to outlets, jumper cords, 3-way taps');
   // The outlet table counts the cords at the outlet (1), not every run it powers (11).
-  assert.ok(/Porch outlet Porch circuit Yes 1 11 185 W/.test(text), 'Porch outlet row: 1 cord here, 11 runs fed');
+  assert.ok(/Porch outlet Porch circuit Yes 1 11 98\.4 W/.test(text), 'Porch outlet row: 1 cord here, 11 runs fed');
   assert.ok(!/Cords and feeds/.test(text), 'the heading no longer says "feeds"');
 });
 

@@ -305,7 +305,7 @@ LP.define('design', ['catalog'], function (catalog) {
       }
       if (unit === 'string') {
         let lights = Number.isFinite(fm.lights) ? fm.lights : null;
-        const lpu = pos(bush.lightsPerUnit) || 100, hu = pos(bush.heightUnitFt) || 1.5, wu = pos(bush.widthUnitFt) || 1;
+        const lpu = pos(bush.lightsPerUnit) || 100, hu = pos(bush.heightUnitFt) || 1.5, wu = pos(bush.widthUnitFt) || 3;
         if (lights === null) lights = lpu * (h / hu) * (w / wu);
         lights = Math.ceil(lights - 1e-9);
         return byLights(lights, `${tape}${num(w)} ft wide × ${num(h)} ft tall at ${short(lpu)} lights per ${short(wu)} ft of width per ${short(hu)} ft of height`);

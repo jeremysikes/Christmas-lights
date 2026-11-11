@@ -817,7 +817,7 @@ test('sample house: buying from a supplier changes the lights and accessories, n
   assert.deepEqual(lights.map((l) => [l.sku, l.qty]), [['cle:c9-stringer-100-spt1', 1], ['cle:c9-stringer-25-spt1', 2], ['cle:72636', 6], ['cle:67083', 1], ['cle:67081', 1]]);
   assert.match(lights[0].notes, /^139 ft needed for Front eave \(38 ft\), Garage gutter \(25 ft\)/);
   assert.match(lights[3].notes, /: 3 needed, 5 bought\./);
-  assert.equal(plan.summary.watts, 339.2);
+  assert.equal(plan.summary.watts, 224);
   // Installer basis: the same order, a smaller job cost.
   const used = samplePlan('cle', { style: 'bulk', costBasis: 'used' }).plan;
   assert.ok(used.bom.subtotal < plan.bom.subtotal);

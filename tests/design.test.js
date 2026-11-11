@@ -36,7 +36,8 @@ function wrapFm(id, type, heightFt, D, s) {
 function bushFm(id, widthFt, heightFt, lights) {
   return linearFm(id, 'bush', null, 10, {
     measuredFt: 2 * (widthFt + heightFt), lengthFt: null, withWasteFt: null, widthFt, heightFt,
-    areaSqFt: widthFt * heightFt, lights: lights === undefined ? 100 * (heightFt / 1.5) * widthFt : lights,
+    // The rule of thumb as measure.js applies it: 100 lights per 1.5 ft of height per 3 ft of width.
+    areaSqFt: widthFt * heightFt, lights: lights === undefined ? Math.round(100 * (heightFt / 1.5) * (widthFt / 3)) : lights,
   });
 }
 function project(features, extra = {}) {
@@ -217,16 +218,23 @@ test('bush with a string product uses the light-count rule of thumb', () => {
   const r = runOf(runs, 'b');
   assert.equal(r.productId, 'mini-led-100');
   assert.equal(r.method, 'bush-rule');
-  assert.equal(r.quantity, 8);                     // 100 · (3/1.5) · (4/1) = 800 lights / 100
-  assert.equal(r.bulbs, 800);
-  close(r.watts, 38.4, 1e-9);
+  assert.equal(r.quantity, 3);                     // 100 · (3/1.5) · (4/3) = 267 lights / 100
+  assert.equal(r.bulbs, 300);
+  close(r.watts, 14.4, 1e-9);
   assert.equal(r.lengthFt, 0);
   assert.equal(r.withWasteFt, 0);
   assert.equal(r.clips, null);
-  assert.equal(r.detail, '4.0 ft wide × 3.0 ft tall at 100 lights per 1 ft of width per 1.5 ft of height = 800 lights / 100 per string = 8 strings');
+  assert.equal(r.detail, '4.0 ft wide × 3.0 ft tall at 100 lights per 3 ft of width per 1.5 ft of height = 267 lights / 100 per string = 3 strings');
   // lights missing from the measurement → computed from width and height with the same rule
   const runs2 = design.planRuns(p, measured([bushFm('b', 4, 3, null)]), lib);
-  assert.equal(runOf(runs2, 'b').quantity, 8);
+  assert.equal(runOf(runs2, 'b').quantity, 3);
+  assert.match(runOf(runs2, 'b').detail, /= 267 lights \/ 100 per string = 3 strings$/);
+  // A 4.5 ft × 3 ft bush is about 300 lights (it was about 900 when the rule counted every foot of width).
+  assert.match(runOf(design.planRuns(p, measured([bushFm('b', 4.5, 3, null)]), lib), 'b').detail, /= 300 lights \/ 100 per string = 3 strings$/);
+  // The numbers in the library still drive it: 1 ft of width per unit gives the old, heavier count.
+  const dense = catalog.getLibrary({ library: { products: null, config: { bush: { widthUnitFt: 1 } } } });
+  assert.match(runOf(design.planRuns(p, measured([bushFm('b', 4, 3, null)]), dense), 'b').detail, /at 100 lights per 1 ft of width per 1\.5 ft of height = 800 lights \/ 100 per string = 8 strings$/);
+  assert.deepEqual(catalog.DEFAULT_CONFIG.bush, { lightsPerUnit: 100, heightUnitFt: 1.5, widthUnitFt: 3, netCoverFactor: 1.5 });
 });
 
 test('tree trunk wrap and column wrap use the spiral wire length', () => {

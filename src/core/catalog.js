@@ -103,7 +103,9 @@ LP.define('catalog', ['suppliers'], function (suppliers) {
     typeDefaults: { roofline: 'c9-led', rake: 'c9-led', gutter: 'c9-led', ridge: 'c9-led', window: 'mini-led-100', door: 'mini-led-100', column: 'treewrap-led', railing: 'mini-led-100', walkway: 'path-stakes', bush: 'mini-led-100', tree: 'treewrap-led', stakes: 'c9-led' },
     clipSpacingIn: 12,
     clipPackSize: null, // null = each clip accessory's own pack size (adhesive clips come 50 to a pack); a number overrides all
-    bush: { lightsPerUnit: 100, heightUnitFt: 1.5, widthUnitFt: 1, netCoverFactor: 1.5 },
+    // Bush rule of thumb: 100 mini lights for every 1.5 ft of height and every 3 ft of width (a bush 4.5 ft wide and
+    // 3 ft tall gets about 300 lights). Nets instead cover width x height x netCoverFactor (over the top and down the sides).
+    bush: { lightsPerUnit: 100, heightUnitFt: 1.5, widthUnitFt: 3, netCoverFactor: 1.5 },
     tree: { defaultDiameterIn: 10, spiralSpacingIn: 4, canopyLightsPerFtHeight: 100 },
     column: { defaultDiameterIn: 8, spiralSpacingIn: 6 },
     stakes: { spacingIn: 12, packSize: null }, // packSize null = the light-stakes accessory pack size (25); a number overrides
