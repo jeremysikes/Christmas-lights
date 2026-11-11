@@ -523,3 +523,141 @@ test('quoteFieldProblem uses the same rules as normalizeProject, so the app neve
     assert.notEqual(schema.normalizeProject(p).quote[k], v, k + ' really is rewritten by normalize');
   }
 });
+
+// ================================================================ Phase 1.1 (SPEC sections 8.3 and 8.4)
+test('supplier, buying and tapErr fields are optional: nothing is added to a project that has none', () => {
+  const p = sampleProject();
+  const n = schema.normalizeProject(p);
+  assert.deepEqual(n, p, 'the sample is still already normalized');
+  assert.ok(!('supplierId' in n.library));
+  assert.ok(n.features.every((f) => !('tapErr' in f)));
+  assert.ok(n.planes.every((pl) => (!pl.rect || !('tapErr' in pl.rect)) && (!pl.derived || !('tapErr' in pl.derived)) && pl.refs.every((r) => !('tapErr' in r))));
+  assert.ok(!('supplierId' in schema.createProject().library));
+  assert.deepEqual(schema.ENUMS.priceStatus, ['verified', 'observed']);
+  assert.deepEqual(schema.ENUMS.buyingStyle, ['bulk', 'strings']);
+  assert.deepEqual(schema.ENUMS.costBasis, ['bought', 'used']);
+  assert.deepEqual(schema.ENUMS.productKind, ['bulk']);
+});
+
+test('library.supplierId and config.buying are kept, repaired when they are not usable, and validated', () => {
+  const lib = (o) => schema.normalizeProject(Object.assign(sampleProject(), { library: o })).library;
+  assert.deepEqual(lib({ products: null, config: null, supplierId: 'cle' }), { products: null, config: null, supplierId: 'cle' });
+  assert.deepEqual(lib({ products: null, config: null, supplierId: ' 1000bulbs ' }).supplierId, '1000bulbs');
+  assert.deepEqual(lib({ products: null, config: null, supplierId: 'some-future-store' }).supplierId, 'some-future-store', 'unknown ids are kept (the planner reads them as any store)');
+  for (const bad of [null, '', 7, {}, ['cle']]) assert.equal(lib({ products: null, config: null, supplierId: bad }).supplierId, null, JSON.stringify(bad));
+  assert.deepEqual(lib({ config: { buying: { style: 'strings', costBasis: 'used' } } }).config, { buying: { style: 'strings', costBasis: 'used' } });
+  assert.deepEqual(lib({ config: { clipSpacingIn: 10, buying: { style: 'crates', costBasis: 'used', note: 'x' } } }).config, { clipSpacingIn: 10, buying: { costBasis: 'used', note: 'x' } });
+  assert.deepEqual(lib({ config: { buying: 'bulk' } }).config, {});
+  // Round trip through export and import, and JSON Schema conformance.
+  const p = sampleProject();
+  p.library = { products: null, config: { buying: { style: 'strings', costBasis: 'used' } }, supplierId: '1000bulbs' };
+  const back = schema.importProject(JSON.stringify(schema.exportProject(p, null, {}, null))).project;
+  assert.deepEqual(back.library, p.library);
+  assert.deepEqual(validateJson(schema.JSON_SCHEMA, back), []);
+  assert.deepEqual(schema.validateProject(back).errors, []);
+  // validateProject reports what normalizeProject would have repaired.
+  const bad = sampleProject();
+  bad.library = { products: null, config: { buying: { style: 'crates', costBasis: 0 } }, supplierId: 7 };
+  const errors = schema.validateProject(bad).errors;
+  assert.ok(errors.includes('The buying style must be one of bulk, strings.'), errors.join(' | '));
+  assert.ok(errors.includes('The cost basis must be one of bought, used.'));
+  assert.ok(errors.includes('The supplier must be a supplier id or empty.'));
+  const jsonErrors = validateJson(schema.JSON_SCHEMA, bad);
+  assert.ok(jsonErrors.some((e) => /library\/config/.test(e)) && jsonErrors.some((e) => /library\/supplierId/.test(e)), jsonErrors.join(' | '));
+  bad.library.config.buying = 'bulk';
+  assert.ok(schema.validateProject(bad).errors.includes('The buying settings must be an object.'));
+});
+
+test('supplier fields on products are kept as they are, except links that are not https and unknown price statuses', () => {
+  const suppliers = LP.require('suppliers');
+  const products = catalog.getLibrary(null).products;
+  const p = sampleProject();
+  p.library = { products: clone(products), config: null, supplierId: 'cle' };
+  const n = schema.normalizeProject(p);
+  assert.deepEqual(n.library.products, products, 'every supplier field survives, nested components included');
+  assert.deepEqual(schema.validateProject(n).errors, []);
+  assert.deepEqual(validateJson(schema.JSON_SCHEMA, n), []);
+  const bulk = n.library.products.find((x) => x.id === 'cle:c9-bulk-12');
+  assert.deepEqual([bulk.kind, bulk.equiv, bulk.supplierId, bulk.supplierSku, bulk.priceStatus, bulk.priceAsOf], ['bulk', 'c9-led', 'cle', null, 'observed', '2026-11-11']);
+  assert.equal(bulk.components.bulb.variants.red.supplierSku, '72645');
+
+  // Unsafe links and made-up statuses, at the top level and inside the components.
+  const dirty = clone(p);
+  const s = dirty.library.products.find((x) => x.id === 'cle:c9-string-25');
+  s.url = 'javascript:alert(1)';
+  s.priceStatus = 'guessed';
+  const b = dirty.library.products.find((x) => x.id === 'cle:c9-bulk-12');
+  b.url = 'http://www.christmaslightsetc.com/';
+  b.components.wire.url = 'data:text/html,x';
+  b.components.wire.sizes[0].url = 'https://x.example/"><script>';
+  b.components.bulb.variants.warmWhite.priceStatus = 'sure';
+  b.components.plugMale.url = null;
+  const errors = schema.validateProject(dirty).errors;
+  assert.equal(errors.filter((e) => /the link must be an https address/.test(e)).length, 2, errors.join(' | '));
+  assert.equal(errors.filter((e) => /the link of one of its parts must be an https address/.test(e)).length, 2);
+  assert.ok(errors.some((e) => /"priceStatus" must be one of verified, observed/.test(e)));
+  assert.ok(errors.some((e) => /the "priceStatus" of one of its parts must be one of verified, observed/.test(e)));
+  const fixed = schema.normalizeProject(dirty);
+  const fs2 = fixed.library.products.find((x) => x.id === 'cle:c9-string-25');
+  const fb = fixed.library.products.find((x) => x.id === 'cle:c9-bulk-12');
+  assert.ok(!('url' in fs2) && !('priceStatus' in fs2) && !('url' in fb) && !('url' in fb.components.wire) && !('url' in fb.components.wire.sizes[0]));
+  assert.ok(!('priceStatus' in fb.components.bulb.variants.warmWhite));
+  assert.equal(fb.components.plugMale.url, null, 'an empty link is fine');
+  assert.equal(fb.components.bulb.variants.red.url, b.components.bulb.variants.red.url, 'good links are untouched');
+  assert.equal(fs2.supplierSku, '77667');
+  assert.ok(!JSON.stringify(fixed).includes('javascript:') && !JSON.stringify(fixed).includes('<script>'));
+  assert.deepEqual(schema.validateProject(fixed).errors, []);
+  assert.equal(schema.importProject(dirty).project.library.products.find((x) => x.id === 'cle:c9-string-25').url, undefined, 'import repairs instead of refusing');
+  const wrongKind = clone(p);
+  wrongKind.library.products[0].kind = 'crate';
+  assert.ok(schema.validateProject(wrongKind).errors.some((e) => /"kind" must be "bulk" or left out/.test(e)));
+  assert.ok(suppliers.SUPPLIER_PRODUCTS.length > 0);
+});
+
+test('tapErr is kept only as one finite number of 0 or more per point, and is never added', () => {
+  const base = () => {
+    const p = sampleProject();
+    const wall = p.planes.find((pl) => pl.rect);
+    const derivedPlane = p.planes.find((pl) => pl.derived && pl.derived.line);
+    const ref = p.planes.flatMap((pl) => pl.refs)[0];
+    return { p, wall, derivedPlane, ref, feature: p.features[0] };
+  };
+  const { p, wall, derivedPlane, ref, feature } = base();
+  assert.ok(wall && derivedPlane && ref && feature.points.length >= 2, 'the sample has a rect, a derived line, a ref and a feature');
+  wall.rect.tapErr = [2.5, 13, 13, 80];
+  derivedPlane.derived.tapErr = [5, 0];
+  ref.tapErr = ref.points.map((_, i) => 3 + i);
+  feature.tapErr = feature.points.map(() => 12.5);
+  const n = schema.normalizeProject(p);
+  assert.deepEqual(n, p, 'valid tap errors are kept exactly');
+  assert.notEqual(n.planes.find((pl) => pl.id === wall.id).rect.tapErr, wall.rect.tapErr, 'as a copy');
+  assert.deepEqual(schema.validateProject(n).errors, []);
+  assert.deepEqual(validateJson(schema.JSON_SCHEMA, n), []);
+  assert.deepEqual(schema.importProject(schema.exportProject(p, null, {}, null)).project, p);
+
+  // Anything else is dropped without a word: wrong length, text, negative, NaN, not a list.
+  for (const bad of [[1, 2, 3], [1, 2, 3, 4, 5], ['2', 2, 2, 2], [1, -1, 1, 1], [1, NaN, 1, 1], [1, Infinity, 1, 1], [1, null, 1, 1], 'x', 5, {}, null, []]) {
+    const t = base();
+    t.wall.rect.tapErr = bad;
+    t.derivedPlane.derived.tapErr = bad;
+    t.ref.tapErr = bad;
+    t.feature.tapErr = bad;
+    const out = schema.normalizeProject(t.p);
+    assert.deepEqual(out, sampleProject(), 'dropped: ' + JSON.stringify(bad));
+    assert.equal(schema.validateProject(t.p).ok, false, 'validateProject reports ' + JSON.stringify(bad));
+  }
+  // A ref rectangle takes 4 numbers, a ref line 2; a feature one per point.
+  const lineRef = schema.createRef({ kind: 'line', points: [[0, 0], [10, 0]], lengthFt: 3, tapErr: [4, 6] });
+  assert.deepEqual(lineRef.tapErr, [4, 6]);
+  assert.ok(!('tapErr' in schema.createRef({ kind: 'line', points: [[0, 0], [10, 0]], lengthFt: 3, tapErr: [4, 6, 8, 10] })));
+  assert.deepEqual(schema.createRef({ kind: 'rect', points: [[0, 0], [1, 0], [1, 1], [0, 1]], widthFt: 3, heightFt: 7, tapErr: [1, 2, 3, 4] }).tapErr, [1, 2, 3, 4]);
+  assert.deepEqual(schema.createFeature('roofline', { points: [[0, 0], [5, 0], [9, 0]], tapErr: [2.5, 20, 40] }).tapErr, [2.5, 20, 40]);
+  assert.ok(!('tapErr' in schema.createFeature('roofline', { points: [[0, 0], [5, 0], [9, 0]], tapErr: [2.5, 20] })));
+  // A point list that loses a bad point in normalization would leave the errors out of step, so they go too.
+  const f = schema.normalizeProject({ features: [{ type: 'roofline', points: [[0, 0], ['x', 1], [9, 0]], tapErr: [1, 2, 3] }, { type: 'roofline', points: [[0, 0], ['x', 1], [9, 0]], tapErr: [1, 2] }] }).features;
+  assert.deepEqual(f.map((x) => [x.points.length, 'tapErr' in x]), [[2, false], [2, false]]);
+  const messages = (() => { const t = base(); t.wall.rect.tapErr = [1]; t.ref.tapErr = [1]; t.feature.tapErr = [1]; t.derivedPlane.derived.tapErr = [1]; return schema.validateProject(t.p).errors; })();
+  assert.equal(messages.length, 4, messages.join(' | '));
+  assert.ok(messages.some((m) => /the tap precision of the rectangle must be 4 numbers of 0 or more/.test(m)));
+  assert.ok(messages.some((m) => /the tap precision must be one number of 0 or more for each point/.test(m)));
+});
