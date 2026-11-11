@@ -162,7 +162,8 @@ LP.define('suppliers', [], function () {
     const id = supplierId + ':' + slug;
     const out = Object.assign({ id, sku: id, supplierId, supplierSku: supplierSku || null }, fields,
       { enabled: true, priceAsOf: PRICE_AS_OF, priceStatus: 'observed' });
-    if (!supplierSku) out.notes = (out.notes ? out.notes + ' ' : '') + NOT_CONFIRMED;
+    // orderNote: a short caution printed on the shopping-list line (notes is the longer description).
+    if (!supplierSku) out.orderNote = (out.orderNote ? out.orderNote + ' ' : '') + NOT_CONFIRMED;
     return out;
   }
 
@@ -257,8 +258,8 @@ LP.define('suppliers', [], function () {
       bulbSpacingIn: 4, stringLengthFt: 23, leadFt: 0.5, bulbsPerUnit: 70, wattsPerUnit: 4.8, maxEndToEnd: 45, price: 19.99,
       colors: ['warmWhite'], clipEligible: false, suitableFor: MINI_TYPES.slice(),
       url: CLE + '5mm-LED-Wide-Angle-Warm-White-Prelamped-Light-Set--Green-Wire-7190.htm',
-      notes: '4.8 W per set, up to 45 sets end to end. The supplier lists 24 ft overall; the lit length (23 ft) is worked out from 70 bulbs 4 in apart. ' +
-        'The page lists more than one size: pick the 70-light, 4 in set.',
+      notes: '4.8 W per set, up to 45 sets end to end. The supplier lists 24 ft overall; the lit length (23 ft) is worked out from 70 bulbs 4 in apart.',
+      orderNote: 'The page lists more than one size: pick the 70-light set with bulbs 4 in apart.',
     }),
     product('cle', 'icicle-70', '85686', {
       equiv: 'icicle-led-300', name: '5 mm LED icicle lights, 70 bulbs, 7 ft lit, white wire', category: 'icicle', tech: 'LED', unit: 'string',

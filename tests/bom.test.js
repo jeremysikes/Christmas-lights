@@ -65,9 +65,12 @@ test('light lines are grouped by product and color mode, in run order', () => {
     ['c9-led', 'C9 LED string, 25 bulbs - Custom (#00ff00)', 1],
   ]);
   const warm = lights[0];
+  // SPEC section 8.3: every line also says where it is bought. With no supplier chosen that is "Any store".
   assert.deepEqual(warm, {
     sku: 'c9-led', category: 'lights', name: 'C9 LED string, 25 bulbs - Warm white', qty: 3, unit: 'string',
     unitPrice: 32.99, defaultPrice: 32.99, overridden: false, lineTotal: 98.97, notes: 'For Front eave (2), Garage eave (1).',
+    supplierId: null, supplierName: 'Any store', supplierSku: null, url: null, findUrl: null, priceAsOf: null, priceStatus: 'default',
+    usedQty: 3, total: 98.97, buyTotal: 98.97,
   });
 });
 

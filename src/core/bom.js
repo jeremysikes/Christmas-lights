@@ -27,14 +27,38 @@
  *    apostrophe so spreadsheet apps do not run them as formulas. The subtotal goes in a summary row after
  *    a blank row, with the amount in the Item column, so summing the Line Total column is not doubled.
  *  - Extra exports: round2, emptyBom.
+ *
+ * Phase 1.1 (SPEC §8.3), suppliers:
+ *  - Every line also says where it is bought: supplierId (null = any store), supplierName, supplierSku (the part
+ *    number to type at the supplier, null when it is not confirmed), url (the product page), findUrl (for a line
+ *    with no product page: the chosen supplier's category page or search), priceAsOf and priceStatus
+ *    ('verified' | 'observed' | 'default' | 'yours'). 'yours' = pricing.overrides has the line's sku, or the
+ *    price of a supplier item was edited in the project's own product list. Links are https only.
+ *  - Bulk C7/C9 (product.kind 'bulk') is bought as parts, gathered per product across the job: socket wire
+ *    (cheapest mix of the sizes on file that covers the feet; with config.buying.costBasis 'used' the size that
+ *    is cheapest per foot, because leftovers are kept), bulbs per colour in packs, and a male and a female
+ *    slide-on plug for every power feed (every run without a power plan). These lines are category 'lights'.
+ *    A bulk product whose parts cannot be priced falls back to one per-foot line at product.price.
+ *  - qty is what to order. usedQty is the share of it this job uses (bulk parts only; otherwise equal to qty).
+ *    buyTotal = qty × unitPrice. total (and lineTotal, kept for Phase 1 readers) = buyTotal, or
+ *    usedQty × unitPrice for bulk parts when the cost basis is 'used'. subtotal and byCategory add up lineTotal.
+ *  - When the chosen supplier has its own item for an accessory (clips by mount type, light stakes, timer) the
+ *    line takes its sku, name, pack size, price and link; config.clipPackSize / stakes.packSize do not apply to
+ *    a supplier's pack. Other accessories stay generic with a findUrl.
+ *  - orderSheets(bom, library): the lines grouped per supplier, then "Any store". orderSheetToCsv and
+ *    orderSheetToText write one sheet. priceNote(bom) is the "prices were last checked on ..." sentence for
+ *    exports; priceStatusText(line) is the short "as of ... (check the price)" label.
+ *  - bomToCsv adds Supplier, Part number, Price status and Link columns when a line has any of them; a plan
+ *    with no supplier keeps the Phase 1 columns.
+ *  - Checklist: a bulk feed starts with a "cut the wire, add the plugs, screw in the bulbs" step.
  */
-LP.define('bom', ['catalog'], function (catalog) {
+LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
   'use strict';
 
   const { CLIP_TYPES, COLOR_MODES } = catalog;
   const CATEGORIES = ['lights', 'clips', 'cords', 'power', 'hardware'];
   const EPS = 1e-9;
-  const UNIT_WORDS = { string: ['string', 'strings'], net: ['net', 'nets'], set: ['set', 'sets'], foot: ['ft', 'ft'], pack: ['pack', 'packs'], each: ['each', 'each'] };
+  const UNIT_WORDS = { string: ['string', 'strings'], net: ['net', 'nets'], set: ['set', 'sets'], foot: ['ft', 'ft'], pack: ['pack', 'packs'], each: ['each', 'each'], spool: ['spool', 'spools'] };
 
   // ---------------------------------------------------------------- small helpers
   const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -116,28 +140,73 @@ LP.define('bom', ['catalog'], function (catalog) {
     const runList = arr(runs).filter(isObj);
     const pw = isObj(power) ? power : {};
     const lines = [];
+    // Who the project buys from (SPEC §8.3): null = "Any store", the Phase 1 behaviour.
+    const preferred = preferredSupplier(lib);
+    const usedBasis = isObj(config.buying) && config.buying.costBasis === 'used';
 
-    /** One BOM line. unitPrice = price override for the SKU, else the library price. */
-    function addLine(category, sku, name, qty, unit, defaultPrice, notes) {
-      if (!(qty > 0)) return;
+    /** Unit price for a SKU: the user's own price (pricing.overrides) when it is a valid number, else the default. */
+    function priceOf(sku, defaultPrice) {
       const def = round2(nonNeg(defaultPrice, 0));
       const ov = overrides[sku];
       const ovNum = typeof ov === 'string' && ov.trim() !== '' ? Number(ov) : ov;
       const overridden = typeof ovNum === 'number' && Number.isFinite(ovNum) && ovNum >= 0;
-      const unitPrice = overridden ? round2(ovNum) : def;
+      return { def, overridden, unitPrice: overridden ? round2(ovNum) : def };
+    }
+    /**
+     * One BOM line. unitPrice = price override for the SKU, else the library price. `meta` says where it is
+     * bought: {supplierId, supplierSku, url, priceAsOf, priceStatus} for a supplier's item, {findUrl} for a
+     * generic item the chosen supplier may carry, and {usedQty} for bulk parts (the share of `qty` this job uses).
+     */
+    function addLine(category, sku, name, qty, unit, defaultPrice, notes, meta) {
+      if (!(qty > 0)) return;
+      const m = isObj(meta) ? meta : {};
+      const { def, overridden, unitPrice } = priceOf(sku, defaultPrice);
+      const sup = typeof m.supplierId === 'string' && m.supplierId !== suppliers.GENERIC_ID ? suppliers.getSupplier(m.supplierId) : null;
+      let priceStatus = 'default';
+      if (sup) priceStatus = suppliers.PRICE_STATUSES.includes(m.priceStatus) ? m.priceStatus : 'observed';
+      // A supplier price that no longer matches the catalog's was typed in by the user (product library edit).
+      const listed = sup ? suppliers.catalogPrice(sku) : null;
+      if (overridden || (listed !== null && round2(listed) !== def)) priceStatus = 'yours';
+      const buyTotal = round2(qty * unitPrice);
+      // Bulk parts: the share of what is ordered that this job uses (wire feet, bulbs, plugs); everything else is used whole.
+      const share = typeof m.usedQty === 'number' && Number.isFinite(m.usedQty) && m.usedQty >= 0 && m.usedQty < qty;
+      const usedQty = share ? Math.round(m.usedQty * 10000) / 10000 : qty;
+      const total = share && usedBasis ? round2(m.usedQty * unitPrice) : buyTotal;
       lines.push({
         sku, category, name, qty, unit, unitPrice, defaultPrice: def, overridden,
-        lineTotal: round2(qty * unitPrice), notes: notes || '',
+        lineTotal: total, notes: notes || '',
+        supplierId: sup ? sup.id : null, supplierName: sup ? sup.name : ANY_STORE,
+        supplierSku: sup && (typeof m.supplierSku === 'string' || typeof m.supplierSku === 'number') && String(m.supplierSku) ? String(m.supplierSku) : null,
+        url: sup ? suppliers.safeUrl(m.url) : null, findUrl: suppliers.safeUrl(m.findUrl),
+        priceAsOf: sup && priceStatus !== 'yours' && typeof m.priceAsOf === 'string' && m.priceAsOf ? m.priceAsOf : null,
+        priceStatus, usedQty, total, buyTotal,
       });
     }
     const accessory = (sku) => catalog.getAccessory(accessories, sku) || catalog.getAccessory(catalog.ACCESSORIES, sku);
+    /** Where an Offer (or supplier product) is bought. */
+    const offerMeta = (supplierId, o) => ({ supplierId, supplierSku: o.supplierSku, url: o.url, priceAsOf: o.priceAsOf, priceStatus: o.priceStatus });
+    /** The chosen supplier's own item for a generic accessory, when it has one on file. */
+    const offerFor = (sku) => (preferred ? suppliers.accessoryOffer(preferred, sku) : null);
+    /** A generic accessory bought from the chosen supplier: a link to where the supplier keeps such things. */
+    const lookFor = (sku, name) => (preferred ? { findUrl: suppliers.findUrl(preferred, catalog.accessoryRole(sku), searchWords(name)) } : null);
+    const cautionOf = (o) => (isObj(o) && typeof o.notes === 'string' && o.notes ? ' ' + o.notes : '');
 
-    // ---- lights: one line per product + color, in the order the runs list them
+    // ---- lights: one line per product + color, in the order the runs list them. Bulk C7/C9 (cut-to-length
+    // socket wire) is gathered per product across the whole job and bought as wire, bulbs and plugs.
     const groups = new Map();
     for (const run of runList) {
       const qty = fin(run.quantity, 0);
       if (!(qty > 0) || !run.productId) continue;
       const product = catalog.getProduct(lib.products, run.productId);
+      if (isBulkProduct(product)) {
+        const key = 'bulk|' + product.id;
+        let g = groups.get(key);
+        if (!g) { g = { bulk: true, product, feet: 0, uses: [], runs: [] }; groups.set(key, g); }
+        g.feet += qty;
+        g.uses.push((run.label || 'A run') + ' (' + fmtNum(qty, 2) + ' ft)');
+        g.runs.push(run);
+        continue;
+      }
       const mode = typeof run.colorMode === 'string' && run.colorMode ? run.colorMode : 'warmWhite';
       const colors = arr(run.colors).filter((c) => typeof c === 'string');
       const key = run.productId + '|' + mode + (mode === 'custom' ? '|' + colors.join(',') : '');
@@ -150,6 +219,7 @@ LP.define('bom', ['catalog'], function (catalog) {
           name: baseName + ' - ' + suffix,
           unit: (product && product.unit) || run.unit || 'string',
           price: product ? product.price : null,
+          product,
           qty: 0,
           uses: [],
         };
@@ -159,8 +229,128 @@ LP.define('bom', ['catalog'], function (catalog) {
       g.uses.push((run.label || 'A run') + ' (' + fmtNum(qty, 2) + ')');
     }
     for (const g of groups.values()) {
+      if (g.bulk) { addBulkLines(g); continue; }
       const priceNote = Number.isFinite(g.price) && g.price >= 0 ? '' : ' No price in the product library.';
-      addLine('lights', g.sku, g.name, roundQty(g.qty), g.unit, g.price, 'For ' + shortList(g.uses, 6).join(', ') + '.' + priceNote);
+      const p = g.product;
+      let meta = null;
+      let caution = '';
+      if (catalog.isSupplierProduct(p)) {
+        meta = offerMeta(p.supplierId, p);
+        if (typeof p.orderNote === 'string' && p.orderNote) caution = ' ' + p.orderNote;
+      } else if (preferred && p) {
+        meta = { findUrl: suppliers.findUrl(preferred, catalog.categoryRole(p.category), searchWords(p.name || '')) };
+      }
+      addLine('lights', g.sku, g.name, roundQty(g.qty), g.unit, g.price, 'For ' + shortList(g.uses, 6).join(', ') + '.' + priceNote + caution, meta);
+    }
+
+    /**
+     * Wire, bulbs and plugs for one bulk product (SPEC §8.3). Wire: the feet of all its runs, bought as the
+     * cheapest mix of the sizes on file. Bulbs: one per socket, split by each run's colour pattern, in packs.
+     * Plugs: one male and one female for every length that is cut = every power feed of this product (every
+     * run when there is no power plan).
+     */
+    function addBulkLines(g) {
+      const product = g.product;
+      const c = product.components;
+      const sid = catalog.isSupplierProduct(product) ? product.supplierId : null;
+      const spacing = pos(product.bulbSpacingIn) || 12;
+      const where = shortList(g.uses, 6).join(', ');
+
+      // -- wire
+      const feet = Math.ceil(g.feet - EPS);
+      const sizes = [{ offer: c.wire, lengthFt: c.wire.spoolFt, unit: 'spool' }];
+      for (const s of arr(c.wire.sizes)) {
+        if (isObj(s) && pos(s.lengthFt) && nonNeg(s.price, null) !== null && typeof s.sku === 'string' && s.sku) sizes.push({ offer: s, lengthFt: s.lengthFt, unit: 'each' });
+      }
+      for (const s of sizes) s.price = priceOf(s.offer.sku, s.offer.price).unitPrice;
+      const mix = usedBasis ? cheapestPerFoot(feet, sizes) : cheapestMix(feet, sizes);
+      const boughtFt = mix.reduce((t, m) => t + m.count * m.size.lengthFt, 0);
+      const leftFt = Math.max(0, boughtFt - feet);
+      const mixText = mix.map((m) => `${fmtNum(m.count, 0)} × ${fmtNum(m.size.lengthFt, 0)} ft`).join(' + ');
+      for (const m of mix) {
+        const note = `${fmtNum(feet, 0)} ft needed for ${where}. ` +
+          (mix.length > 1 ? `Bought as ${mixText} = ${fmtNum(boughtFt, 0)} ft, ` : `${fmtNum(boughtFt, 0)} ft bought, `) +
+          `${fmtNum(leftFt, 0)} ft left over.` + cautionOf(m.size.offer);
+        addLine('lights', m.size.offer.sku, m.size.offer.name || 'Socket wire', m.count, m.size.unit, m.size.offer.price, note,
+          Object.assign(offerMeta(sid, m.size.offer), { usedQty: boughtFt > 0 ? (m.count * feet) / boughtFt : m.count }));
+      }
+
+      // -- bulbs: one per socket, by colour
+      const bulb = c.bulb;
+      const packQty = pos(bulb.packQty) || 25;
+      const def = bulb.variants[bulb.defaultVariant];
+      const byColour = new Map();
+      for (const run of g.runs) {
+        const sockets = Math.ceil((fin(run.quantity, 0) * 12) / spacing - EPS);
+        const pattern = bulbPattern(run);
+        pattern.forEach((family, i) => {
+          const n = Math.floor(sockets / pattern.length) + (i < sockets % pattern.length ? 1 : 0);
+          if (!(n > 0)) return;
+          let e = byColour.get(family);
+          if (!e) { e = { family, count: 0, uses: [] }; byColour.set(family, e); }
+          e.count += n;
+          const label = run.label || 'A run';
+          const seen = e.uses.find((u) => u.label === label);
+          if (seen) seen.n += n; else e.uses.push({ label, n });
+        });
+      }
+      const order = suppliers.VARIANT_ORDER;
+      const families = Array.from(byColour.values()).sort((a, b) => rank(order, a.family) - rank(order, b.family));
+      const bulbRole = product.category === 'c7' ? 'c7Bulbs' : 'c9Bulbs';
+      for (const e of families) {
+        const listed = isObj(bulb.variants[e.family]) && nonNeg(bulb.variants[e.family].price, null) !== null ? bulb.variants[e.family] : null;
+        const o = listed || def;
+        const packs = Math.ceil(e.count / packQty - EPS);
+        const label = suppliers.VARIANT_LABELS[e.family] || e.family;
+        const uses = shortList(e.uses.map((u) => `${u.label} (${fmtNum(u.n, 0)})`), 6).join(', ');
+        const base = `${fmtNum(e.count, 0)} ${e.count === 1 ? 'bulb' : 'bulbs'} needed for ${uses}. ${fmtNum(packs * packQty, 0)} bought, ${fmtNum(packs * packQty - e.count, 0)} spare.`;
+        const used = { usedQty: e.count / packQty };
+        if (listed) {
+          addLine('lights', o.sku, o.name || `${bulb.name || 'Bulbs'} - ${label}`, packs, 'pack', o.price, base + cautionOf(o), Object.assign(offerMeta(sid, o), used));
+        } else {
+          // A colour this supplier's list does not have: priced like the default colour, with no part number
+          // (the default's number would order the wrong colour) and a link to the supplier's bulb page instead.
+          const defLabel = (suppliers.VARIANT_LABELS[bulb.defaultVariant] || 'the default colour').toLowerCase();
+          addLine('lights', o.sku + ':' + e.family, `${bulb.name || 'Bulbs'} - ${label} (choose the colour at the supplier)`, packs, 'pack', o.price,
+            `${base} No ${label.toLowerCase()} bulb is on file for this supplier, so it is priced like ${defLabel}: choose the colour at the supplier.`,
+            Object.assign({ supplierId: sid, priceAsOf: o.priceAsOf, priceStatus: o.priceStatus, findUrl: sid ? suppliers.findUrl(sid, bulbRole, (bulb.name || '') + ' ' + label) : null }, used));
+        }
+      }
+
+      // -- plugs: one male and one female per cut length
+      const runIds = new Set(g.runs.map((r) => r.id));
+      const onFeed = new Set();
+      let cuts = 0;
+      for (const f of arr(pw.feeds)) {
+        if (!isObj(f)) continue;
+        const mine = arr(f.runIds).filter((id) => runIds.has(id));
+        if (!mine.length) continue;
+        cuts += 1;
+        for (const id of mine) onFeed.add(id);
+      }
+      const loose = g.runs.filter((r) => !onFeed.has(r.id)).length;
+      cuts += loose;
+      const lengths = `${fmtNum(cuts, 0)} ${cuts === 1 ? 'length' : 'lengths'} of wire`;
+      const wireType = typeof c.wire.wireType === 'string' && c.wire.wireType ? c.wire.wireType : 'SPT-1';
+      const plugLine = (o, gender, use) => {
+        const acc = accessory('plug-spt1-' + gender);
+        const size = pos(o && o.packQty) || pos(acc && acc.packSize) || 10;
+        const packs = Math.ceil(cuts / size - EPS);
+        const note = `One for each of the ${lengths} that is cut (${fmtNum(cuts, 0)} needed, ${fmtNum(packs * size, 0)} bought). ${use}`;
+        const used = { usedQty: cuts / size };
+        if (o) {
+          addLine('lights', o.sku, o.name || `Slide-on ${gender} plugs`, packs, 'pack', o.price, note + cautionOf(o), Object.assign(offerMeta(sid, o), used));
+        } else {
+          // No plug on file for this supplier: a plain line with a link to where the supplier keeps its plugs.
+          const name = `Slide-on ${gender} plugs for ${wireType} socket wire, pack of ${fmtNum(size, 0)}`;
+          const from = sid || preferred;
+          addLine('lights', 'plug-' + wireType.toLowerCase().replace(/[^a-z0-9]/g, '') + '-' + gender, name, packs, 'pack', acc ? acc.price : 0,
+            note + (from ? ' No part number is on file for this plug: pick the one that matches the wire.' : ''),
+            Object.assign({ findUrl: from ? suppliers.findUrl(from, 'plugs', `${wireType} ${gender} plug`) : null }, used));
+        }
+      };
+      plugLine(isOffer(c.plugMale) ? c.plugMale : null, 'male', 'It goes on the end where the cord arrives.');
+      plugLine(isOffer(c.plugFemale) ? c.plugFemale : null, 'female', 'It goes on the far end, so the next run or a jumper cord can plug in.');
     }
 
     // ---- clips: one line per clip type, packs of the accessory pack size, waste % added
@@ -175,12 +365,17 @@ LP.define('bom', ['catalog'], function (catalog) {
       if (!count) continue;
       const info = CLIP_TYPES[type];
       const acc = accessory(info.sku);
-      const packSize = pos(config.clipPackSize) || pos(acc && acc.packSize) || 100;
+      // The chosen supplier's own clip: its name, pack size, price and link (its pack is what can be ordered, so
+      // config.clipPackSize does not apply to it).
+      const off = offerFor(info.sku);
+      const packSize = (off && pos(off.packQty)) || pos(config.clipPackSize) || pos(acc && acc.packSize) || 100;
       const withWaste = Math.ceil(count * (1 + wastePct / 100) - EPS);
       const packs = Math.ceil(withWaste / packSize - EPS);
       const noun = type === 'zipTie' ? 'zip ties' : 'clips';
-      addLine('clips', info.sku, (acc && acc.name) || info.label, packs, (acc && acc.unit) || 'pack', acc ? acc.price : 0,
-        `${fmtNum(count, 0)} ${noun} + ${fmtNum(wastePct, 1)}% spare = ${fmtNum(withWaste, 0)}, in packs of ${fmtNum(packSize, 0)}.`);
+      const note = `${fmtNum(count, 0)} ${noun} + ${fmtNum(wastePct, 1)}% spare = ${fmtNum(withWaste, 0)}, in packs of ${fmtNum(packSize, 0)}.`;
+      const name = (acc && acc.name) || info.label;
+      if (off) addLine('clips', off.sku, off.name || name, packs, 'pack', off.price, note + cautionOf(off), offerMeta(preferred, off));
+      else addLine('clips', info.sku, name, packs, (acc && acc.unit) || 'pack', acc ? acc.price : 0, note, lookFor(info.sku, name));
     }
 
     // ---- cords: pieces from the power plan, by gauge and length
@@ -209,7 +404,7 @@ LP.define('bom', ['catalog'], function (catalog) {
       const note = (parts.length ? 'For ' + parts.join('; ') + '.' : '') +
         (Number.isFinite(price) ? '' : ' No price in the product library.');
       addLine('cords', sku, (acc && acc.name) || `Outdoor extension cord, ${c.awg} AWG, ${c.lengthFt} ft`, Math.round(c.count),
-        (acc && acc.unit) || 'each', price, note.trim());
+        (acc && acc.unit) || 'each', price, note.trim(), lookFor(sku, `outdoor extension cord ${c.lengthFt} ft`));
     }
 
     // ---- power accessories: timers, power stakes, GFCI adapters
@@ -222,10 +417,20 @@ LP.define('bom', ['catalog'], function (catalog) {
       const n = Math.round(fin(qty, 0));
       if (!(n > 0)) return;
       const acc = accessory(sku);
-      addLine(category, sku, (acc && acc.name) || sku, n, (acc && acc.unit) || 'each', acc ? acc.price : 0, notes);
+      const name = (acc && acc.name) || sku;
+      const off = offerFor(sku);
+      if (off) addLine(category, off.sku, off.name || name, n, (acc && acc.unit) || 'each', off.price, ((notes || '') + cautionOf(off)).trim(), offerMeta(preferred, off));
+      else addLine(category, sku, name, n, (acc && acc.unit) || 'each', acc ? acc.price : 0, notes, lookFor(sku, name));
     };
     const timerOutlets = pwOutlets.filter((o) => o.timer).map(outletLabel);
-    accLine('power', 'timer-outdoor', counts.timers, timerOutlets.length ? 'One for each outlet used: ' + listText(shortList(timerOutlets, 4)) + '.' : '');
+    // A supplier's timer with a watt limit of its own: say so when an outlet in this plan carries more.
+    const timerOffer = offerFor('timer-outdoor');
+    const timerMaxW = timerOffer ? pos(timerOffer.maxWatts) : null;
+    const tooMuch = timerMaxW ? pwOutlets.filter((o) => o.timer && fin(o.watts, 0) > timerMaxW + EPS) : [];
+    const timerCaution = tooMuch.length
+      ? ` ${listText(shortList(tooMuch.map((o) => `${outletLabel(o)} (${fmtNum(fin(o.watts, 0), 0)} W)`), 3))} ${tooMuch.length > 1 ? 'carry' : 'carries'} more than this timer's ${fmtNum(timerMaxW, 0)} W limit: use a heavier timer there.`
+      : '';
+    accLine('power', 'timer-outdoor', counts.timers, (timerOutlets.length ? 'One for each outlet used: ' + listText(shortList(timerOutlets, 4)) + '.' : '') + timerCaution);
     const splitOutlets = pwOutlets.filter((o) => o.splitters > 0).map(outletLabel);
     accLine('power', 'splitter-3', counts.splitters, splitOutlets.length ? 'For outlets that feed more than one cord: ' + listText(shortList(splitOutlets, 4)) + '.' : '');
     // 3-way taps where jumper cords branch off a run (SPEC §8.2).
@@ -238,11 +443,14 @@ LP.define('bom', ['catalog'], function (catalog) {
     const stakeCount = runList.reduce((s, r) => s + Math.max(0, Math.ceil(fin(r.lightStakes, 0))), 0);
     if (stakeCount > 0) {
       const acc = accessory('light-stakes');
-      const packSize = pos(config.stakes && config.stakes.packSize) || pos(acc && acc.packSize) || 25;
+      const off = offerFor('light-stakes');
+      const packSize = (off && pos(off.packQty)) || pos(config.stakes && config.stakes.packSize) || pos(acc && acc.packSize) || 25;
       const packs = Math.ceil(stakeCount / packSize - EPS);
       const where = runList.filter((r) => fin(r.lightStakes, 0) > 0).map((r) => r.label || 'a run');
-      addLine('hardware', 'light-stakes', (acc && acc.name) || 'Light stakes', packs, (acc && acc.unit) || 'pack', acc ? acc.price : 0,
-        `${fmtNum(stakeCount, 0)} stakes for ${listText(shortList(where, 3))}, in packs of ${fmtNum(packSize, 0)}.`);
+      const note = `${fmtNum(stakeCount, 0)} stakes for ${listText(shortList(where, 3))}, in packs of ${fmtNum(packSize, 0)}.`;
+      const name = (acc && acc.name) || 'Light stakes';
+      if (off) addLine('hardware', off.sku, off.name || name, packs, 'pack', off.price, note + cautionOf(off), offerMeta(preferred, off));
+      else addLine('hardware', 'light-stakes', name, packs, (acc && acc.unit) || 'pack', acc ? acc.price : 0, note, lookFor('light-stakes', name));
     }
     accLine('hardware', 'cord-cover', counts.cordCovers, 'Where a cord crosses a walkway or passes a doorway.');
 
@@ -255,6 +463,158 @@ LP.define('bom', ['catalog'], function (catalog) {
   }
   /** Quantities are whole units for everything except odd per-foot products; keep 2 decimals at most. */
   function roundQty(q) { return Math.abs(q - Math.round(q)) < 1e-6 ? Math.round(q) : Math.round(q * 100) / 100; }
+
+  // ---------------------------------------------------------------- suppliers and bulk helpers (SPEC §8.3)
+  const ANY_STORE = 'Any store';
+  /** The supplier the library buys from, or null for "Any store". */
+  function preferredSupplier(lib) {
+    const id = suppliers.knownSupplierId(isObj(lib) ? lib.supplierId : null);
+    return id === suppliers.GENERIC_ID ? null : id;
+  }
+  const isOffer = (o) => isObj(o) && typeof o.sku === 'string' && o.sku !== '' && nonNeg(o.price, null) !== null;
+  /** A bulk product whose parts can be priced: wire with a spool length, bulbs with a default colour on file. */
+  function isBulkProduct(p) {
+    if (!isObj(p) || p.kind !== 'bulk' || !isObj(p.components)) return false;
+    const c = p.components;
+    if (!isOffer(c.wire) || !pos(c.wire.spoolFt)) return false;
+    return isObj(c.bulb) && isObj(c.bulb.variants) && isOffer(c.bulb.variants[c.bulb.defaultVariant]);
+  }
+  const rank = (order, key) => { const i = order.indexOf(key); return i < 0 ? order.length : i; };
+  /** Plain search words from a product name ("Outdoor extension cord, 16 AWG" → "Outdoor extension cord 16 AWG"). */
+  function searchWords(name) {
+    return String(name || '').replace(/\([^)]*\)/g, ' ').replace(/[^A-Za-z0-9.\- ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  /**
+   * Colour family of a hex colour, as bulbs are sold: warmWhite, coolWhite, red, orange, yellow, green, teal,
+   * blue, purple or pink. Pale or grey colours are a white (warm when it leans red, else cool).
+   */
+  function colourFamily(hex) {
+    let h = String(hex || '').trim().replace(/^#/, '');
+    if (/^[0-9a-f]{3,4}$/i.test(h)) h = h.slice(0, 3).split('').map((ch) => ch + ch).join('');
+    if (!/^[0-9a-f]{6}([0-9a-f]{2})?$/i.test(h)) return 'warmWhite';
+    const r = parseInt(h.slice(0, 2), 16) / 255, g = parseInt(h.slice(2, 4), 16) / 255, b = parseInt(h.slice(4, 6), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min, l = (max + min) / 2;
+    const s = d < 1e-9 ? 0 : d / (1 - Math.abs(2 * l - 1) + 1e-9);
+    if (s < 0.18 || l > 0.9 || l < 0.08) return r - b > 0.04 ? 'warmWhite' : 'coolWhite';
+    let hue;
+    if (max === r) hue = ((g - b) / d) % 6; else if (max === g) hue = (b - r) / d + 2; else hue = (r - g) / d + 4;
+    hue = (hue * 60 + 360) % 360;
+    if (hue < 15 || hue >= 345) return 'red';
+    if (hue < 40) return l >= 0.68 ? 'warmWhite' : 'orange';
+    if (hue < 65) return l >= 0.8 ? 'warmWhite' : 'yellow';
+    if (hue < 165) return 'green';
+    if (hue < 190) return 'teal';
+    if (hue < 255) return 'blue';
+    if (hue < 290) return 'purple';
+    return 'pink';
+  }
+  /**
+   * The bulb colours along a run, one entry per position of its repeating pattern: warm white and cool white
+   * are one colour, "multicolor" is the supplier's mixed box ('multi'), and a custom pattern lists the family
+   * of each of its colours (red, green → half red, half green).
+   */
+  function bulbPattern(run) {
+    const mode = typeof run.colorMode === 'string' ? run.colorMode : 'warmWhite';
+    if (mode === 'coolWhite') return ['coolWhite'];
+    if (mode === 'multicolor') return ['multi'];
+    if (mode === 'custom') {
+      const list = arr(run.colors).filter((c) => typeof c === 'string' && /^#[0-9a-f]{3,8}$/i.test(c)).map(colourFamily);
+      if (list.length) return list;
+    }
+    return ['warmWhite'];
+  }
+  /**
+   * Cheapest way to buy at least `feet` of wire from the sizes on file ([{lengthFt, price}]): a small dynamic
+   * programme over whole feet. Ties go to fewer pieces, then to the longer piece. Returns [{size, count}],
+   * longest first.
+   */
+  function cheapestMix(feet, sizes) {
+    const need = Math.max(1, Math.ceil(feet - EPS));
+    const list = sizes.slice().sort((a, b) => b.lengthFt - a.lengthFt);
+    if (list.length === 1 || need > 200000) return cheapestPerFoot(need, list);
+    const cost = new Float64Array(need + 1), pieces = new Int32Array(need + 1), pick = new Int32Array(need + 1);
+    for (let f = 1; f <= need; f++) {
+      let best = Infinity, bestN = 0, bestI = 0;
+      for (let i = 0; i < list.length; i++) {
+        const rest = Math.max(0, f - Math.ceil(list[i].lengthFt - EPS));
+        const cst = list[i].price + cost[rest], n = pieces[rest] + 1;
+        if (cst < best - 1e-9 || (Math.abs(cst - best) <= 1e-9 && n < bestN)) { best = cst; bestN = n; bestI = i; }
+      }
+      cost[f] = best; pieces[f] = bestN; pick[f] = bestI;
+    }
+    const countOf = list.map(() => 0);
+    for (let f = need; f > 0; f = Math.max(0, f - Math.ceil(list[pick[f]].lengthFt - EPS))) countOf[pick[f]] += 1;
+    return list.map((size, i) => ({ size, count: countOf[i] })).filter((m) => m.count > 0);
+  }
+  /** One size only: the cheapest per foot (ties to the longer), as many as cover `feet`. For buyers who keep leftovers. */
+  function cheapestPerFoot(feet, sizes) {
+    const best = sizes.slice().sort((a, b) => a.price / a.lengthFt - b.price / b.lengthFt || b.lengthFt - a.lengthFt)[0];
+    return [{ size: best, count: Math.max(1, Math.ceil(feet / best.lengthFt - EPS)) }];
+  }
+
+  // ================================================================ orderSheets
+  /**
+   * What to order from whom: one sheet per supplier that has lines (in the suppliers' own order), then
+   * "Any store" for everything without a supplier. Totals are what is ordered (qty × unit price), whatever the
+   * cost basis. Returns [{supplierId, supplierName, url, wholesale, priceAsOf, lines: [{supplierSku, name, qty,
+   * unit, unitPrice, total, url, findUrl, priceStatus, priceAsOf, notes, sku}], subtotal}].
+   */
+  function orderSheets(bomResult, library) {
+    try {
+      const b = isObj(bomResult) ? bomResult : {};
+      const known = isObj(library) && Array.isArray(library.suppliers) && library.suppliers.length ? library.suppliers.filter(isObj) : suppliers.SUPPLIERS;
+      const sheets = new Map();
+      const sheetFor = (id) => {
+        if (!sheets.has(id)) {
+          const s = known.find((x) => x.id === id) || suppliers.getSupplier(id) || {};
+          sheets.set(id, {
+            supplierId: id, supplierName: id === suppliers.GENERIC_ID ? ANY_STORE : (s.name || id),
+            url: id === suppliers.GENERIC_ID ? null : suppliers.safeUrl(s.url),
+            wholesale: id !== suppliers.GENERIC_ID && isObj(s.wholesale) ? JSON.parse(JSON.stringify(s.wholesale)) : null,
+            priceAsOf: null, lines: [], subtotal: 0,
+          });
+        }
+        return sheets.get(id);
+      };
+      for (const l of arr(b.lines)) {
+        if (!isObj(l) || !(fin(l.qty, 0) > 0)) continue;
+        const sheet = sheetFor(typeof l.supplierId === 'string' && l.supplierId ? l.supplierId : suppliers.GENERIC_ID);
+        const total = round2(fin(l.buyTotal, fin(l.qty, 0) * fin(l.unitPrice, 0)));
+        sheet.lines.push({
+          supplierSku: l.supplierSku || null, name: l.name || '', qty: l.qty, unit: l.unit || 'each', unitPrice: round2(fin(l.unitPrice, 0)), total,
+          url: suppliers.safeUrl(l.url), findUrl: suppliers.safeUrl(l.findUrl), priceStatus: l.priceStatus || 'default', priceAsOf: l.priceAsOf || null,
+          notes: l.notes || '', sku: l.sku || '',
+        });
+        sheet.subtotal = round2(sheet.subtotal + total);
+        if (l.priceAsOf && (!sheet.priceAsOf || l.priceAsOf < sheet.priceAsOf)) sheet.priceAsOf = l.priceAsOf;
+      }
+      const order = known.map((s) => s.id).filter((id) => id !== suppliers.GENERIC_ID);
+      const out = [];
+      for (const id of order) if (sheets.has(id)) out.push(sheets.get(id));
+      for (const [id, sheet] of sheets) if (id !== suppliers.GENERIC_ID && !order.includes(id)) out.push(sheet);
+      if (sheets.has(suppliers.GENERIC_ID)) out.push(sheets.get(suppliers.GENERIC_ID));
+      return out;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /**
+   * The sentence every export carries when a plan uses supplier prices: when they were last checked and that
+   * account prices differ. '' when no line has a supplier price (nothing to warn about).
+   */
+  function priceNote(bomOrSheet) {
+    const dates = arr(isObj(bomOrSheet) ? bomOrSheet.lines : null).filter((l) => isObj(l) && typeof l.priceAsOf === 'string' && l.priceAsOf).map((l) => l.priceAsOf).sort();
+    if (!dates.length) return '';
+    return `Prices were last checked on ${suppliers.formatDate(dates[0])}; confirm at checkout. Account (wholesale) prices differ: edit any price.`;
+  }
+  /** "as of Nov 11, 2026 (check the price)" for a line with a supplier price, "your price" for an edited one, '' otherwise. */
+  function priceStatusText(line) {
+    if (!isObj(line)) return '';
+    if (line.priceStatus === 'yours') return 'your price';
+    if (!line.priceAsOf) return '';
+    return 'as of ' + suppliers.formatDate(line.priceAsOf) + (line.priceStatus === 'verified' ? '' : ' (check the price)');
+  }
 
   // ================================================================ buildQuote
   function quoteSettings(project) {
@@ -361,7 +721,13 @@ LP.define('bom', ['catalog'], function (catalog) {
   function buildChecklistUnsafe(project, runs, power) {
     const proj = isObj(project) ? project : {};
     const pw = isObj(power) ? power : {};
-    const config = getLib(proj, null).config || catalog.DEFAULT_CONFIG;
+    const lib = getLib(proj, null);
+    const config = lib.config || catalog.DEFAULT_CONFIG;
+    /** The run's product when it is cut-to-length socket wire (bulk C7/C9, SPEC §8.3), else null. */
+    const bulkOf = (run) => {
+      const product = isObj(run) ? catalog.getProduct(lib.products, run.productId) : null;
+      return product && product.kind === 'bulk' ? product : null;
+    };
     const clipSpacing = pos(config.clipSpacingIn) || 12;
     const stakeSpacing = pos(config.stakes && config.stakes.spacingIn) || 12;
     const runList = arr(runs).filter((r) => isObj(r) && typeof r.id === 'string');
@@ -400,6 +766,7 @@ LP.define('bom', ['catalog'], function (catalog) {
       const hung = list.filter((p) => p.units > EPS);
       const run = (hung.length ? hung[hung.length - 1] : list[list.length - 1] || {}).run;
       if (!run) return 'the last string of the run before';
+      if (bulkOf(run)) return `the wire on ${run.label || 'the run before'}`; // its female plug
       const noun = run.unit === 'foot' ? 'section' : unitWord(run.unit, 1);
       return `the last ${noun} of ${run.label || 'the run before'}`;
     };
@@ -431,13 +798,46 @@ LP.define('bom', ['catalog'], function (catalog) {
       }
       const plugInto = atStart.length ? 'the tap' : `the ${cordName}`;
       const list = portions.get(feed.id) || [];
+      // Cut-to-length socket wire: one feed is one length of wire, cut and fitted with plugs and bulbs on the ground.
+      const bulkFeed = list.length > 0 && list.every((p) => bulkOf(p.run));
+      if (bulkFeed) {
+        const ft = list.reduce((t, p) => t + p.units, 0);
+        const spacing = pos(bulkOf(list[0].run).bulbSpacingIn) || 12;
+        const sockets = Math.ceil((ft * 12) / spacing - EPS);
+        const labels = [];
+        for (const p of list) if (p.units > EPS && !labels.includes(p.run.label || 'this run')) labels.push(p.run.label || 'this run');
+        const patterns = list.filter((p) => p.units > EPS).map((p) => bulbPattern(p.run).join(','));
+        const same = patterns.every((x) => x === patterns[0]);
+        const colours = same && patterns.length ? patterns[0].split(',').map((f) => (suppliers.VARIANT_LABELS[f] || f).toLowerCase()) : [];
+        const bulbs = !colours.length ? 'the bulbs for each run into the sockets'
+          : colours.length === 1 ? `a ${colours[0]} bulb into every socket`
+            : `the bulbs into the sockets in the pattern ${colours.join(', ')}`;
+        if (ft > EPS) {
+          steps.push(`On the ground, cut one length of socket wire for ${listText(shortList(labels, 3))}: ${fmtNum(ft, 0)} ft (${fmtNum(sockets, 0)} sockets). ` +
+            `Slide a male plug onto the end that meets ${plugInto} and a female plug onto the far end, then screw ${bulbs}.`);
+        }
+      }
       let stringRun = null; // the run whose last string is the one in hand (a carried-on run starts none)
       list.forEach((p, j) => {
         const run = p.run;
         const label = run.label || 'this run';
-        if (p.startsRun && isObj(run.clips) && fin(run.clips.count, 0) > 0) steps.push(clipStep(run, label, clipSpacing, prepOf(run)));
+        // One clip per socket for socket wire; the library's clip spacing for everything else.
+        const clipEvery = (bulkOf(run) && pos(bulkOf(run).bulbSpacingIn)) || clipSpacing;
+        if (p.startsRun && isObj(run.clips) && fin(run.clips.count, 0) > 0) steps.push(clipStep(run, label, clipEvery, prepOf(run)));
         if (p.startsRun && fin(run.lightStakes, 0) > 0) {
           steps.push(`Push ${fmtNum(Math.ceil(run.lightStakes), 0)} light stakes into the ground along ${label}, one every ${fmtNum(stakeSpacing, 1)} in.`);
+        }
+        if (bulkFeed) {
+          const part = p.units < p.total - EPS ? ` (${fmtNum(p.units, 2)} of its ${fmtNum(p.total, 2)} ft)` : ` (${fmtNum(p.units, 2)} ft)`;
+          if (j === 0) {
+            const start = feed.start && feed.start.label ? feed.start.label : sideOf(run);
+            const toward = feed.start && typeof feed.start.toward === 'string' && feed.start.toward ? `, working toward the ${feed.start.toward}` : '';
+            const plugStep = feed.plugIn && !atStart.length ? '' : ` Plug its male plug into ${plugInto}.`;
+            steps.push(`Hang the wire ${prepOf(run)} ${label}${part}, starting at the ${start}${toward}.${plugStep}`);
+          } else {
+            steps.push(`Carry the same wire on ${prepOf(run)} ${label}${part}.`);
+          }
+          return;
         }
         const what = quantityText(p);
         const noun = run.unit === 'foot' ? 'section' : unitWord(run.unit, 1);
@@ -521,7 +921,8 @@ LP.define('bom', ['catalog'], function (catalog) {
         for (const k of childrenOf(f)) {
           if (!here.has(k.id)) continue;
           const from = portOf(k) === 'start' ? `the 3-way tap at ${startOf(f)}` : `the end of ${endOf(f)}`;
-          visit(k, jumperStep(k, from, portions.get(k.id) || []), '');
+          const kidList = portions.get(k.id) || [];
+          visit(k, jumperStep(k, from, kidList, kidList.length > 0 && !!bulkOf(kidList[0].run)), '');
         }
       };
       homes.forEach((f, i) => visit(f, cordStep(f, label), homes.length > 1 ? `Cord ${i + 1} of ${homes.length}: ` : ''));
@@ -631,7 +1032,7 @@ LP.define('bom', ['catalog'], function (catalog) {
   }
 
   /** The step that brings power to a feed from the run that feeds it: a jumper cord, or a plug straight into it. */
-  function jumperStep(feed, from, list) {
+  function jumperStep(feed, from, list, bulk) {
     const dest = isObj(feed.start) && feed.start.label ? 'the ' + feed.start.label : 'the start of the run';
     const c = feed.cord;
     if (isObj(c) && Number.isFinite(c.awg) && arr(c.pieces).length) {
@@ -645,7 +1046,7 @@ LP.define('bom', ['catalog'], function (catalog) {
     }
     const first = list.length ? list[0].run : null;
     const noun = first && first.unit === 'foot' ? 'section' : unitWord(first ? first.unit : 'string', 1);
-    const what = `the first ${noun} of ${(first && first.label) || 'the next run'}`;
+    const what = bulk ? `the male plug of the wire for ${(first && first.label) || 'the next run'}` : `the first ${noun} of ${(first && first.label) || 'the next run'}`;
     if (feed.plugIn) return `Plug ${what} straight into ${from}: no jumper cord is needed.`;
     return `From ${from}, run a jumper cord to ${dest}. Measure that distance on site, because the photo cannot size this cord.`;
   }
@@ -744,6 +1145,8 @@ LP.define('bom', ['catalog'], function (catalog) {
 
   // ================================================================ bomToCsv
   const CSV_HEADER = ['SKU', 'Item', 'Category', 'Qty', 'Unit', 'Unit Price', 'Line Total', 'Notes'];
+  /** Extra columns when the plan buys from a supplier (SPEC §8.3). */
+  const CSV_SUPPLIER_HEADER = ['Supplier', 'Part number', 'Price status', 'Link'];
   /** RFC 4180 field: quote when it holds a comma, quote or line break; double inner quotes. */
   function csvField(v) {
     const s = v === null || v === undefined ? '' : String(v);
@@ -755,26 +1158,80 @@ LP.define('bom', ['catalog'], function (catalog) {
     return /^[=+\-@\t\r]/.test(s) ? "'" + s : s;
   }
   const money = (v) => round2(v).toFixed(2);
+  const csvRows = (rows) => rows.map((r) => r.map(csvField).join(',')).join('\r\n') + '\r\n';
+  /** The product page of a line, else where to look for it at the chosen supplier, else ''. */
+  const lineLink = (l) => suppliers.safeUrl(l.url) || suppliers.safeUrl(l.findUrl) || '';
 
   /**
    * CSV of the BOM: a header row and one row per line, then a blank row and a summary row
    * ("Subtotal" in the SKU column, the amount in the Item column). The subtotal is kept out of the
    * Line Total column so summing that column in a spreadsheet gives the real total. CRLF line ends.
+   * When any line names a supplier or carries a link, four columns are added (Supplier, Part number, Price
+   * status, Link) and a last row carries the "prices were last checked" sentence.
    */
   function bomToCsv(bom) {
     const b = isObj(bom) ? bom : {};
-    const rows = [CSV_HEADER];
-    for (const l of arr(b.lines)) {
-      if (!isObj(l)) continue;
-      rows.push([csvText(l.sku), csvText(l.name), csvText(l.category), Number.isFinite(l.qty) ? String(l.qty) : '',
-        csvText(l.unit), money(l.unitPrice), money(l.lineTotal), csvText(l.notes)]);
+    const list = arr(b.lines).filter(isObj);
+    const withSupplier = list.some((l) => l.supplierId || l.supplierSku || lineLink(l));
+    const header = withSupplier ? CSV_HEADER.concat(CSV_SUPPLIER_HEADER) : CSV_HEADER;
+    const rows = [header];
+    for (const l of list) {
+      const row = [csvText(l.sku), csvText(l.name), csvText(l.category), Number.isFinite(l.qty) ? String(l.qty) : '',
+        csvText(l.unit), money(l.unitPrice), money(l.lineTotal), csvText(l.notes)];
+      if (withSupplier) row.push(csvText(l.supplierName || ANY_STORE), csvText(l.supplierSku || ''), csvText(priceStatusText(l)), lineLink(l));
+      rows.push(row);
     }
-    const subtotal = Number.isFinite(b.subtotal) ? b.subtotal : arr(b.lines).reduce((s, l) => s + (isObj(l) ? fin(l.lineTotal, 0) : 0), 0);
-    const blank = CSV_HEADER.map(() => '');
+    const subtotal = Number.isFinite(b.subtotal) ? b.subtotal : list.reduce((s, l) => s + fin(l.lineTotal, 0), 0);
+    const blank = header.map(() => '');
     rows.push(blank);
     rows.push(['Subtotal', money(subtotal)].concat(blank.slice(2)));
-    return rows.map((r) => r.map(csvField).join(',')).join('\r\n') + '\r\n';
+    const note = withSupplier ? priceNote(b) : '';
+    if (note) rows.push(['Note', csvText(note)].concat(blank.slice(2)));
+    return csvRows(rows);
   }
 
-  return { buildBom, buildQuote, buildChecklist, bomToCsv, round2, emptyBom };
+  /**
+   * CSV of one order sheet (from orderSheets): Part number, Item, Qty, Unit, Unit Price, Total, Price status,
+   * Link, Notes; then a blank row, the subtotal (kept out of the Total column) and the price sentence.
+   */
+  function orderSheetToCsv(sheet) {
+    const s = isObj(sheet) ? sheet : {};
+    const header = ['Part number', 'Item', 'Qty', 'Unit', 'Unit Price', 'Total', 'Price status', 'Link', 'Notes'];
+    const rows = [header];
+    const list = arr(s.lines).filter(isObj);
+    for (const l of list) {
+      rows.push([csvText(l.supplierSku || ''), csvText(l.name), Number.isFinite(l.qty) ? String(l.qty) : '', csvText(l.unit), money(l.unitPrice), money(l.total),
+        csvText(priceStatusText(l)), lineLink(l), csvText(l.notes)]);
+    }
+    const subtotal = Number.isFinite(s.subtotal) ? s.subtotal : list.reduce((t, l) => t + fin(l.total, 0), 0);
+    const blank = header.map(() => '');
+    rows.push(blank);
+    rows.push(['Subtotal', money(subtotal)].concat(blank.slice(2)));
+    rows.push(['Supplier', csvText(s.supplierName || ANY_STORE)].concat(blank.slice(2)));
+    const note = priceNote(s);
+    if (note) rows.push(['Note', csvText(note)].concat(blank.slice(2)));
+    return csvRows(rows);
+  }
+
+  /** One order sheet as plain text to paste into an email or an order form. */
+  function orderSheetToText(sheet) {
+    const s = isObj(sheet) ? sheet : {};
+    const out = ['Order from ' + (s.supplierName || ANY_STORE) + (suppliers.safeUrl(s.url) ? ' (' + s.url + ')' : '')];
+    for (const l of arr(s.lines).filter(isObj)) {
+      const part = l.supplierSku ? 'Part ' + l.supplierSku + ': ' : '';
+      const status = priceStatusText(l);
+      out.push(`${fmtNum(l.qty, 2)} ${unitWord(l.unit, l.qty)} - ${part}${l.name} - $${money(l.unitPrice)} each = $${money(l.total)}` + (status ? ' (' + status + ')' : ''));
+      const link = lineLink(l);
+      if (link) out.push('  ' + link);
+    }
+    out.push('Subtotal: $' + money(Number.isFinite(s.subtotal) ? s.subtotal : 0));
+    const note = priceNote(s);
+    if (note) out.push(note);
+    return out.join('\n');
+  }
+
+  return {
+    buildBom, buildQuote, buildChecklist, bomToCsv, round2, emptyBom,
+    orderSheets, orderSheetToCsv, orderSheetToText, priceNote, priceStatusText, colourFamily, cheapestMix,
+  };
 });
