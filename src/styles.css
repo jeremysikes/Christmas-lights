@@ -604,7 +604,6 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
 .row-2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; align-items: start; }
 .row-2.align-end { align-items: end; }
 .row-auto { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: end; }
-.row-2.align-center { align-items: center; }
 
 .switch { display: inline-flex; align-items: center; gap: 10px; min-height: var(--tap); cursor: pointer; position: relative; }
 .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
@@ -677,7 +676,6 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
   background: var(--surface-2);
   text-align: center;
 }
-.dz-icon { width: 32px; height: 32px; color: var(--accent); }
 .dz-title { margin: 0; font-weight: 700; font-size: 16px; }
 .dz-sub { margin: 0 0 6px; color: var(--muted); font-size: 14px; }
 .dropzone .btn-row { justify-content: center; }
@@ -857,8 +855,6 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
 .meter-text { margin: 0; font-size: 13px; color: var(--muted); }
 .feed-item { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
 .feed-title { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0; font-size: 14px; }
-.feed-num { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; border-radius: 11px; background: var(--accent-soft); color: var(--accent-ink); font-size: 12px; font-weight: 600; }
-.feed-arrow { width: 16px; height: 16px; color: var(--muted); }
 .feed-meta { margin: 0; font-size: 12.5px; color: var(--muted); }
 
 /* step 6 */
@@ -948,7 +944,6 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
 }
 @media (max-width: 389px) {
   .row-2 { grid-template-columns: minmax(0, 1fr); }
-  .row-2.align-center { grid-template-columns: auto minmax(0, 1fr); }
   .chip-grid { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
   .panel-title { font-size: 26px; }
 }
@@ -1009,6 +1004,10 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
    layouts where the panel sits beside the photo (desktop, a phone held sideways). */
 @media (max-width: 899px) {
   .trace-bar { display: none; }
+  /* A collapsed sheet has room for one line above the pinned button: the step's title, whole, not a cut-off
+     heading (the step bar already says which step this is). */
+  .lp-app[data-sheet="min"] .panel-head .eyebrow,
+  .lp-app[data-sheet="min"] .panel-head .panel-sub { display: none; }
 }
 @media (max-width: 899px) {
   /* Below 900 px the zoom buttons sit at the bottom right of the photo: keep the toast clear of them. */
@@ -1056,6 +1055,8 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
   .sheet-handle { display: none; }
   .panel-root { padding-top: 12px; }
   .trace-bar { display: flex; }
+  .lp-app[data-sheet="min"] .panel-head .eyebrow,
+  .lp-app[data-sheet="min"] .panel-head .panel-sub { display: block; }
   .action-bar { padding-top: 6px; padding-bottom: calc(6px + env(safe-area-inset-bottom, 0px)); }
   .lp-app[data-sheet="min"] .action-note { display: block; }
   .lp-app[data-sheet="full"][data-has-image="true"] .canvas-controls { display: flex; }

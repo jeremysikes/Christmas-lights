@@ -1592,7 +1592,12 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         const s = imageToScreen(pi.p);
         dot(s, 9, null, 'rgba(4,8,14,0.6)', 4.5);
         dot(s, 9, null, '#ffffff', 2);
-        if (flags.labels) labels.push({ text: 'plugs in', alts: [{ x: s[0], y: s[1], nx: 0, ny: -1 }, { x: s[0], y: s[1], nx: 0, ny: 1 }], gap: 12, swatch: pi.color, priority: 0.3 });
+        // The label has only these four spots, so it is placed before the cord labels (which can slide along their
+        // cords); with none of them free it is left out and the ring stands alone.
+        if (flags.labels) {
+          const spots = [[0, -1], [0, 1], [1, 0], [-1, 0]].map((n) => ({ x: s[0], y: s[1], nx: n[0], ny: n[1] }));
+          labels.push({ text: 'plugs in', alts: spots, gap: 12, swatch: pi.color, priority: 1.2 });
+        }
       }
       // 3-way taps: a small diamond where one plug becomes three.
       for (const tap of tapMarkers(power)) {
@@ -1671,7 +1676,10 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         const isSel = sel && sel.kind === 'outlet' && sel.id === o.id;
         outletIcon(s, color, isSel);
         labels.obstacles.push({ x: s[0] - 13, y: s[1] - 14, w: 26, h: 28 });
-        if (flags.labels) {
+        // An outlet that is off the edge of the view gets no label: clamped to the edge, its name would sit beside
+        // something else.
+        const inView = s[0] >= -11 && s[0] <= view.cssW + 11 && s[1] >= -12 && s[1] <= view.cssH + 12;
+        if (flags.labels && (inView || isSel)) {
           const text = typeof o.label === 'string' && o.label.trim() ? o.label.trim() : 'Outlet';
           labels.push({ text, x: s[0], y: s[1] + 24, swatch: color, priority: isSel ? 4 : 2 });
         }

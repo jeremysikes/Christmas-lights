@@ -17,7 +17,9 @@
  * Phase 1.1 (SPEC §8.5): the panels no longer end in a "Next" button. One button is pinned under the panel by
  * app.js; nextAction(project, ui, plan) says what it reads and runNextAction does it, and planProgress(project,
  * plan) tells the step bar what is done. The Power step is built from powerVerdict(plan) and
- * ui.export.describeCords; Review opens with ui.export.roughMeasurements.
+ * ui.export.describeCords; Review opens with ui.export.roughMeasurements. Tap precision (SPEC §8.4): when a rating
+ * is held down by taps placed zoomed out, the Calibrate plane editor and the Trace item editor show that reason as
+ * a note (zoomedOutReason), not only folded away under "why".
  */
 LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.actions', 'ui.persist', 'ui.store'],
   function (catalog, measure, camera, design, power, actionsModule, persist, storeModule) {
@@ -570,6 +572,14 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const lv = LEVEL_LABEL[level] ? level : 'low';
       return h('span', { class: 'pill ' + lv }, LEVEL_LABEL[lv] + (extra ? ' ' + extra : ''));
     }
+    /**
+     * The "Tapped zoomed out (about ±N px on the photo): zoom in and re-tap …" reason of a rating (SPEC §8.4), or
+     * null. It is the one cause the user can fix in seconds, so the Calibrate and Trace steps say it outright in a
+     * note instead of leaving it folded away under "why".
+     */
+    function zoomedOutReason(conf) {
+      return arr(conf && conf.reasons).find((r) => typeof r === 'string' && /^Tapped zoomed out/.test(r)) || null;
+    }
     function confidenceBlock(conf, key) {
       if (!conf) return null;
       return h('details', { class: 'reasons', 'data-key': key || null },
@@ -765,6 +775,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       if (K && K.ok !== false) statusRows.push(['Lens', lensWords(K.label) + (isNum(K.f) ? ' (' + fmtNum(K.f, 0) + ' px)' : '')]);
       if (pl.kind === 'roof' && sol && sol.pitch) statusRows.push(['Pitch', sol.pitch.rise + '/' + sol.pitch.run + (sol.pitch.source === 'estimated' ? ' (estimated)' : sol.pitch.source === 'default' ? ' (assumed)' : '')]);
       kids.push(h('div', { class: 'status-card' }, dl(statusRows), conf ? confidenceBlock(conf, 'plane-conf-' + pl.id) : null));
+      const zoomWhy = zoomedOutReason(conf);
+      if (zoomWhy) kids.push(callout('warn', zoomWhy, { key: 'zoomed-out' }));
 
       if (pl.kind === 'wall') {
         kids.push(rectEditor(ctx, pl));
@@ -1003,6 +1015,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           rows.push(['With waste', ctx.fmt(m.withWasteFt), 'num']);
         }
         kids.push(dl(rows));
+        const zoomWhy = zoomedOutReason(m.confidence);
+        if (zoomWhy) kids.push(callout('warn', zoomWhy, { key: 'zoomed-out-' + f.id }));
         kids.push(confidenceBlock(m.confidence, 'conf-' + f.id));
       } else {
         kids.push(callout('warn', 'Not measured yet: ' + ((m && m.reason) || 'calibrate its surface in step 2.')));
@@ -2052,6 +2066,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
 
     return {
       mount, icon, h, morph, pickFile, exportFile, stepWarnings, warningStep, STEPS, validateProducts, diffConfig, ICONS,
-      powerVerdict, outletSummaryText, roughList, planProgress, nextAction, runNextAction, lensWords,
+      powerVerdict, outletSummaryText, roughList, planProgress, nextAction, runNextAction, lensWords, zoomedOutReason,
     };
   });

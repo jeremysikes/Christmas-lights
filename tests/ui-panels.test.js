@@ -456,3 +456,28 @@ test('8.5 "Give this run its own cord" and "Link nearby runs" reach the planner 
   assert.equal(flat.homeRuns, store.plan().power.feeds.length);
   assert.equal(panels.powerVerdict(store.plan()).level, 'warn', 'one cord per run crosses the walkway on the sample: the sentence says to fix it');
 });
+
+// ---------------------------------------------------------------- Phase 1.1: tap precision on screen (SPEC §8.4)
+test('8.4 a rating held down by zoomed-out taps is said outright: zoomedOutReason picks that reason', () => {
+  const s = tracedSample();
+  const base = plan.computePlan(s);
+  assert.equal(panels.zoomedOutReason(base.measured.planes.pl_front.confidence), null, 'the sample stores no tap precision: no note');
+  assert.equal(panels.zoomedOutReason(null), null);
+  assert.equal(panels.zoomedOutReason({ reasons: 'Tapped zoomed out' }), null, 'reasons must be a list');
+  // The front wall's rectangle tapped at about ±20 px (a finger on a zoomed-out phone): the wall and the eave on it
+  // are both rated lower, and the first reason of each is the one the Calibrate and Trace steps show as a note.
+  const coarse = clone(s);
+  const front = coarse.planes.find((p) => p.id === 'pl_front');
+  front.rect.tapErr = front.rect.corners.map(() => 20);
+  const pl = plan.computePlan(coarse);
+  const wall = pl.measured.planes.pl_front.confidence;
+  const eave = pl.measured.features.ft_eave.confidence;
+  assert.equal(base.measured.planes.pl_front.confidence.level, 'high');
+  assert.equal(wall.level, 'low');
+  assert.match(panels.zoomedOutReason(wall), /^Tapped zoomed out \(about ±20 px on the photo\): zoom in and re-tap the corners of the rectangle\./);
+  assert.equal(panels.zoomedOutReason(wall), wall.reasons[0]);
+  assert.match(panels.zoomedOutReason(eave), /^Tapped zoomed out \(about ±20 px on the photo\)/);
+  // A list that is the wrong length carries no information (SPEC §8.4): no note.
+  front.rect.tapErr = [20, 20];
+  assert.equal(panels.zoomedOutReason(plan.computePlan(coarse).measured.planes.pl_front.confidence), null);
+});
