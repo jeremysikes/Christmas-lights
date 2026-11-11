@@ -754,9 +754,11 @@ LP.define('ui.export', ['catalog', 'bom', 'schema', 'suppliers'], function (cata
    *                 splitters, trees: [[row, …]] }],
    *     loose: [row] (lights with no outlet yet), rows: [row] (everything, same order) }
    * row = { feedId, outletId, depth, kind: 'home' | 'jumper' | 'plugIn' | 'unknown' | 'none',
-   *         names: [run labels], lights: 'Front eave, Ridge', featureIds, ownCord,
+   *         names: [run labels; 'Eave 1, left part' when a run is on more than one cord], lights: 'Front eave, Ridge',
+   *         featureIds, ownCord,
    *         what: '25 ft cord' | '6 ft jumper cord' | 'Plugs straight in' | 'Cord length unknown' | 'No outlet yet',
-   *         source: 'Porch outlet' | 'the end of Front door' | 'the 3-way tap at the start of Walkway left edge' | '',
+   *         source: 'Porch outlet' | 'the end of Front door' | 'the 3-way tap at the start of Walkway left edge' |
+   *                 'the 3-way tap 19 ft from the left end of Eave 1' (a run fed from its middle) | '',
    *         line: what + where it comes from, as one sentence part ('6 ft jumper cord from the end of Front door'),
    *         route: cord.routeText | '', startLabel, pieces, boughtFt, neededFt (rounded up), awg, gauge: '16-gauge',
    *         dropPct, pathDropPct, watts (its own lights), carriesW (everything on its cord), strings, unit, taps,
@@ -772,7 +774,34 @@ LP.define('ui.export', ['catalog', 'bom', 'schema', 'suppliers'], function (cata
     const featureById = new Map(arr(prj.features).filter(isObj).map((f) => [f.id, f]));
     const outletLabel = (id) => { const o = byId(prj.outlets, id) || byId(power.outlets, id); return o ? str(o.label) || 'Outlet' : null; };
     const runsOf = (f) => arr(f.runIds).map((id) => runById.get(id)).filter(Boolean);
-    const namesOf = (f) => runsOf(f).map((r) => str(r.label)).filter(Boolean);
+    // A run that is on more than one cord (fed from its middle, or longer than one cord may feed) has a row per
+    // part: "Eave 1, left part" and "Eave 1, right part" (the end each part runs to), or "part 1 of 3".
+    const feedsOfRun = new Map();
+    for (const f of feeds) for (const id of arr(f.runIds)) { if (!feedsOfRun.has(id)) feedsOfRun.set(id, []); feedsOfRun.get(id).push(f); }
+    const sideOf = (f) => {
+      const st = isObj(f.start) ? f.start : {};
+      const toward = /^(left|right|top|bottom) end of /.exec(str(st.toward));
+      if (toward) return toward[1];
+      // Starts at an end of the run and works away from it.
+      const from = /^(left|right|top|bottom) end of /.exec(str(st.label));
+      return from ? { left: 'right', right: 'left', top: 'bottom', bottom: 'top' }[from[1]] : null;
+    };
+    const partName = (f, run) => {
+      const label = str(run.label);
+      const sharing = feedsOfRun.get(run.id) || [];
+      if (!label || sharing.length < 2) return label;
+      if (sharing.length === 2) {
+        const sides = sharing.map(sideOf);
+        if (sides[0] && sides[1] && sides[0] !== sides[1]) return label + ', ' + sideOf(f) + ' part';
+      }
+      return label + ', part ' + (sharing.indexOf(f) + 1) + ' of ' + sharing.length;
+    };
+    const namesOf = (f) => runsOf(f).map((r) => partName(f, r)).filter(Boolean);
+    /** "the 3-way tap 19 ft from the left end of Eave 1" for a cord that arrives part-way along a run. */
+    const tapPlace = (parent, pn) => {
+      const mid = /^point (.+)$/.exec(isObj(parent.start) ? str(parent.start.label) : '');
+      return mid ? 'the 3-way tap ' + mid[1] : 'the 3-way tap at the start of ' + (pn[0] || 'the run before it');
+    };
 
     const makeRow = (f) => {
       const fruns = runsOf(f);
@@ -787,7 +816,7 @@ LP.define('ui.export', ['catalog', 'bom', 'schema', 'suppliers'], function (cata
       else if (cord) kind = cord.kind === 'jumper' || (src && src.kind === 'feed') ? 'jumper' : 'home';
       else kind = 'unknown';
       let source = '';
-      if (parent) source = src.port === 'start' ? 'the 3-way tap at the start of ' + (pn[0] || 'the run before it') : 'the end of ' + (pn[pn.length - 1] || 'the run before it');
+      if (parent) source = src.port === 'start' ? tapPlace(parent, pn) : 'the end of ' + (pn[pn.length - 1] || 'the run before it');
       else if (f.outletId || (src && src.kind === 'outlet')) source = outletLabel(src && src.outletId ? src.outletId : f.outletId) || 'the outlet';
       const pieces = cord ? arr(cord.pieces).filter(isNum) : [];
       const length = pieces.length ? pieces.map((x) => formatNumber(x, 0) + ' ft').join(' + ')
@@ -873,9 +902,11 @@ LP.define('ui.export', ['catalog', 'bom', 'schema', 'suppliers'], function (cata
   }
   /**
    * The traced items whose size should be checked with a tape before buying: every item rated Low and every
-   * Medium item whose expected error is above 6%. Items that already use a tape-measured size are left out.
+   * Medium item whose expected error is above 6%. Items that already use a tape-measured size are left out; a
+   * bush has two sizes, so it stays on the list until both its width and its height are tape-measured
+   * (taped: 'width' | 'height' says which one is done).
    * → [{ featureId, label, type, level, kind: 'length' | 'height' | 'bush', pct (expected error, % or null),
-   *      lengthFt, lowFt, highFt, widthFt, heightFt, lights,
+   *      lengthFt, lowFt, highFt, widthFt, heightFt, lights, taped,
    *      text: 'about 38 ft, could be 33 to 44 ft' }]   (text never claims more precision than the photo gives)
    */
   function roughMeasurements(plan, project) {
@@ -885,22 +916,33 @@ LP.define('ui.export', ['catalog', 'bom', 'schema', 'suppliers'], function (cata
     for (const f of arr(isObj(project) ? project.features : null)) {
       if (!isObj(f)) continue;
       const m = measured[f.id];
-      if (!isObj(m) || m.ok === false || m.overridden) continue;
+      if (!isObj(m) || m.ok === false) continue;
+      // A bush with only one of its two sizes typed is half checked: it stays, with the typed size in its field.
+      const params = isObj(f.params) ? f.params : {};
+      const tapedW = f.type === 'bush' && isNum(params.overrideWidthFt) && params.overrideWidthFt > 0;
+      const tapedH = f.type === 'bush' && isNum(params.overrideHeightFt) && params.overrideHeightFt > 0;
+      const half = tapedW !== tapedH;
+      if (m.overridden && !half) continue;
       const level = isObj(m.confidence) ? m.confidence.level : null;
       const pct = isNum(m.uncertaintyPct) && m.uncertaintyPct >= 0 ? m.uncertaintyPct : m.uncertaintyPct === Infinity ? Infinity : null;
       if (!(level === 'low' || (level === 'medium' && pct !== null && pct > ROUGH_MEDIUM_PCT))) continue;
       const t = FEATURE_TYPES[f.type];
       const label = str(f.label) || (t ? t.label : 'Item');
       const item = { featureId: f.id, label, type: f.type, level, pct, kind: 'length', lengthFt: null, lowFt: null, highFt: null,
-        widthFt: null, heightFt: null, lights: isNum(m.lights) ? m.lights : null, text: '' };
+        widthFt: null, heightFt: null, lights: isNum(m.lights) ? m.lights : null, taped: half ? (tapedW ? 'width' : 'height') : null, text: '' };
       const offBy = pct !== null && pct !== Infinity ? 'about ' + formatNumber(Math.max(1, Math.round(pct)), 0) + '%' : null;
       if (f.type === 'bush') {
         item.kind = 'bush';
         item.widthFt = isNum(m.widthFt) ? m.widthFt : null;
         item.heightFt = isNum(m.heightFt) ? m.heightFt : null;
         if (item.widthFt === null || item.heightFt === null) continue;
-        item.text = 'about ' + roughFeet(item.widthFt) + ' wide by ' + roughFeet(item.heightFt) + ' tall' +
-          (offBy ? ', each side could be off by ' + offBy : ', a rough size');
+        if (half) {
+          item.text = tapedW ? roughFeet(item.widthFt) + ' wide by tape, about ' + roughFeet(item.heightFt) + ' tall from the photo: measure the height too'
+            : 'about ' + roughFeet(item.widthFt) + ' wide from the photo, ' + roughFeet(item.heightFt) + ' tall by tape: measure the width too';
+        } else {
+          item.text = 'about ' + roughFeet(item.widthFt) + ' wide by ' + roughFeet(item.heightFt) + ' tall' +
+            (offBy ? ', each side could be off by ' + offBy : ', a rough size');
+        }
       } else {
         const vertical = !!(t && t.geometry === 'vertical');
         // A tree or column is checked by its height (the tape field sets the height; the wrap follows from it).
@@ -1178,7 +1220,9 @@ LP.define('ui.export', ['catalog', 'bom', 'schema', 'suppliers'], function (cata
     if (count.typical) statuses.push({ kind: 'typical', text: some('typical', '1 part', 'parts') + ' at a typical price' });
     return {
       summary: 'Ordered as parts: socket wire ' + (ready ? 'by the spool or as a ready-made length' : 'by the spool') + ', bulbs in ' + (box ? 'boxes' : 'packs') + ' of ' +
-        n(packQty) + ' by colour, and a male and a female slide-on plug for every length you cut.',
+        n(packQty) + ' by colour, and slide-on plugs for the ends you cut' + (ready ? ' (a ready-made length comes with plugs)' : '') + '.' +
+        (str(c.wire.wireType) ? ' ' + c.wire.wireType + ' is the thin two-wire cord the sockets and plugs are made for.' : ''),
+      short: 'Socket wire, bulbs and slide-on plugs, cut to fit each run.',
       limit: limits.length ? 'One cord can feed at most ' + limits.join(' or ') + (limits.length > 1 ? ', whichever comes first.' : '.') : '',
       perFoot: perFt !== null ? 'about ' + formatMoney(perFt) + ' per ft with bulbs' : '',
       prices: priceSentence(parts, { account: false }),

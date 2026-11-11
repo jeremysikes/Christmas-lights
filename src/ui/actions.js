@@ -1221,6 +1221,12 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
               step: proj.features.length ? 6 : hasImage ? 2 : 1,
             }));
             const name = proj.name ? "'" + proj.name + "'" : 'the project';
+            // The plan is always worked out again. When that moves the totals the file was saved with (a file from
+            // an older LightPlan, whose cords and bush lights were planned by other rules), say so in a note that
+            // stays until it is closed: an installer may already have sent the old quote.
+            const moved = replannedText(res && res.saved, store.plan());
+            if (moved && !(store.ui().notice && store.ui().notice.kind === 'storage')) store.setUI({ notice: { kind: 'replanned', message: moved } });
+            else if (store.ui().notice && store.ui().notice.kind === 'replanned') store.setUI({ notice: null });
             if (h.damaged && h.damaged.length) actions.toast('Opened ' + name + ', but the photo in this file is damaged and could not be opened. The plan and measurements are kept; choose the photo again to see it.', 'warn');
             else if (h.missing.length) actions.toast('Opened ' + name + ', but its photo was not saved in the file. The plan and measurements are kept.', 'warn');
             else actions.toast('Opened ' + name + '.', 'ok');
@@ -1236,5 +1242,25 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       return actions;
     }
 
-    return { createActions, parseLength, nextFeatureLabel, nextOutletLabel, wallForPoint, KINDS_FOR_TYPE, isSmallPhoto, SMALL_PHOTO_PX };
+    /**
+     * What to tell someone whose saved file was planned again with different results: the materials cost (and the
+     * customer quote, when there is one) then and now. '' when the file carries no totals or they have not moved
+     * (by more than a dollar). saved = {cost, quoteTotal} from schema.importProject; plan = the fresh plan.
+     */
+    function replannedText(saved, plan) {
+      const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+      const money = (v) => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+      const sm = plan && plan.summary ? plan.summary : null;
+      if (!saved || !sm) return '';
+      const parts = [];
+      const was = num(saved.cost), now = num(sm.cost);
+      if (was !== null && now !== null && Math.abs(was - now) > 1) parts.push('materials were ' + money(was) + ', now ' + money(now));
+      const qWas = num(saved.quoteTotal), qNow = num(sm.quoteTotal);
+      if (qWas !== null && qNow !== null && Math.abs(qWas - qNow) > 1) parts.push('the customer quote was ' + money(qWas) + ', now ' + money(qNow));
+      if (!parts.length) return '';
+      return 'This plan was saved with different planning rules (an older LightPlan, most likely). Cords, lights and prices were worked out again: ' +
+        parts.join('; ') + '. Check the shopping list before you order or quote.';
+    }
+
+    return { createActions, parseLength, nextFeatureLabel, nextOutletLabel, wallForPoint, KINDS_FOR_TYPE, isSmallPhoto, SMALL_PHOTO_PX, replannedText };
   });

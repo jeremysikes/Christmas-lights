@@ -35,7 +35,7 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --sheet-min: 148px;
   --sheet-half: 52%;   /* the pinned action bar takes 60 px of the sheet, so half is a little taller than it was */
-  --sheet-full: calc(100% - 56px);
+  --sheet-full: calc(100% - 68px);   /* leaves room for one row of the sample note above the raised sheet */
   color-scheme: light;
 }
 
@@ -420,6 +420,8 @@ body {
 .empty-icon { display: inline-flex; color: var(--accent); }
 .empty-icon .ic { width: 40px; height: 40px; }
 
+/* Messages. The region sits over the whole workspace (above the sheet on a phone); app.js puts it just under the
+   hint bar or the sample note, so a message never covers them, or at the bottom of the photo while a tool is in use. */
 .toast-region {
   position: absolute;
   z-index: 40;
@@ -831,7 +833,7 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
 .prod-from.line { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; }
 .prod-card .prod-from { margin: 0; color: var(--muted); font-size: 13px; }
 .prod-what, .prod-prices { font-size: 13px; color: var(--muted); }
-.prod-info .disclosure > summary { min-height: 40px; font-size: 14px; }
+.prod-info .disclosure > summary { min-height: var(--tap); font-size: 14px; }
 .part-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .part-group { margin-top: 4px; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .part-row { display: flex; flex-direction: column; gap: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
@@ -891,7 +893,7 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
 .feed-note { margin: 0; font-size: 13px; color: var(--accent-ink); }
 .feed-w { margin-left: auto; font-size: 13px; color: var(--muted); white-space: nowrap; }
 .feed-title strong { min-width: 0; overflow-wrap: anywhere; }
-.switch.slim { min-height: 40px; font-size: 14px; }
+.switch.slim { min-height: var(--tap); font-size: 14px; }
 .switch.slim .switch-track { width: 38px; height: 22px; border-radius: 11px; }
 .switch.slim .switch-track::after { width: 16px; height: 16px; }
 .switch.slim input:checked + .switch-track::after { transform: translateX(16px); }
@@ -1018,6 +1020,12 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
 @media (max-width: 479px) {
   .brand-name { display: none; }
 }
+@media (max-width: 374px) {
+  /* Six steps share 360 px: no side padding and a slightly smaller label keep "Calibrate" whole. */
+  .stepbar { padding-left: max(2px, env(safe-area-inset-left, 0px)); padding-right: max(2px, env(safe-area-inset-right, 0px)); }
+  .step { padding-left: 0; padding-right: 0; }
+  .step-label { font-size: 11px; letter-spacing: 0; }
+}
 @media (max-width: 389px) {
   .row-2 { grid-template-columns: minmax(0, 1fr); }
   .chip-grid { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
@@ -1055,6 +1063,8 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
   .stepbar ol { max-width: 760px; margin: 0 auto; }
   .stage-top { right: calc(var(--gutter-r) + 56px); max-width: 720px; }
   .zoom-controls { top: 8px; bottom: auto; }
+  /* Messages stay over the photo, not over the panel beside it. */
+  .toast-region { right: calc(380px + var(--gutter-r) + 56px); }
 }
 /* ---------------------------------------------------------------- hint bar surface picker, notices */
 .hint-plane { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; color: #cfd8e2; }
@@ -1071,11 +1081,6 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
 }
 .hint-plane select option { color: #15302b; background: #fff; }
 .notice .banner-icon { color: #ffbf5a; }
-/* While a tool is active the hint bar holds the instructions: toasts move to the bottom of the photo. */
-.lp-app[data-mode="rect"] .toast-region,
-.lp-app[data-mode="line"] .toast-region,
-.lp-app[data-mode="trace"] .toast-region,
-.lp-app[data-mode="outlet"] .toast-region { top: auto; bottom: 68px; }
 /* An upright phone shows the tracing buttons once, in the hint bar on the photo: the panel's own bar is for the
    layouts where the panel sits beside the photo (desktop, a phone held sideways). */
 @media (max-width: 899px) {
@@ -1086,7 +1091,7 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
   .lp-app[data-sheet="min"] .panel-head .panel-sub { display: none; }
 }
 @media (max-width: 899px) {
-  /* Below 900 px the zoom buttons sit at the bottom right of the photo: keep the toast clear of them. */
+  /* Below 900 px the zoom buttons sit at the bottom right of the photo: a message shown there keeps clear of them. */
   .lp-app[data-mode="rect"] .toast-region,
   .lp-app[data-mode="line"] .toast-region,
   .lp-app[data-mode="trace"] .toast-region,
@@ -1148,3 +1153,16 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
 @media (prefers-reduced-motion: reduce) {
   .lp-app *, .lp-app *::before, .lp-app *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------------------------------------------------------------- review fixes */
+/* Design step: the product in use, written out under its picker (a picker cuts a long name short). */
+.run-product { margin: -4px 0 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+/* Clips and Outlet: one full-width row each, so the choice can be read without opening the picker. */
+.run-picks { display: flex; flex-direction: column; gap: 10px; }
+/* Shopping list: your own prices for items that are not on the list right now. */
+.bom-stray { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 12px; }
+.stray-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.stray-list li { display: flex; align-items: center; gap: 10px; min-height: var(--tap); }
+.stray-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+/* The hint bar keeps its height while points are added: the count never wraps away from its text. */
+.hint-count { display: inline-block; }

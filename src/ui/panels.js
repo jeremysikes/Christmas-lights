@@ -217,6 +217,59 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       return (Number(t) === 0 ? '' : v > 0 ? '+' : '-') + t + '%';
     }
     function plural(n, one, many) { return fmtNum(n, 0) + ' ' + (n === 1 ? one : many); }
+    /**
+     * A price as people type it: "12.5", "$12", "12,50" (a comma for the decimal point) or "1,234.50" → dollars,
+     * or null when it is not a number of 0 or more.
+     */
+    function parseMoney(text) {
+      let t = String(text == null ? '' : text).trim().replace(/^\$\s*/, '').replace(/\s+/g, '');
+      if (!t) return null;
+      if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) t = t.replace(/,/g, '');
+      else if (/^\d*,\d{1,2}$/.test(t)) t = t.replace(',', '.');
+      if (!/^(\d+\.?\d*|\.\d+)$/.test(t)) return null;
+      const v = Number(t);
+      return Number.isFinite(v) && v >= 0 ? v : null;
+    }
+    /**
+     * A tape-measured size that is so far from what the photo says that it is probably a slip of the finger
+     * (150 for 15.0): the factor between them when it is 3 or more, else null.
+     */
+    function tapeMismatch(typedFt, photoFt) {
+      if (!(isNum(typedFt) && typedFt > 0 && isNum(photoFt) && photoFt > 0)) return null;
+      const k = typedFt > photoFt ? typedFt / photoFt : photoFt / typedFt;
+      return k >= 3 ? k : null;
+    }
+    /** A plain name for a price-override key that is not on the shopping list right now (a part number, a product). */
+    function overrideName(library, sku) {
+      const lib = library || {};
+      for (const p of arr(lib.products)) {
+        if (!p) continue;
+        if (p.sku === sku || p.id === sku) return p.name || sku;
+        for (const c of suppliers.componentOffers(p)) if (c.offer && c.offer.sku === sku) return c.offer.name || sku;
+      }
+      for (const a of arr(lib.accessories)) if (a && a.sku === sku) return a.name || sku;
+      for (const sid of Object.keys(suppliers.SUPPLIER_ACCESSORIES)) {
+        const m = suppliers.SUPPLIER_ACCESSORIES[sid];
+        for (const k of Object.keys(m)) if (m[k].sku === sku) return m[k].name || sku;
+      }
+      return sku;
+    }
+    /**
+     * Your own prices for things that are not on the shopping list right now (the plan changed, or a dearer size
+     * dropped out of the wire mix): [{sku, name, price}]. They are kept, so they need a way to be seen and reset.
+     */
+    function strayOverrides(project, plan) {
+      const overrides = project && project.pricing && project.pricing.overrides;
+      if (!overrides || typeof overrides !== 'object') return [];
+      const onList = new Set(arr(plan && plan.bom && plan.bom.lines).map((l) => l.sku));
+      const out = [];
+      for (const sku of Object.keys(overrides)) {
+        const v = typeof overrides[sku] === 'string' ? Number(overrides[sku]) : overrides[sku];
+        if (onList.has(sku) || !(isNum(v) && v >= 0)) continue;
+        out.push({ sku, name: overrideName(plan && plan.library, sku), price: v });
+      }
+      return out;
+    }
     const UNIT_WORDS = { string: ['string', 'strings'], net: ['net', 'nets'], set: ['set', 'sets'], foot: ['ft', 'ft'], pack: ['pack', 'packs'], spool: ['spool', 'spools'], each: ['', ''] };
     function unitWord(unit, n) { const w = UNIT_WORDS[unit] || ['unit', 'units']; return n === 1 ? w[0] : w[1]; }
     function hashKey(s) {
@@ -504,9 +557,11 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
     const MOUNT_OPTIONS = [['gutter', 'Gutter clips'], ['shingle', 'Shingle tabs'], ['allInOne', 'All-in-one clips'], ['ridge', 'Ridge clips'],
       ['adhesive', 'Adhesive clips'], ['zipTie', 'Zip ties'], ['stake', 'Light stakes'], ['none', 'No clips']];
     const MOUNT_LABEL = MOUNT_OPTIONS.reduce((o, m) => { o[m[0]] = m[1]; return o; }, {});
-    const CALIBRATE_SENTENCE = 'Tap the four corners of something rectangular on this wall, like the garage door, and LightPlan ' +
-      'will un-tilt the photo so measurements come out as if you stood straight in front of it.';
+    const CALIBRATE_SENTENCE = 'Tap the four corners of this wall, then one thing on it whose size you know, like the height of the front door. ' +
+      'LightPlan un-tilts the photo so lengths come out as if you stood straight in front of it. ' +
+      'To tap a garage door or the front door instead, choose it under "What is it?" first.';
     const WASTE_NOTE = 'Add 10% for waste, corners and drops to the outlet';
+    const RAKE_NOTE = 'A rake is the sloped edge of a gable roof, from the eave up to the peak.';
     const PHOTO_TIPS = [
       'Stand across the street so the whole front of the house fits in the photo.',
       'Hold the phone level at chest height and use the main (1×) lens.',
@@ -799,7 +854,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       } else {
         statusRows.push(['How', 'Not measured yet. ' + ((sol && sol.reason) || (pl.kind === 'wall' ? 'Mark a rectangle or add a reference length below.' : ''))]);
       }
-      if (K && K.ok !== false) statusRows.push(['Lens', lensWords(K.label) + (isNum(K.f) ? ' (' + fmtNum(K.f, 0) + ' px)' : '')]);
+      // How the lens was worked out, in words (the focal length in pixels is on the Upload step for those who want it).
+      if (K && K.ok !== false) statusRows.push(['Lens', lensWords(K.label)]);
       if (pl.kind === 'roof' && sol && sol.pitch) statusRows.push(['Pitch', sol.pitch.rise + '/' + sol.pitch.run + (sol.pitch.source === 'estimated' ? ' (estimated)' : sol.pitch.source === 'default' ? ' (assumed)' : '')]);
       kids.push(h('div', { class: 'status-card' }, dl(statusRows), conf ? confidenceBlock(conf, 'plane-conf-' + pl.id) : null));
       const zoomWhy = zoomedOutReason(conf);
@@ -857,7 +913,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       kids.push(h('div', { class: 'btn-row' },
         button(rect ? 'Mark corners again' : 'Mark 4 corners', { act: 'mark-rect', data: { id: pl.id }, icon: 'corners', cls: rect ? '' : 'primary' }),
         rect ? button('Remove', { act: 'remove-rect', data: { id: pl.id }, cls: 'ghost' }) : null));
-      return h('div', { class: 'sub', 'data-key': 'rect' }, h('h4', null, 'Perspective rectangle'), kids);
+      return h('div', { class: 'sub', 'data-key': 'rect' }, h('h4', null, 'The 4 corners of a rectangle'),
+        h('p', { class: 'hint' }, 'Four corners of anything truly rectangular on this wall (the wall itself, a garage door, a door). Seeing how it is skewed in the photo is how LightPlan un-tilts the picture. This is also called a perspective rectangle.'),
+        kids);
     }
 
     function refEditor(ctx, pl, sol) {
@@ -980,6 +1038,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           field('Surface to trace on', selectInput({ act: 'active-plane', value: ctx.activePlane ? ctx.activePlane.id : '', options: planes.map((p) => [p.id, planeOptionLabel(p)]) })),
           toggle('Snap', { act: 'view-toggle', data: { key: 'snap' }, checked: ui.view.snap })),
         h('p', { class: 'hint' }, 'Lines: tap each corner, then Finish or double-tap. Windows and bushes: tap around and tap the first point to close. Trees and columns: tap the base, then the top.'),
+        h('p', { class: 'hint', 'data-key': 'rake-note' }, RAKE_NOTE),
       ], { key: 'types' }));
 
       // Feature list
@@ -1008,9 +1067,10 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const ft = FEATURE_TYPES[f.type] || {};
       const cfg = ctx.config;
       const kids = [];
+      // The short names (the same words as the "What to light" buttons) fit the half-width picker whole.
       kids.push(h('div', { class: 'row-2' },
         field('Label', textInput({ act: 'feature-field', value: f.label, data: { id: f.id, field: 'label' }, maxlength: 80 })),
-        field('Type', selectInput({ act: 'feature-type', value: f.type, options: TYPE_ORDER.map((t) => [t, FEATURE_TYPES[t].label]), data: { id: f.id } }))));
+        field('Type', selectInput({ act: 'feature-type', value: f.type, options: TYPE_ORDER.map((t) => [t, FEATURE_TYPES[t].short]), data: { id: f.id } }))));
       kids.push(field('Surface', selectInput({ act: 'feature-plane', value: f.planeId || '', options: [['', 'None']].concat(ctx.planes.map((p) => [p.id, p.name])), data: { id: f.id } })));
       const fpl = byId(ctx.planes, f.planeId);
       const kinds = actionsModule.KINDS_FOR_TYPE && actionsModule.KINDS_FOR_TYPE[f.type];
@@ -1275,10 +1335,13 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           w.url ? linkRow(ctx, w.url, 'Wholesale page', 'whole-' + facts.id, { aria: facts.name + ' wholesale page', kind: 'wholesale' }) : null,
           w.note ? h('p', { class: 'hint' }, w.note) : null) : null));
       const style = lib.config.buying && lib.config.buying.style === 'strings' ? 'strings' : 'bulk';
+      // What "cut-to-length" is ordered as, said once here instead of on every run card.
+      const bulkUsed = arr(plan.runs).map((r) => (r && r.productKind === 'bulk' ? catalog.getProduct(lib.products, r.productId) : null)).find(Boolean);
+      const bulkWords = bulkUsed ? words.describeBulk(bulkUsed, project.pricing && project.pricing.overrides) : null;
       kids.push(h('div', { 'data-key': 'buy-style' }, choiceList('C7 and C9 as', 'buy-style-label', [
         { title: 'Cut-to-length wire + bulbs', sub: 'How installers buy: wire by the spool, bulbs by the box, cut to fit each run.', on: style === 'bulk', act: 'buy-style', data: { style: 'bulk' } },
         { title: 'Ready-made strings', sub: 'Ready to hang. A run uses whole strings, so some length is left over.', on: style === 'strings', act: 'buy-style', data: { style: 'strings' } },
-      ])));
+      ]), bulkWords ? h('p', { class: 'hint', 'data-key': 'bulk-what' }, bulkWords.summary + (bulkWords.limit ? ' ' + bulkWords.limit : '')) : null));
       return section('Buy from', kids, { key: 'buy-from' });
     }
 
@@ -1323,7 +1386,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         }
         return h('div', { class: 'prod-info bulk', 'data-key': 'pi-' + run.id, 'data-supplier': p.supplierId, 'data-kind': 'bulk' },
           h('p', { class: 'prod-from' }, h('strong', null, supName), ' · sold as parts' + (bulk.perFoot ? ' · ' + bulk.perFoot : '')),
-          h('p', { class: 'prod-what' }, bulk.summary + (bulk.limit ? ' ' + bulk.limit : '')),
+          h('p', { class: 'prod-what' }, bulk.short || bulk.summary),
           h('p', { class: 'prod-prices' }, bulk.statuses.map((st) => priceBadge(st))),
           h('details', { class: 'disclosure parts', 'data-key': 'parts-' + run.id },
             h('summary', null, h('span', null, 'Parts and part numbers (' + bulk.parts.length + ')'), icon('chevronDown', 'chev')),
@@ -1385,7 +1448,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         const ft = FEATURE_TYPES[run.featureType] || { color: '#999', short: '' };
         // Every supplier's products are offered, grouped by supplier with the chosen one first (SPEC §8.5).
         const suitable = design.suitableProducts(run.featureType, lib, { allSuppliers: true });
-        const auto = design.resolveProduct(Object.assign({}, f, { productId: null }), lib).product;
+        const auto = design.resolveProduct(Object.assign({}, f, { productId: null }), lib, { colorMode: run.colorMode }).product;
         const groups = productGroups(suitable, lib);
         const extra = [];
         if (f.productId && !suitable.some((p) => p.id === f.productId)) {
@@ -1399,6 +1462,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           h('div', { class: 'run-head' }, swatch(ft.color, 'dot'), h('span', { class: 'run-label' }, run.label),
             h('span', { class: 'swatches' }, arr(run.colors).slice(0, 5).map((c) => swatch(c)))),
           field('Product', groupedSelect({ act: 'run-product', value: f.productId || '', first: [['', 'Auto: ' + (auto ? auto.name : 'none available')]], groups, last: extra, data: { id: f.id } })),
+          // The picker cuts a long name short, so the product in use is written out in full under it.
+          run.productName ? h('p', { class: 'run-product', 'data-key': 'pn-' + run.id }, run.productName) : null,
           productInfo(ctx, run),
           field('Color', selectInput({ act: 'run-color', value: f.color ? f.color.mode : '', options: colorOptions, data: { id: f.id } })),
           runControls(ctx, f, run),
@@ -1427,17 +1492,18 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const kids = [];
       if (catalog.LINEAR_TYPES.includes(f.type)) {
         const def = MOUNT_LABEL[ft.defaultMount] || 'type default';
-        const mountOpts = [['', 'Auto (' + def + ')']].concat(MOUNT_OPTIONS);
+        const mountOpts = [['', 'Auto: ' + def.toLowerCase()]].concat(MOUNT_OPTIONS);
         kids.push(field('Clips', selectInput({ act: 'run-mount', value: params.mount || '', options: mountOpts, data: { id: f.id } })));
       }
       const outlets = ctx.project.outlets.filter((o) => !ctx.image || o.imageId === ctx.image.id || o.imageId == null);
       if (outlets.length) {
-        const opts = [['', 'Auto (nearest)']].concat(outlets.map((o) => [o.id, o.label]));
+        const opts = [['', 'Auto: nearest']].concat(outlets.map((o) => [o.id, o.label]));
         if (params.outletId && !opts.some((x) => x[0] === params.outletId)) opts.push([params.outletId, 'Missing outlet']);
         kids.push(field('Outlet', selectInput({ act: 'run-outlet', value: params.outletId || '', options: opts, data: { id: f.id } })));
       }
       const open = !(f.closed || ft.geometry === 'polygon' || ft.geometry === 'area' || ft.geometry === 'vertical');
-      const grid = kids.length ? h('div', { class: 'row-2' }, kids) : null;
+      // One full-width row each, so the choice can be read without opening the picker.
+      const grid = kids.length ? h('div', { class: 'run-picks' }, kids) : null;
       const rev = open ? toggle('Start from the other end', { act: 'run-reverse', data: { id: f.id }, checked: params.reverse === true }) : null;
       return grid || rev ? h('div', { class: 'run-controls' }, grid, rev) : null;
     }
@@ -1605,7 +1671,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         toggle('Link nearby runs with jumper cords', { act: 'power-daisy', checked: daisy }),
         h('p', { class: 'hint' }, daisy
           ? 'On: runs that sit close together are joined with a jumper cord (a short cord from one run to the next), so only a few cords go back to the outlets.'
-          : 'Off: every run gets its own cord from an outlet. Turn it on to join nearby runs with jumper cords (short cords from one run to the next).'),
+          : 'Off: every run, or set of runs joined end to end, gets its own cord from an outlet. Turn it on to join nearby runs with jumper cords (short cords from one run to the next).'),
       ];
       for (const o of cords.outlets) {
         if (!o.trees.length) continue;
@@ -1623,7 +1689,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         treeKids.push(h('p', { class: 'hint legend' },
           h('span', { class: 'lg' }, h('i', { class: 'lg-line home', 'aria-hidden': 'true' }), 'cord from an outlet'),
           h('span', { class: 'lg' }, h('i', { class: 'lg-line jumper', 'aria-hidden': 'true' }), 'jumper cord'),
+          h('span', { class: 'lg' }, h('i', { class: 'lg-line none', 'aria-hidden': 'true' }), 'plugs straight in (no cord)'),
           h('span', { class: 'lg' }, h('i', { class: 'lg-tap', 'aria-hidden': 'true' }), '3-way tap (a plug with three outlets)')));
+        treeKids.push(h('p', { class: 'hint', 'data-key': 'gauge-note' }, '16-gauge is the usual light outdoor extension cord. A smaller number (14 or 12) is a thicker cord for a heavier load or a longer run.'));
         const detail = cords.rows.filter((r) => r.kind === 'home' || r.kind === 'jumper').map((r) => h('li', { 'data-key': 'cd-' + r.feedId },
           h('strong', null, r.lights + ': '),
           h('span', { class: 'num' }, [
@@ -1648,7 +1716,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         tile('Cords to outlets', n(c.homeRuns)),
         tile('Jumper cords', n(c.jumpers), 'short cords from one run to the next'),
         tile('3-way taps', n(c.taps), 'plugs with three outlets'),
-        tile('Timers', n(c.timers)), tile('Power stakes', n(c.splitters)), tile('Cord covers', n(c.cordCovers)), tile('GFCI adapters', n(c.gfciAdapters))), { key: 'counts' }));
+        tile('Timers', n(c.timers)), tile('Power stakes', n(c.splitters), 'ground stakes with 3 outlets, for an outlet that feeds several cords'),
+        tile('Cord covers', n(c.cordCovers)), tile('GFCI adapters', n(c.gfciAdapters))), { key: 'counts' }));
 
       // Circuits
       const circuitItems = project.circuits.map((ci) => {
@@ -1695,7 +1764,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const notes = [];
       if (r.tapText) notes.push(capFirst(r.tapText) + ' (a plug with three outlets)');
       if (r.cover) notes.push('Needs a cord cover where it crosses the walkway');
-      if (r.doorway) notes.push('Passes ' + r.doorway + ': keep it clear of the door');
+      if (r.doorway) notes.push('Runs in front of ' + r.doorway + ': keep it tight against the doorstep, under a cord cover');
       const showOwn = daisy && r.featureIds.length > 0 && (r.kind === 'jumper' || r.kind === 'plugIn' || r.ownCord);
       const depth = Math.max(0, Math.min(5, r.depth || 0));
       return h('li', { class: 'feed-item ' + r.kind + (depth ? ' child' : ''), 'data-key': r.feedId, 'data-kind': r.kind, style: depth ? 'margin-left:' + depth * 12 + 'px' : null },
@@ -1825,7 +1894,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const lib = plan.library;
       const words = exportModule();
       const index = words ? words.bulkPartIndex(lib) : null;
-      const usedBasis = !!(lib.config.buying && lib.config.buying.costBasis === 'used');
+      // The basis the plan applied: "only what is used" counts in installer mode only (bom.costBasis says which).
+      const usedBasis = bom.costBasis === 'used';
       let toOrder = 0;
       let byShare = 0;
       const rows = arr(bom.lines).map((l) => {
@@ -1849,7 +1919,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           h('div', { class: 'bom-price' },
             h('span', { class: 'num bom-qty' }, qtyWords(l.qty, l.unit, l.name) + ' ×'),
             h('span', { class: 'money-input' }, h('span', { 'aria-hidden': 'true' }, '$'),
-              numInput({ act: 'price', value: l.unitPrice, min: 0, step: 0.01, decimals: 2, data: { sku: l.sku }, aria: 'Unit price of ' + l.name, cls: l.overridden ? 'changed' : '' })),
+              textInput({ act: 'price', value: isNum(l.unitPrice) ? l.unitPrice.toFixed(2) : '', inputmode: 'decimal', maxlength: 12, data: { sku: l.sku }, aria: 'Unit price of ' + l.name, cls: 'num' + (l.overridden ? ' changed' : '') })),
             l.overridden ? button('Reset', { act: 'price-reset', data: { sku: l.sku }, cls: 'small ghost', aria: 'Reset the price of ' + l.name + ' to ' + money(l.defaultPrice) }) : null),
           use ? h('p', { class: 'bom-use' }, h('span', { class: 'num' }, use), share ? h('span', { class: 'num' }, ' · the whole order costs ' + money(l.buyTotal)) : null) : null,
           url ? linkRow(ctx, url, 'Open', 'bom-' + key, { aria: l.name + ' at ' + (l.supplierName || 'the supplier'), kind: 'product' }) : null,
@@ -1860,11 +1930,18 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const basis = project.quote.enabled && rows.length ? h('div', { class: 'cost-basis', 'data-key': 'cost-basis' },
         choiceList('Charge this job for', 'cost-basis-label', [
           { title: 'Everything ordered', sub: 'The whole spool, box or pack goes on this job.', on: !usedBasis, act: 'cost-basis', data: { basis: 'bought' } },
-          { title: 'Only what is used', sub: 'You keep the leftover wire, bulbs and plugs for the next job, so wire is bought in the size that costs least per foot.', on: usedBasis, act: 'cost-basis', data: { basis: 'used' } },
+          { title: 'Only what is used', sub: 'You keep the leftover wire, bulbs and plugs for the next job. The order stays the same; only what this job is charged changes.', on: usedBasis, act: 'cost-basis', data: { basis: 'used' } },
         ]),
         byShare ? null : h('p', { class: 'hint' }, 'Nothing in this plan is bought by the spool or box, so both give the same total.')) : null;
       const differs = Math.abs(toOrder - bom.subtotal) > 0.004;
       const from = arr(lib.suppliers).find((x) => x && x.id === (lib.supplierId || GENERIC));
+      const stray = strayOverrides(project, plan);
+      const strayBlock = stray.length ? h('div', { class: 'bom-stray', 'data-key': 'bom-stray' },
+        h('p', { class: 'hint' }, 'Your own ' + (stray.length === 1 ? 'price for an item that is' : 'prices for items that are') + ' not on the list right now. ' +
+          (stray.length === 1 ? 'It is' : 'They are') + ' kept in case the item comes back:'),
+        h('ul', { class: 'stray-list' }, stray.map((x) => h('li', { 'data-key': 'stray-' + hashKey(x.sku), 'data-sku': x.sku },
+          h('span', { class: 'stray-name' }, x.name), h('span', { class: 'num' }, money(x.price)),
+          button('Reset', { act: 'price-reset', data: { sku: x.sku }, cls: 'small ghost', aria: 'Remove your price for ' + x.name }))))) : null;
       return section('Shopping list', [
         rows.length ? h('p', { class: 'bom-buying', 'data-key': 'bom-buying' }, h('span', null, 'Buying from ', h('strong', null, from ? from.name : 'Any store'), '.'),
           button('Change', { act: 'go-step', data: { step: 4 }, cls: 'small ghost', aria: 'Change who you buy from, in step 4' })) : null,
@@ -1872,6 +1949,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         basis,
         rows.length ? h('p', { class: 'bom-subtotal' }, h('span', null, differs ? 'Subtotal for this job' : 'Subtotal'), h('strong', { class: 'num' }, money(bom.subtotal))) : null,
         rows.length && differs ? h('p', { class: 'bom-subtotal order', 'data-key': 'to-order' }, h('span', null, 'To order'), h('strong', { class: 'num' }, money(toOrder))) : null,
+        strayBlock,
         rows.length ? h('p', { class: 'hint', 'data-key': 'bom-hint' }, bomHint(words ? words.priceSentence(bom.lines) : '')) : null,
       ], { key: 'bom' });
     }
@@ -1983,7 +2061,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           h('div', { class: 'disclosure-body' }, h('ol', { class: 'check-list' }, items)));
       });
       return section('Install checklist', [
-        groups.length ? h('p', { class: 'hint' }, h('span', { class: 'num' }, done + ' of ' + total), ' steps done. Ticks are saved in this browser.') : null,
+        groups.length ? h('p', { class: 'hint', 'data-key': 'ticks-note' }, h('span', { class: 'num' }, done + ' of ' + total),
+          persist.isAvailable() ? ' steps done. Ticks are saved in this browser.' : ' steps done. Ticks last until this page closes: this browser is not saving anything.') : null,
         groups.length ? blocks : h('p', { class: 'hint' }, 'The checklist appears once there are lights and outlets.'),
         done ? h('div', { class: 'btn-row' }, button('Clear ticks', { act: 'check-clear', cls: 'small ghost' })) : null,
       ], { key: 'checklist' });
@@ -2074,6 +2153,18 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       // ---------------------------------------------------------------- handlers
       const P = () => store.project();
       const num = (el) => { const v = parseFloat(String(el.value).replace(',', '.')); return Number.isFinite(v) ? v : null; };
+      /** What the photo itself measures for a tape field (the size before any tape value), or null. */
+      const photoSizeOf = (featureId, fieldName) => {
+        const f = byId(P().features, featureId);
+        const m = f ? store.plan().measured.features[featureId] : null;
+        if (!f || !m || !m.ok) return null;
+        const params = f.params || {};
+        if (fieldName === 'overrideWidthFt') return params.overrideWidthFt ? null : m.widthFt;
+        if (fieldName === 'overrideHeightFt') return params.overrideHeightFt ? null : m.heightFt;
+        const ft = FEATURE_TYPES[f.type] || {};
+        if (ft.geometry === 'vertical') return f.overrideFt ? null : (isNum(m.heightFt) ? m.heightFt : m.measuredFt);
+        return m.measuredFt;
+      };
       const badLength = (el) => {
         actions.toast('"' + el.value + '" is not a length LightPlan understands. Try 32\' 4", 32.3 or 388in.', 'warn');
         schedule();
@@ -2368,8 +2459,23 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           const v = raw ? parseLength(raw) : null;
           if (raw && v == null) { badLength(el); return; }
           const k = el.dataset.field;
-          if (k === 'overrideFt') actions.updateFeature(el.dataset.id, { overrideFt: v });
-          else actions.updateFeature(el.dataset.id, { params: { [k]: v } });
+          const id = el.dataset.id;
+          const apply = () => {
+            if (k === 'overrideFt') actions.updateFeature(id, { overrideFt: v });
+            else actions.updateFeature(id, { params: { [k]: v } });
+          };
+          // A size far from what the photo says is probably a slip (150 for 15.0): ask before it reaches the order.
+          const photo = photoSizeOf(id, k);
+          const off = v == null ? null : tapeMismatch(v, photo);
+          if (off === null || typeof actions.confirm !== 'function') { apply(); return; }
+          const fmt = (ft) => measure.formatLength(ft, P().settings && P().settings.lengthFormat);
+          const times = fmtNum(Math.round(off), 0) + ' times';
+          actions.confirm({
+            title: 'Is ' + fmt(v) + ' right?',
+            body: 'The photo measures about ' + fmt(photo) + ' here, so ' + fmt(v) + ' is ' + (v > photo ? times + ' as much' : 'only one part in ' + fmtNum(Math.round(off), 0) + ' of that') +
+              '. Keep it if the tape says so; otherwise check for a slip of the finger.',
+            confirmLabel: 'Keep ' + fmt(v), cancelLabel: 'Change it',
+          }).then((ok) => { if (ok) apply(); else schedule(); });
         },
         'feature-param': (el) => {
           const v = num(el);
@@ -2431,10 +2537,19 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         'circuit-breaker': (el) => actions.updateCircuit(el.dataset.id, { breakerAmps: Number(el.value) || 15 }),
         'circuit-existing': (el) => { const v = num(el); actions.updateCircuit(el.dataset.id, { existingLoadW: v != null && v >= 0 ? v : 0 }); },
         price: (el) => {
-          const v = num(el);
           if (el.value.trim() === '') { actions.setPriceOverride(el.dataset.sku, null); return; }
-          if (v == null || v < 0) { actions.toast('Enter a price of $0 or more.', 'warn'); schedule(); return; }
+          const v = parseMoney(el.value);
+          if (v == null) {
+            // Put the price that is in the plan back in the field, so what is shown is what is used.
+            const line = arr(store.plan().bom.lines).find((l) => l.sku === el.dataset.sku);
+            actions.toast('"' + el.value.trim().slice(0, 20) + '" is not a price. Type dollars and cents of $0 or more, like 12.50.', 'warn');
+            if (line && isNum(line.unitPrice)) el.value = line.unitPrice.toFixed(2);
+            schedule();
+            return;
+          }
           actions.setPriceOverride(el.dataset.sku, v);
+          // The same price typed again changes nothing in the plan: still show it as dollars and cents.
+          el.value = (Math.round(v * 100) / 100).toFixed(2);
         },
         'quote-toggle': (el) => actions.updateQuote({ enabled: !!el.checked }),
         'quote-text': (el) => actions.updateQuote({ [el.dataset.field]: el.value.slice(0, el.dataset.field === 'notes' ? 2000 : 120) }),
@@ -2499,5 +2614,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       mount, icon, h, morph, pickFile, exportFile, stepWarnings, warningStep, STEPS, validateProducts, diffConfig, ICONS,
       powerVerdict, outletSummaryText, roughList, planProgress, nextAction, runNextAction, lensWords, zoomedOutReason,
       productGroups, productOptionText, productsToSave, bushRuleText, supplierOfUrl, writeClipboard,
+      parseMoney, tapeMismatch, strayOverrides, CALIBRATE_SENTENCE,
     };
   });

@@ -282,7 +282,10 @@ test('describeBulk says what a cut-to-length product is ordered as, its limit an
     assert.match(d.summary, /^Ordered as parts: socket wire by the spool/);
     assert.equal(/ready-made length/.test(d.summary), (c.wire.sizes || []).some((s) => s.plugsIncluded), p.id + ': "ready-made length" only when one is on file');
     assert.ok(d.summary.includes('of ' + c.bulb.packQty + ' by colour'), 'bulbs by the box of ' + c.bulb.packQty);
-    assert.ok(d.summary.includes('a male and a female slide-on plug for every length you cut'));
+    // Plugs are counted for the ends that are cut (review finding D2): the summary no longer promises a pair per length.
+    assert.ok(d.summary.includes('slide-on plugs for the ends you cut'));
+    assert.match(d.summary, /SPT-1 is the thin two-wire cord the sockets and plugs are made for\.$/);
+    assert.equal(d.short, 'Socket wire, bulbs and slide-on plugs, cut to fit each run.');
     assert.ok(d.limit.includes(p.maxRunFt + ' ft') && d.limit.includes(p.maxBulbsPerRun + ' bulbs'), 'the limit of one cord: ' + d.limit);
     assert.match(d.perFoot, /^about \$\d+\.\d\d per ft with bulbs$/);
     // Every part of the kit is listed with its own part number and status.

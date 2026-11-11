@@ -5,7 +5,7 @@
 //                                        blocked storage)
 //   node tests/e2e/smoke.mjs             run against the existing dist/lightplan.html
 //   node tests/e2e/smoke.mjs --only=phone        one pass: phone | desktop | dark | storage | inputs | measure |
-//                                                review | landscape | v11-phone | v11-desktop | sup-phone | sup-desktop
+//                                                review | landscape | v11-phone | v11-desktop | sup-phone | sup-desktop | fixes
 //                                                (storage = localStorage and IndexedDB blocked;
 //                                                inputs = safe share, tax, file version, damaged photo;
 //                                                review = UI review findings on a phone; landscape = 844x390;
@@ -15,7 +15,9 @@
 //                                                -step5-no-jumpers.png and dark-scheme copies of steps 5 and 6;
 //                                                sup-* = suppliers, SPEC 8.3 and 8.5: "Buy from", pickers, part
 //                                                numbers and links, order sheets, cost basis, exports. They write
-//                                                ui-suppliers-<phone|desktop>-step<4|6>-<cle|1000bulbs>*.png)
+//                                                ui-suppliers-<phone|desktop>-step<4|6>-<cle|1000bulbs>*.png;
+//                                                fixes = the Phase 1.1 review findings that show on the page, at
+//                                                390x844, 360x640 and 1280x800 (fixes-*.png))
 //   LP_APP=/path/to/lightplan.html node tests/e2e/smoke.mjs   run against another build
 //   LP_SECTIONS='UX-0[45]' node tests/e2e/smoke.mjs --only=review   run only the matching review sections
 //
@@ -47,7 +49,7 @@ const PASSES = {
 };
 
 const onlyArg = process.argv.find((a) => a.startsWith('--only='));
-const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES).concat('storage', 'inputs', 'measure', 'review', 'landscape', 'v11-phone', 'v11-desktop', 'sup-phone', 'sup-desktop');
+const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES).concat('storage', 'inputs', 'measure', 'review', 'landscape', 'v11-phone', 'v11-desktop', 'sup-phone', 'sup-desktop', 'fixes');
 
 if (!fs.existsSync(APP)) {
   console.error('dist/lightplan.html is missing. Run "node build.js" first (npm run e2e does both).');
@@ -428,6 +430,9 @@ async function runBlockedStorage(browser) {
     // mobile-ux:UX-03 / data-export:F2: a persistent note says nothing is being saved.
     const note = await page.evaluate(() => { const n = document.getElementById('notice'); return n && !n.hidden ? n.innerText : ''; });
     t.ok(/not saving your plan/.test(note), 'a note says the browser is not saving the plan (' + note.slice(0, 50) + ')');
+    // Review finding U15: the checklist does not claim its ticks are saved when nothing can be saved.
+    const ticks = await page.evaluate(() => (document.querySelector('[data-key="ticks-note"]') || {}).textContent || '');
+    t.ok(/Ticks last until this page closes/.test(ticks) && !/saved in this browser/.test(ticks), 'the checklist says its ticks last until the page closes (' + ticks.slice(0, 60) + ')');
     await page.screenshot({ path: path.join(OUT, 'smoke-storage-notice.png') });
   } catch (e) {
     t.ok(false, 'unexpected error: ' + (e && e.message ? e.message.split('\n')[0] : e));
@@ -1388,7 +1393,9 @@ async function runPhase11(browser, name) {
       });
       t.ok(d.cfg && d.cfg.power && d.cfg.power.daisyChain === false && d.jumpers === 0 && d.homeRuns === d.feeds, 'switching "Link nearby runs" off gives every run its own cord (' + d.homeRuns + ' cords, ' + d.jumpers + ' jumpers)');
       t.ok(d.tiles['Jumper cords'] === '0' && d.tiles['Cords to outlets'] === String(d.homeRuns) && d.ownSwitches === 0, 'the tiles follow, and the own-cord switches go away');
-      t.ok(/^One thing to fix first: .*walkway/i.test(d.verdict) && / warn/.test(d.verdictClass), 'the verdict now names what to fix (' + d.verdict.slice(0, 80) + ')');
+      // Review finding U16: the cord to the door lights stops at the jamb, a foot inside the walkway edge. That is not a
+      // walkway crossing, so one cord per run is still a clean plan on the sample.
+      t.ok(/^Good to go/.test(d.verdict) && / ok/.test(d.verdictClass), 'with one cord per run the verdict is still good to go (' + d.verdict.slice(0, 80) + ')');
       t.ok(/^\d+ cords at this outlet feeding \d+ runs · /.test(d.info), 'the outlet card follows (' + d.info + ')');
       await shot('power-flat');
       await page.locator('[data-act="power-daisy"]').evaluate((el) => el.click());
@@ -2087,9 +2094,14 @@ async function runSuppliers(browser, name) {
     const bulkCard = cards.find((c) => c.info && c.info.kind === 'bulk');
     const kit = sup.bulk.find((b) => st.runs.some((r) => r.productId === b.id));
     const listed = kit.parts.filter((x) => x.status !== 'verified').length;
-    t.ok(!!bulkCard && bulkCard.info.supplier === sid && /sold as parts/.test(bulkCard.info.head) && /by the spool/.test(bulkCard.info.head) && bulkCard.info.head.includes('of ' + kit.packQty + ' by colour') &&
-      /a male and a female slide-on plug for every length you cut/.test(bulkCard.info.head) && bulkCard.info.head.includes(kit.maxRunFt + ' ft') && bulkCard.info.head.includes(kit.maxBulbs + ' bulbs'),
-      sid + ': a cut-to-length card says what is ordered (wire, bulbs by the ' + kit.packQty + ', a plug pair per cut) and its limit (' + kit.maxRunFt + ' ft or ' + kit.maxBulbs + ' bulbs)');
+    // What "sold as parts" means is said once, under "C7 and C9 as"; each card keeps one short line.
+    const bulkWhat = await page.evaluate(() => Array.from(document.querySelectorAll('#panel [data-key="bulk-what"]')).map((el) => el.textContent));
+    t.ok(!!bulkCard && bulkCard.info.supplier === sid && /sold as parts/.test(bulkCard.info.head) && /Socket wire, bulbs and slide-on plugs, cut to fit each run\./.test(bulkCard.info.head) &&
+      !/by the spool/.test(bulkCard.info.head),
+      sid + ': a cut-to-length card says in one line what it is (socket wire, bulbs and slide-on plugs, cut to fit each run)');
+    t.ok(bulkWhat.length === 1 && /by the spool/.test(bulkWhat[0]) && bulkWhat[0].includes('of ' + kit.packQty + ' by colour') && /slide-on plugs for the ends you cut/.test(bulkWhat[0]) &&
+      bulkWhat[0].includes(kit.maxRunFt + ' ft') && bulkWhat[0].includes(kit.maxBulbs + ' bulbs'),
+      sid + ': what is ordered (wire, bulbs by the ' + kit.packQty + ', plugs for the cut ends) and the limit (' + kit.maxRunFt + ' ft or ' + kit.maxBulbs + ' bulbs) is said once under "C7 and C9 as" (' + bulkWhat.length + ')');
     t.ok(bulkCard.info.parts.length === kit.parts.length && kit.parts.every((x) => bulkCard.info.parts.some((r) => r.text.includes('part number ' + x.part) && r.status === (x.status === 'verified' ? 'checked' : 'check'))) &&
       bulkCard.info.parts.every((r) => sup.hosts.includes(hostOf(r.href)) && r.copy === 1),
       sid + ': its ' + kit.parts.length + ' parts are listed with part number, status and a link on the supplier\'s site');
@@ -2259,7 +2271,7 @@ async function runSuppliers(browser, name) {
     const cleLines = cle.st.lines.filter((l) => l.supplierId === 'cle');
     t.ok(flat.includes('Shopping list') && flat.includes('Where to buy') && flat.includes('Christmas Lights Etc') && cleLines.every((l) => flat.includes('Part number ' + l.supplierSku)) && !/\bSKU\b/.test(flat),
       'the PDF report\'s materials table shows the supplier and part number of every line');
-    t.ok(flat.includes('Prices were last checked on ' + cle.sup.date + '; confirm at checkout.') && flat.includes('Site: ' + cle.sup.url) && flat.includes('Phone ' + cle.sup.wholesale.phone),
+    t.ok(flat.includes('Supplier prices were last checked on ' + cle.sup.date + '; the other prices are typical store prices. Confirm at checkout.') && flat.includes('Site: ' + cle.sup.url) && flat.includes('Phone ' + cle.sup.wholesale.phone),
       'the report says when prices were last checked and has a "Where to buy" block with the site and phone');
     const pdfLinks = Array.from(pdfBytes.toString('latin1').matchAll(/\/S \/URI \/URI \(([^)]*)\)/g)).map((m) => m[1]);
     t.ok(cleLines.every((l) => pdfLinks.includes(l.url)) && pdfLinks.every((u) => cle.sup.hosts.includes(hostOf(u))), 'every product link is in the PDF as a link (' + pdfLinks.length + ' links, all on the supplier\'s site)');
@@ -2404,6 +2416,403 @@ async function runSuppliers(browser, name) {
   return t;
 }
 
+// ------------------------------------------------------------------ review fixes (UI findings U01 to U18)
+/** A 1500x2000 portrait JPEG of a house whose roof peak is 22% from the top (review finding U03). */
+async function makePortraitJpeg(page) {
+  const file = path.join(OUT, 'fixture-portrait.jpg');
+  const b64 = await page.evaluate(() => {
+    const c = document.createElement('canvas');
+    c.width = 1500; c.height = 2000;
+    const g = c.getContext('2d');
+    g.fillStyle = '#9cc3e6'; g.fillRect(0, 0, 1500, 2000);
+    g.fillStyle = '#6b8f4e'; g.fillRect(0, 1500, 1500, 500);
+    g.fillStyle = '#e9e1cf'; g.fillRect(250, 900, 1000, 620);
+    g.fillStyle = '#7a3b2e'; g.beginPath(); g.moveTo(200, 910); g.lineTo(750, 440); g.lineTo(1300, 910); g.closePath(); g.fill();
+    g.fillStyle = '#5a4030'; g.fillRect(690, 1180, 130, 340);
+    g.fillStyle = '#cfe3f3'; g.fillRect(360, 1060, 200, 170); g.fillRect(940, 1060, 200, 170);
+    return c.toDataURL('image/jpeg', 0.9).split(',')[1];
+  });
+  fs.writeFileSync(file, Buffer.from(b64, 'base64'));
+  return file;
+}
+
+async function runFixes(browser) {
+  const t = new Check('fixes');
+  const only = process.env.LP_SECTIONS ? new RegExp(process.env.LP_SECTIONS) : null;
+  /** One page of the given size on the sample house, with the helpers every section uses. */
+  const open = async (viewport, touch, extra) => {
+    const context = await browser.newContext(Object.assign({ viewport, isMobile: touch, hasTouch: touch, colorScheme: 'light', deviceScaleFactor: 1, acceptDownloads: true, reducedMotion: 'reduce' }, extra || {}));
+    await context.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push('page error: ' + e.message));
+    page.on('console', (m) => { if (m.type() === 'error') errors.push('console error: ' + m.text()); });
+    await page.goto(URL);
+    await waitForApp(page);
+    const tag = viewport.width + 'x' + viewport.height;
+    return {
+      context, page, errors, tag,
+      shot: (label) => page.screenshot({ path: path.join(OUT, 'fixes-' + tag + '-' + label + '.png') }),
+      goStep: async (n) => { await page.click('button.step[data-step="' + n + '"]'); await sleep(350); },
+      reset: () => page.evaluate(() => { const a = window.LightPlanApp.actions; a.cancelDraft(); a.select(null); window.LightPlanApp.store.setUI({ dialog: null, toast: null }); }).catch(() => {}),
+    };
+  };
+  const sec = async (env, title, fn) => {
+    if (only && !only.test(title)) return;
+    try { await env.reset(); await fn(); } catch (e) {
+      t.ok(false, title + ': unexpected error: ' + (e && e.message ? e.message.split('\n')[0] : e));
+      await env.shot('error-' + title.replace(/[^a-z0-9]+/gi, '-').slice(0, 30)).catch(() => {});
+    }
+  };
+  /** Where the photo and the hint bar are on the page, and what a tap at an image point would hit. */
+  const photoVsHint = (page, pt) => page.evaluate((p) => {
+    const vp = window.LightPlanApp.viewport;
+    const c = document.querySelector('#viewport canvas');
+    const cr = c.getBoundingClientRect();
+    const img = window.LightPlanApp.store.project().images[0];
+    const top = cr.top + vp.imageToScreen([0, 0])[1], bottom = cr.top + vp.imageToScreen([0, img.height])[1];
+    const hb = document.getElementById('hintbar').getBoundingClientRect();
+    const s = vp.imageToScreen(p);
+    const hit = document.elementFromPoint(cr.left + s[0], cr.top + s[1]);
+    const cancel = document.getElementById('hint-cancel').getBoundingClientRect();
+    return { photoTop: top, photoBottom: bottom, hintTop: hb.top, hintBottom: hb.bottom, hintH: hb.height, x: cr.left + s[0], y: cr.top + s[1], onCanvas: hit === c, cancelTop: cancel.top };
+  }, pt);
+
+  // ================================================================ phone 390x844
+  console.log('\n== review fixes 390x844');
+  let env = await open({ width: 390, height: 844 }, true);
+  let page = env.page;
+  const act = (fn, arg) => page.evaluate(fn, arg);
+
+  await sec(env, 'U02 bush tape fields', async () => {
+    await env.goStep(6);
+    const before = await act(() => {
+      const more = document.querySelector('[data-key="rough-more"]');
+      if (more) more.open = true;
+      const items = Array.from(document.querySelectorAll('.rough-item'));
+      const bush = items.find((li) => li.querySelector('[data-field="overrideWidthFt"]'));
+      return { count: items.length, id: bush ? bush.getAttribute('data-key').replace('rough-', '') : null, heading: document.querySelector('[data-key="rough"] .sec-title').textContent };
+    });
+    t.ok(!!before.id && before.count >= 2, 'U02: the sample lists a bush among its ' + before.count + ' measurements to double-check');
+    const row = '[data-key="rough-' + before.id + '"]';
+    await page.locator(row + ' [data-field="overrideWidthFt"]').scrollIntoViewIfNeeded();
+    await page.locator(row + ' [data-field="overrideWidthFt"]').fill('4.5');
+    await page.keyboard.press('Tab');
+    await sleep(500);
+    const mid = await act((sel) => {
+      const li = document.querySelector(sel);
+      const a = document.activeElement;
+      const s = window.LightPlanApp.store;
+      return {
+        there: !!li, count: document.querySelectorAll('.rough-item').length, heading: document.querySelector('[data-key="rough"] .sec-title').textContent,
+        focusField: a && a.dataset ? a.dataset.field : null, focusInRow: !!(li && a && li.contains(a)),
+        width: li ? li.querySelector('[data-field="overrideWidthFt"]').value : null, text: li ? li.querySelector('.rough-text').textContent : '',
+        badge: (document.querySelector('button.step[data-step="3"] .step-badge') || {}).textContent,
+        stored: s.project().features.find((f) => 'rough-' + f.id === sel.slice(11, -2)).params.overrideWidthFt,
+      };
+    }, row);
+    t.ok(mid.there && mid.count === before.count && mid.heading === before.heading, 'U02: after typing only the width the bush row is still there and still counted (' + mid.heading + ')');
+    t.ok(mid.focusInRow && mid.focusField === 'overrideHeightFt', 'U02: Tab moves to the Tape height field of the same bush (focus on ' + mid.focusField + ')');
+    t.ok(mid.stored === 4.5 && /4/.test(mid.width) && /measure the height too/.test(mid.text), 'U02: the typed width shows in its field and the row asks for the height ("' + mid.text.slice(0, 70) + '")');
+    await page.keyboard.type('3');
+    await page.keyboard.press('Tab');
+    await sleep(500);
+    const after = await act((sel) => ({ there: !!document.querySelector(sel), count: document.querySelectorAll('.rough-item').length }), row);
+    t.ok(!after.there && after.count === before.count - 1, 'U02: with both sizes typed the bush is checked and leaves the list (' + before.count + ' → ' + after.count + ')');
+    await act(() => { window.LightPlanApp.store.undo(); window.LightPlanApp.store.undo(); });
+  });
+
+  await sec(env, 'U04 U08 cost basis', async () => {
+    await env.goStep(4);
+    await page.locator('[data-act="supplier"][data-id="cle"]').evaluate((el) => el.click());
+    await sleep(400);
+    await env.goStep(6);
+    const base = await act(() => { const b = window.LightPlanApp.store.plan().bom; return { subtotal: b.subtotal, order: b.orderTotal, lines: b.lines.map((l) => l.sku + 'x' + l.qty).join('|') }; });
+    await page.locator('[data-act="quote-toggle"]').evaluate((el) => el.click());
+    await sleep(400);
+    await page.locator('[data-act="cost-basis"][data-basis="used"]').evaluate((el) => el.click());
+    await sleep(500);
+    const used = await act(() => {
+      const b = window.LightPlanApp.store.plan().bom;
+      return { basis: b.costBasis, subtotal: b.subtotal, order: b.orderTotal, lines: b.lines.map((l) => l.sku + 'x' + l.qty).join('|'),
+        toOrder: (document.querySelector('[data-key="to-order"] strong') || {}).textContent, spool: /1,000 ft spool/.test(document.querySelector('.bom-list').textContent),
+        sub: document.querySelector('[data-act="cost-basis"][data-basis="used"]').textContent };
+    });
+    t.ok(used.basis === 'used' && used.subtotal < base.subtotal && used.order === base.subtotal && used.lines === base.lines && !used.spool,
+      'U08: "Only what is used" lowers what the job is charged ($' + used.subtotal + ') and leaves the order as it was ($' + used.order + ', no 1,000 ft spool)');
+    t.ok(/The order stays the same/.test(used.sub) && used.toOrder === '$' + base.subtotal.toLocaleString('en-US', { minimumFractionDigits: 2 }), 'U08: the choice says the order stays the same, and "To order" shows it (' + used.toOrder + ')');
+    await page.locator('[data-act="quote-toggle"]').evaluate((el) => el.click());
+    await sleep(500);
+    const off = await act(() => {
+      const s = window.LightPlanApp.store; const b = s.plan().bom;
+      return { basis: b.costBasis, subtotal: b.subtotal, stored: (s.project().library.config || {}).buying, toOrder: !!document.querySelector('[data-key="to-order"]'),
+        shown: document.querySelector('.bom-subtotal strong').textContent, tile: document.querySelector('[data-key="cost-tile"] .tile-value').textContent, switches: document.querySelectorAll('[data-act="cost-basis"]').length };
+    });
+    t.ok(off.basis === 'bought' && off.subtotal === base.subtotal && !off.toOrder && off.switches === 0,
+      'U04: with installer mode off again the list is priced as everything ordered ($' + off.subtotal + '), whatever basis is stored (' + JSON.stringify(off.stored) + ')');
+    t.ok(off.shown === off.tile && off.tile === '$' + base.subtotal.toLocaleString('en-US', { minimumFractionDigits: 2 }), 'U04: the subtotal and the cost tile agree (' + off.tile + ')');
+    await env.shot('step6-homeowner');
+  });
+
+  await sec(env, 'U17 price and tape inputs', async () => {
+    await env.goStep(6);
+    const first = await act(() => { const el = document.querySelector('.bom-row [data-act="price"]'); return { sku: el.dataset.sku, value: el.value, type: el.type }; });
+    t.ok(/^\d+\.\d\d$/.test(first.value), 'U17: a unit price shows dollars and cents (' + first.value + ')');
+    const field = '.bom-row [data-act="price"][data-sku="' + first.sku + '"]';
+    await page.locator(field).fill('12,50');
+    await page.keyboard.press('Tab');
+    await sleep(400);
+    const comma = await act((sku) => ({ ov: window.LightPlanApp.store.project().pricing.overrides[sku], value: document.querySelector('.bom-row [data-act="price"][data-sku="' + sku + '"]').value }), first.sku);
+    t.ok(comma.ov === 12.5 && comma.value === '12.50', 'U17: "12,50" is read as $12.50 (' + comma.value + ')');
+    await page.locator(field).fill('-5');
+    await page.keyboard.press('Tab');
+    await sleep(400);
+    const neg = await act((sku) => ({ ov: window.LightPlanApp.store.project().pricing.overrides[sku], value: document.querySelector('.bom-row [data-act="price"][data-sku="' + sku + '"]').value, toast: (document.querySelector('.toast p') || {}).textContent || '' }), first.sku);
+    t.ok(neg.ov === 12.5 && neg.value === '12.50' && /is not a price/.test(neg.toast), 'U17: "-5" is refused with a message and the field goes back to the price in use (' + neg.value + ')');
+    await page.locator(field).fill('$1000');
+    await page.keyboard.press('Tab');
+    await sleep(600);
+    const stray = await act((sku) => {
+      const s = window.LightPlanApp.store;
+      const onList = s.plan().bom.lines.some((l) => l.sku === sku);
+      const li = document.querySelector('.bom-stray li[data-sku="' + sku + '"]');
+      return { onList, ov: s.project().pricing.overrides[sku], shown: li ? li.textContent : '', reset: !!(li && li.querySelector('[data-act="price-reset"]')) };
+    }, first.sku);
+    t.ok(stray.ov === 1000 && (stray.onList || (stray.reset && /\$1,000\.00/.test(stray.shown))), 'U17: a price of $1,000 that drops its item off the list is still shown, with a Reset (' + (stray.onList ? 'item still listed' : stray.shown.slice(0, 60)) + ')');
+    if (!stray.onList) {
+      await page.locator('.bom-stray li[data-sku="' + first.sku + '"] [data-act="price-reset"]').evaluate((el) => el.click());
+      await sleep(400);
+      const gone = await act((sku) => ({ ov: window.LightPlanApp.store.project().pricing.overrides[sku], block: !!document.querySelector('.bom-stray') }), first.sku);
+      t.ok(gone.ov === undefined && !gone.block, 'U17: Reset removes that price and the note');
+    } else await act((sku) => window.LightPlanApp.actions.setPriceOverride(sku, null), first.sku);
+    // A tape length far from the photo's estimate is asked about before it is used.
+    const rough = await act(() => {
+      const more = document.querySelector('[data-key="rough-more"]');
+      if (more) more.open = true;
+      const li = Array.from(document.querySelectorAll('.rough-item')).find((x) => x.querySelector('[data-field="overrideFt"]'));
+      return li ? li.getAttribute('data-key').replace('rough-', '') : null;
+    });
+    if (t.ok(!!rough, 'U17: there is a rough length to type a tape value for')) {
+      const tape = '[data-key="rough-' + rough + '"] [data-field="overrideFt"]';
+      await page.locator(tape).scrollIntoViewIfNeeded();
+      await page.locator(tape).fill('1000');
+      await page.keyboard.press('Tab');
+      await sleep(500);
+      const dlg = await act((id) => ({ open: !document.getElementById('dialog-backdrop').hidden, title: document.getElementById('dialog-title').textContent, body: document.getElementById('dialog-body').textContent,
+        confirm: document.getElementById('dialog-confirm').textContent, cancel: document.getElementById('dialog-cancel').textContent, stored: window.LightPlanApp.store.project().features.find((f) => f.id === id).overrideFt }), rough);
+      t.ok(dlg.open && /^Is 1,?000/.test(dlg.title) && /times as much/.test(dlg.body) && dlg.stored == null, 'U17: 1000 ft on a short item asks "' + dlg.title + '" before it is used (' + dlg.body.slice(0, 70) + ')');
+      await page.click('#dialog-cancel');
+      await sleep(400);
+      const kept = await act((id) => ({ stored: window.LightPlanApp.store.project().features.find((f) => f.id === id).overrideFt, value: document.querySelector('[data-key="rough-' + id + '"] [data-field="overrideFt"]').value }), rough);
+      t.ok(kept.stored == null && kept.value === '', 'U17: "Change it" leaves the photo\'s measurement in the plan and clears the field');
+    }
+  });
+
+  await sec(env, 'U10 U11 design step', async () => {
+    await env.goStep(4);
+    const d = await act(() => {
+      const text = document.getElementById('panel-root').textContent;
+      const names = Array.from(document.querySelectorAll('.run-product')).map((el) => ({ text: el.textContent, clipped: el.scrollWidth > el.clientWidth + 1 }));
+      const runs = window.LightPlanApp.store.plan().runs;
+      const clips = Array.from(document.querySelectorAll('[data-act="run-mount"]')).map((el) => ({ label: el.options[el.selectedIndex].textContent, w: el.getBoundingClientRect().width }));
+      const parts = Array.from(document.querySelectorAll('.prod-info .disclosure > summary')).map((el) => el.getBoundingClientRect().height);
+      return { once: text.split('Ordered as parts').length - 1, soldAs: text.split('Socket wire, bulbs and slide-on plugs, cut to fit each run.').length - 1, names, runs: runs.map((r) => r.productName), clips, parts, panelW: document.getElementById('panel-root').clientWidth };
+    });
+    t.ok(d.once === 1 && d.soldAs >= 5, 'U10: the long "Ordered as parts" explanation is said once, under "C7 and C9 as"; each run card has the short line (' + d.soldAs + ' cards)');
+    t.ok(d.names.length === d.runs.length && d.names.every((n, i) => n.text === d.runs[i] && !n.clipped), 'U10: every run card writes its product out in full under the picker ("' + (d.names[0] || {}).text + '")');
+    t.ok(d.clips.length >= 5 && d.clips.every((c) => /^Auto: /.test(c.label) && c.w > d.panelW * 0.7), 'U10: Clips is a full-width row and reads "' + d.clips[0].label + '" (' + Math.round(d.clips[0].w) + ' px)');
+    t.ok(d.parts.length >= 5 && d.parts.every((h) => h >= 44), 'U11: "Parts and part numbers" is ' + Math.round(Math.min(...d.parts)) + ' px tall or more');
+    await env.goStep(5);
+    const sw = await act(() => Array.from(document.querySelectorAll('.switch.slim')).map((el) => el.getBoundingClientRect().height));
+    t.ok(sw.length >= 3 && sw.every((h) => h >= 44), 'U11: "Give this run its own cord" is ' + Math.round(Math.min(...sw)) + ' px tall or more (' + sw.length + ' switches)');
+  });
+
+  await sec(env, 'U06 U12 U16 power step', async () => {
+    await env.goStep(5);
+    const p = await act(() => {
+      const root = document.getElementById('panel-root');
+      const legend = root.querySelector('.legend').textContent;
+      const tiles = {};
+      root.querySelectorAll('[data-key="counts"] .tile').forEach((el) => { tiles[el.querySelector('.tile-label').textContent] = (el.querySelector('.tile-sub') || {}).textContent || ''; });
+      const vp = window.LightPlanApp.viewport;
+      const M = LP.require('ui.viewport');
+      const feeds = window.LightPlanApp.store.plan().power.feeds.filter((f) => f.cord);
+      const paths = feeds.map((f) => f.cordPath.map((q) => vp.imageToScreen(q)));
+      const boxes = vp.labelBoxes().filter((b) => b.anchored && / (cord|jumper)$/.test(b.text));
+      let crossed = 0;
+      for (const b of boxes) for (const S of paths) if (M.pathHitsBox(S, b, 0)) crossed += 1;
+      return { legend, stakes: tiles['Power stakes'], gauge: (root.querySelector('[data-key="gauge-note"]') || {}).textContent || '', labels: boxes.length, crossed };
+    });
+    t.ok(/plugs straight in \(no cord\)/.test(p.legend), 'U06: the legend explains the dotted line (plugs straight in)');
+    t.ok(/ground stakes with 3 outlets/.test(p.stakes) && /16-gauge is the usual light outdoor extension cord/.test(p.gauge), 'U12: power stakes and the cord gauge are explained in a few words');
+    t.ok(p.labels >= 1 && p.crossed === 0, 'U16: none of the ' + p.labels + ' cord labels on the photo lies across a cord');
+    await page.locator('[data-act="power-daisy"]').evaluate((el) => el.click());
+    await sleep(500);
+    const off = await act(() => ({ hint: document.querySelector('[data-key="feeds"] .hint').textContent, verdict: document.querySelector('[data-key="verdict"]').textContent.trim(), covers: window.LightPlanApp.store.plan().power.counts.cordCovers }));
+    t.ok(/every run, or set of runs joined end to end, gets its own cord/.test(off.hint), 'U16: with jumpers off the text says every run or joined set of runs gets its own cord');
+    t.ok(/^Good to go/.test(off.verdict) && off.covers === 0, 'U16: the cord that stops at the door jamb needs no cord cover (' + off.verdict.slice(0, 50) + ')');
+    await page.locator('[data-act="power-daisy"]').evaluate((el) => el.click());
+    await sleep(400);
+  });
+
+  await sec(env, 'U09 messages on a phone', async () => {
+    await env.goStep(2);
+    await act(() => { const a = window.LightPlanApp.actions; a.setSheet('full'); a.toast('Photo added. You are now on step 2: set the scale by marking something whose size you know.', 'ok'); });
+    await sleep(600);
+    const full = await act(() => {
+      const toast = document.querySelector('.toast');
+      const r = toast.getBoundingClientRect();
+      const inside = (x, y) => { const el = document.elementFromPoint(x, y); return !!el && toast.contains(el); };
+      const banner = document.getElementById('sample-banner');
+      const br = banner.hidden ? null : banner.getBoundingClientRect();
+      const bannerSeen = br ? (() => { const el = document.elementFromPoint(br.left + 20, br.bottom - 3); return !!el && banner.contains(el); })() : null;
+      return { top: r.top, bottom: r.bottom, h: r.height, whole: inside(r.left + r.width / 2, r.top + 3) && inside(r.left + r.width / 2, r.bottom - 3) && inside(r.left + 20, r.top + r.height / 2),
+        overBanner: br ? !(r.bottom <= br.top + 1 || r.top >= br.bottom - 1) : false, bannerSeen, sheetTop: document.getElementById('panel').getBoundingClientRect().top };
+    });
+    t.ok(full.whole && full.h > 40, 'U09: with the sheet raised a three-line message is shown whole, on top of the sheet (' + Math.round(full.top) + ' to ' + Math.round(full.bottom) + ' px, sheet from ' + Math.round(full.sheetTop) + ')');
+    t.ok(!full.overBanner && full.bannerSeen !== false, 'U09: the message sits under the sample note, and the note is not cut off by the sheet');
+    await env.shot('toast-full-sheet');
+    // A message that is showing when a tool is picked makes way for the hint bar instead of jumping to the bottom.
+    await act(() => { const a = window.LightPlanApp.actions; a.setSheet('half'); a.toast('Photo added. You are now on step 2.', 'ok'); });
+    await sleep(300);
+    await act(() => window.LightPlanApp.actions.startTrace('roofline'));
+    await sleep(600);
+    const tool = await act(() => ({ toast: !!document.querySelector('.toast'), hint: !document.getElementById('hintbar').hidden }));
+    t.ok(!tool.toast && tool.hint, 'U09: picking a tool clears the earlier message; the hint bar takes over');
+    await act(() => window.LightPlanApp.actions.toast('Tap a little closer to the corner.', 'warn'));
+    await sleep(400);
+    const low = await act(() => { const r = document.querySelector('.toast').getBoundingClientRect(); const hb = document.getElementById('hintbar').getBoundingClientRect(); const st = document.getElementById('stage').getBoundingClientRect(); return { top: r.top, bottom: r.bottom, hintBottom: hb.bottom, stageBottom: st.bottom }; });
+    t.ok(low.top > low.hintBottom + 20 && low.bottom <= low.stageBottom, 'U09: a message raised while tracing sits at the bottom of the photo, clear of the hint bar');
+    await act(() => window.LightPlanApp.actions.cancelDraft());
+  });
+
+  await sec(env, 'U07 older file', async () => {
+    // A file whose saved totals differ from what the plan comes to now (as one saved by an older LightPlan does).
+    const file = path.join(OUT, 'fixture-older-plan.json');
+    const made = await act(() => {
+      const s = window.LightPlanApp.store;
+      const schema = LP.require('schema');
+      const now = s.plan().summary.cost;
+      return { json: JSON.stringify(schema.exportProject(s.project(), { summary: { cost: 1131.29, quoteTotal: null } }, {}, null)), now };
+    });
+    fs.writeFileSync(file, made.json);
+    await chooseFile(page, async () => { await page.click('#btn-menu'); await page.click('[data-menu="open"]'); }, file);
+    await sleep(1500);
+    const n = await act(() => { const el = document.getElementById('notice'); return { shown: !el.hidden, text: document.getElementById('notice-text').textContent, cost: window.LightPlanApp.store.plan().summary.cost, close: !document.getElementById('notice-close').hidden }; });
+    t.ok(n.shown && /materials were \$1,131\.29, now \$/.test(n.text) && n.text.includes(n.cost.toLocaleString('en-US', { minimumFractionDigits: 2 })) && n.close,
+      'U07: opening a file whose totals have moved says so in a note that stays (' + n.text.slice(0, 120) + ')');
+    await env.shot('older-file-note');
+    await page.click('#notice-close');
+    await sleep(300);
+    // The same plan saved now opens without the note.
+    const fresh = path.join(OUT, 'fixture-current-plan.json');
+    fs.writeFileSync(fresh, await act(() => { const s = window.LightPlanApp.store; return JSON.stringify(LP.require('schema').exportProject(s.project(), s.plan(), {}, null)); }));
+    await chooseFile(page, async () => { await page.click('#btn-menu'); await page.click('[data-menu="open"]'); }, fresh);
+    await sleep(1500);
+    t.ok(await act(() => document.getElementById('notice').hidden), 'U07: a file saved by this version opens without that note');
+  });
+
+  await sec(env, 'U03 U18 portrait photo', async () => {
+    const photo = await makePortraitJpeg(page);
+    await chooseFile(page, async () => { await page.click('#btn-menu'); await page.click('[data-menu="new-photo"]'); }, photo);
+    await page.waitForFunction(() => { const s = window.LightPlanApp.store; const im = s.project().images[0]; return im && im.width === 1500 && s.ui().step === 2 && !s.ui().busy; }, null, { timeout: 15000 });
+    await sleep(700);
+    const intro = await act(() => ({ lead: document.querySelector('#panel-root .lead').textContent, btn: document.getElementById('action-btn').textContent.trim() }));
+    t.ok(/^Tap the four corners of this wall, then one thing on it whose size you know/.test(intro.lead) && intro.btn === 'Mark the 4 corners', 'U18: the intro says to tap the wall\'s corners, which is what "' + intro.btn + '" starts');
+    await page.click('#action-btn');
+    await sleep(700);
+    const rect = await photoVsHint(page, [750, 440]);
+    t.ok(rect.photoTop >= rect.hintBottom - 1, 'U03: while marking corners the photo starts below the hint bar (photo from ' + Math.round(rect.photoTop) + ', bar to ' + Math.round(rect.hintBottom) + ')');
+    await act(() => window.LightPlanApp.actions.cancelDraft());
+    await sleep(300);
+    await act(() => window.LightPlanApp.actions.startTrace('roofline'));
+    await sleep(800);
+    const a = await photoVsHint(page, [750, 440]);
+    t.ok(a.photoTop >= a.hintBottom - 1 && a.onCanvas, 'U03: while tracing the roofline the photo sits under the hint bar and the roof peak can be tapped (photo from ' + Math.round(a.photoTop) + ', bar to ' + Math.round(a.hintBottom) + ')');
+    await env.shot('portrait-trace');
+    const left = await photoVsHint(page, [200, 910]);
+    await page.touchscreen.tap(left.x, left.y);
+    await sleep(500);
+    const b = await photoVsHint(page, [750, 440]);
+    t.ok(Math.abs(b.hintH - a.hintH) < 2 && Math.abs(b.cancelTop - a.cancelTop) < 2, 'U03: the hint bar keeps its height when the first point is placed (' + Math.round(a.hintH) + ' → ' + Math.round(b.hintH) + ' px)');
+    await page.touchscreen.tap(b.x, b.y);
+    await sleep(500);
+    const st = await act(() => { const u = window.LightPlanApp.store.ui(); return { mode: u.mode.name, pts: u.draft && u.draft.points ? u.draft.points.length : 0 }; });
+    t.ok(st.mode === 'trace' && st.pts === 2 && b.onCanvas, 'U03: a tap on the roof peak adds a point (' + st.pts + ' points, still tracing), not a press on Cancel');
+    await act(() => window.LightPlanApp.actions.cancelDraft());
+  });
+  t.ok(env.errors.length === 0, 'no console or page errors at 390x844' + (env.errors.length ? ': ' + env.errors.slice(0, 4).join(' | ') : ''));
+  await env.context.close();
+
+  // ================================================================ small phone 360x640
+  console.log('\n== review fixes 360x640');
+  env = await open({ width: 360, height: 640 }, true);
+  page = env.page;
+  await sec(env, 'U13 step bar', async () => {
+    const labels = await page.evaluate(() => Array.from(document.querySelectorAll('.step-label')).map((el) => ({ text: el.textContent, cut: el.scrollWidth > el.clientWidth + 0.5, w: el.getBoundingClientRect().width })));
+    t.ok(labels.length === 6 && labels.every((l) => !l.cut), 'U13: every step name is whole at 360 px (' + labels.map((l) => l.text + (l.cut ? '…' : '')).join(', ') + ')');
+    const scroll = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
+    t.ok(scroll, 'U13: no sideways scroll at 360 px');
+    await env.shot('stepbar');
+  });
+  await sec(env, 'U03 small phone', async () => {
+    await env.goStep(3);
+    await page.evaluate(() => window.LightPlanApp.actions.startTrace('roofline'));
+    await sleep(900);
+    const a = await photoVsHint(page, [600, 300]);
+    t.ok(a.photoTop >= a.hintBottom - 1, 'U03: on a 360x640 phone the fitted sample photo sits under the hint bar while tracing (photo from ' + Math.round(a.photoTop) + ', bar to ' + Math.round(a.hintBottom) + ')');
+    await env.shot('trace');
+    await page.evaluate(() => window.LightPlanApp.actions.cancelDraft());
+    await sleep(600);
+    const fit = await page.evaluate(() => { const vp = window.LightPlanApp.viewport; return { ins: vp.getInsets(), top: vp.imageToScreen([0, 0])[1] }; });
+    t.ok(fit.ins.top === 0 && fit.ins.bottom === 0, 'U03: with the tool closed the photo has the whole view again');
+  });
+  t.ok(env.errors.length === 0, 'no console or page errors at 360x640' + (env.errors.length ? ': ' + env.errors.slice(0, 4).join(' | ') : ''));
+  await env.context.close();
+
+  // ================================================================ desktop 1280x800
+  console.log('\n== review fixes 1280x800');
+  env = await open({ width: 1280, height: 800 }, false);
+  page = env.page;
+  await sec(env, 'U09 message and the sample note', async () => {
+    await page.evaluate(() => window.LightPlanApp.actions.toast('Installer mode is off. The shopping list shows everything to order.', 'info'));
+    await sleep(500);
+    const r = await page.evaluate(() => {
+      const banner = document.getElementById('sample-banner');
+      const toast = document.querySelector('.toast');
+      const a = banner.getBoundingClientRect(), b = toast.getBoundingClientRect();
+      const stage = document.getElementById('stage').getBoundingClientRect();
+      return { bannerShown: !banner.hidden && a.height > 0, overlap: a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom, toastTop: b.top, bannerBottom: a.bottom, inStage: b.right <= stage.right && b.left >= stage.left };
+    });
+    t.ok(r.bannerShown && !r.overlap && r.toastTop >= r.bannerBottom, 'U09: a message is stacked under the sample note, not on top of it (note to ' + Math.round(r.bannerBottom) + ', message from ' + Math.round(r.toastTop) + ')');
+    t.ok(r.inStage, 'U09: the message stays over the photo, clear of the panel');
+    await env.shot('toast-under-banner');
+  });
+  await sec(env, 'U01 colours at a supplier', async () => {
+    await env.goStep(4);
+    await page.locator('[data-act="supplier"][data-id="cle"]').evaluate((el) => el.click());
+    await sleep(300);
+    await page.locator('[data-act="buy-style"][data-style="strings"]').evaluate((el) => el.click());
+    await sleep(300);
+    await page.locator('[data-act="color-mode"][data-mode="multicolor"]').evaluate((el) => el.click());
+    await sleep(500);
+    const d = await page.evaluate(() => {
+      const s = window.LightPlanApp.store; const plan = s.plan();
+      const autos = Array.from(document.querySelectorAll('[data-act="run-product"]')).map((el) => el.options[0].textContent);
+      return { bad: plan.bom.lines.filter((l) => l.supplierSku && / - Multicolor/.test(l.name)).map((l) => l.supplierSku), warn: plan.warnings.filter((w) => /is not sold in/.test(w.message)).length,
+        autos, products: Array.from(new Set(plan.runs.map((r) => r.productId))) };
+    });
+    t.ok(d.bad.length === 0 && d.warn === 0, 'U01: in Multicolor no shopping-list line pairs the colour with a supplier part number, and no run warns about a product it did not pick');
+    t.ok(d.autos.every((a) => !/OptiCore LED string|70 bulbs, 4 in apart/.test(a)) && d.products.includes('c9-led') && d.products.includes('mini-led-100'), 'U01: "Auto" names the any-store product the planner really uses (' + d.autos[0] + ')');
+    await env.goStep(6);
+    const sheet = await page.evaluate(() => Array.from(document.querySelectorAll('.order-card[data-supplier="cle"] .order-line')).map((li) => li.textContent).join(' | '));
+    t.ok(!/77667|83768/.test(sheet), 'U01: the Christmas Lights Etc order sheet has no warm-white string part number');
+  });
+  t.ok(env.errors.length === 0, 'no console or page errors at 1280x800' + (env.errors.length ? ': ' + env.errors.slice(0, 4).join(' | ') : ''));
+  await env.context.close();
+  return t;
+}
+
 // ------------------------------------------------------------------ main
 
 const browser = await chromium.launch();
@@ -2416,6 +2825,7 @@ for (const name of selected) {
   if (name === 'measure') { results.push(await runMeasureChecks(browser)); continue; }
   if (name === 'v11-phone' || name === 'v11-desktop') { results.push(await runPhase11(browser, name)); continue; }
   if (name === 'sup-phone' || name === 'sup-desktop') { results.push(await runSuppliers(browser, name)); continue; }
+  if (name === 'fixes') { results.push(await runFixes(browser)); continue; }
   if (!PASSES[name]) { console.error('unknown pass ' + name); process.exitCode = 2; continue; }
   results.push(await runPass(browser, name));
 }

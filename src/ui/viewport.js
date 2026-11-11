@@ -381,6 +381,17 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     return { visible, alts };
   }
 
+  /** Does the polyline S (CSS px) pass through the box {x, y, w, h} grown by `pad` px on every side? */
+  function pathHitsBox(S, box, pad) {
+    const p = pad || 0;
+    const x = box.x - p, y = box.y - p, w = box.w + 2 * p, h = box.h + 2 * p;
+    for (let i = 0; i + 1 < S.length; i++) {
+      const c = clipSegment([S[i][0] - x, S[i][1] - y], [S[i + 1][0] - x, S[i + 1][1] - y], w, h);
+      if (c && Math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1]) > 0.5) return true;
+    }
+    return false;
+  }
+
   function isTypingTarget(el) {
     if (!el || !el.tagName) return false;
     if (el.isContentEditable) return true;
@@ -409,6 +420,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     const loupeCtx = loupeCanvas.getContext('2d');
 
     const view = { scale: 1, tx: 0, ty: 0, cssW: 0, cssH: 0, dpr: 1, fitted: true, imageKey: null, pendingFit: true, imgW: 0, imgH: 0 };
+    const insets = { top: 0, bottom: 0 };  // canvas CSS px covered by the hint bar (top) and the view buttons (bottom)
     const pointers = new Map();     // pointerId → {x, y, type}
     let drag = null;                // {type:'pending'|'pan'|'handle'|'pinch', ...}
     let hover = null;               // {img (snapped), snap, raw} while placing, or null
@@ -463,15 +475,38 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       view.tx = clamp(view.tx, mx - iw, view.cssW - mx);
       view.ty = clamp(view.ty, my - ih, view.cssH - my);
     }
+    /**
+     * The part of the canvas the photo is fitted into: below whatever the page floats over its top (the hint bar
+     * while a tool is in use) and above what it floats over its bottom (the view buttons). The insets are ignored
+     * when they would leave less than a third of the canvas.
+     */
+    function freeArea() {
+      const top = clamp(insets.top, 0, view.cssH), bottom = clamp(insets.bottom, 0, view.cssH);
+      const h = view.cssH - top - bottom;
+      return h >= Math.max(120, view.cssH / 3) ? { top, h } : { top: 0, h: view.cssH };
+    }
     function fit() {
       if (!(view.cssW > 0 && view.cssH > 0) || !(view.imgW > 0 && view.imgH > 0)) { view.pendingFit = true; requestRedraw(); return; }
-      const s = fitScaleFor(view.cssW, view.cssH) * FIT_MARGIN;
+      const area = freeArea();
+      const s = fitScaleFor(view.cssW, area.h) * FIT_MARGIN;
       view.scale = s;
       view.tx = (view.cssW - view.imgW * s) / 2;
-      view.ty = (view.cssH - view.imgH * s) / 2;
+      view.ty = area.top + (area.h - view.imgH * s) / 2;
       view.fitted = true;
       view.pendingFit = false;
       requestRedraw();
+    }
+    /**
+     * Tell the viewport how much of the canvas the page covers at the top and bottom ({top, bottom}, CSS px).
+     * A photo that is still at its fitted size moves into the free part; one the user has zoomed or moved stays.
+     */
+    function setInsets(v) {
+      const top = isObj(v) && isNum(v.top) && v.top > 0 ? Math.round(v.top) : 0;
+      const bottom = isObj(v) && isNum(v.bottom) && v.bottom > 0 ? Math.round(v.bottom) : 0;
+      if (Math.abs(top - insets.top) < 2 && Math.abs(bottom - insets.bottom) < 2) return false;
+      insets.top = top; insets.bottom = bottom;
+      if (view.fitted || view.pendingFit) fit();
+      return true;
     }
     function syncImage() {
       const prj = project();
@@ -1535,6 +1570,12 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       // Cords, in the colour of their outlet's circuit. A cord from an outlet is a solid line; a jumper cord (run to
       // run) is thinner and dashed. The pieces lying on the ground are drawn a little heavier than the risers.
       const plugIns = [];
+      // Every cord on screen, so that a label is put beside its own cord and never across another one.
+      const drawnCords = [];
+      for (const feed of arr(power.feeds)) {
+        if (!isObj(feed) || !onPhoto(feed) || feed.plugIn === true || !cordPieces(feed).length) continue;
+        drawnCords.push({ id: feed.id, S: validPts(feed.cordPath).map(imageToScreen) });
+      }
       for (const feed of arr(power.feeds)) {
         if (!isObj(feed) || !onPhoto(feed)) continue;
         const color = circuitColor(prj, feed.circuitId);
@@ -1566,7 +1607,8 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
           }
         }
         const ft = isNum(feed.cord.lengthFt) ? feed.cord.lengthFt : 0;
-        labels.push({ text, alts, swatch: color, priority: jumper ? 0.4 + Math.min(0.5, ft / 100) : 1.5, dashed: jumper });
+        labels.push({ text, alts, swatch: color, priority: jumper ? 0.4 + Math.min(0.5, ft / 100) : 1.5, dashed: jumper,
+          avoid: drawnCords.filter((c) => c.id !== feed.id).map((c) => c.S) });
       }
       // Run start arrows: where each run is plugged in, pointing the way the lights run.
       const features = new Map(arr(prj.features).filter(isObj).map((f) => [f.id, f]));
@@ -1883,11 +1925,18 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         if (Array.isArray(l.alts)) {
           // Anchored labels (cords): only at one of their own spots, wholly on the canvas, or not at all.
           const gap = isNum(l.gap) ? l.gap : 5;
-          for (const a of l.alts) {
-            const t = Math.abs(a.nx) * w / 2 + Math.abs(a.ny) * h / 2 + (isNum(a.gap) ? a.gap : gap);
-            const b = { x: a.x + a.nx * t - w / 2, y: a.y + a.ny * t - h / 2, w, h };
-            if (b.x < 2 || b.y < 2 || b.x + w > view.cssW - 2 || b.y + h > view.cssH - 2) continue;
-            if (free(b)) { box = b; break; }
+          // First a spot whose box touches no other cord (a label lying across another cord reads as that cord's);
+          // only when there is none, any free spot beside its own cord.
+          const others = arr(l.avoid);
+          for (const strict of others.length ? [true, false] : [false]) {
+            for (const a of l.alts) {
+              const t = Math.abs(a.nx) * w / 2 + Math.abs(a.ny) * h / 2 + (isNum(a.gap) ? a.gap : gap);
+              const b = { x: a.x + a.nx * t - w / 2, y: a.y + a.ny * t - h / 2, w, h };
+              if (b.x < 2 || b.y < 2 || b.x + w > view.cssW - 2 || b.y + h > view.cssH - 2) continue;
+              if (strict && others.some((S) => pathHitsBox(S, b, 2))) continue;
+              if (free(b)) { box = b; break; }
+            }
+            if (box) break;
           }
           if (!box) continue;
         } else {
@@ -2083,6 +2132,8 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     return {
       canvas,
       fit,
+      setInsets,
+      getInsets: () => ({ top: insets.top, bottom: insets.bottom }),
       zoomBy,
       zoomIn: () => zoomBy(1.4),
       zoomOut: () => zoomBy(1 / 1.4),
@@ -2108,6 +2159,6 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
 
   return {
     createViewport, selectionHandles, snapCandidates, layersFor, targetKey, midpointHandles, isDoubleTap, snapRadiusImg,
-    cordLabelText, cordPieces, tapMarkers, cordLabelSpots, clipSegment, tapErrorPx,
+    cordLabelText, cordPieces, tapMarkers, cordLabelSpots, clipSegment, tapErrorPx, pathHitsBox,
   };
 });

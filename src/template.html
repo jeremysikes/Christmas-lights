@@ -106,12 +106,14 @@
         <button id="ctl-snap" class="ctl" type="button" aria-pressed="true" aria-label="Snap to points"><span data-icon="magnet"></span></button>
       </div>
 
-      <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
       <div id="busy" class="busy" role="status" hidden><span class="spinner" aria-hidden="true"></span><span id="busy-text">Working…</span></div>
       <div id="drop-overlay" class="drop-overlay" hidden>
         <div class="drop-card"><span data-icon="image"></span><p>Drop the photo (or a saved project) to open it</p></div>
       </div>
     </main>
+
+    <!-- Messages float over the photo and, on a phone with the sheet raised, over the top of the sheet. -->
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
 
     <aside id="panel" class="panel" aria-label="Step details">
       <button id="sheet-handle" class="sheet-handle" type="button" aria-label="Change the panel size"><span class="grip" aria-hidden="true"></span></button>

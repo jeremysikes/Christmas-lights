@@ -207,8 +207,9 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
         if (!ft) return null;
         const label = ft.label.toLowerCase();
         if (ft.geometry === 'vertical') return { text: 'Tap the base of the ' + label.replace(/ \(.*\)/, '') + ', then its top.', count: pts + ' of 2', finish: false };
-        if (ft.geometry === 'polygon' || ft.geometry === 'area') return { text: 'Tap around the ' + label.replace(/ \(.*\)/, '') + '. Tap the first point to close it, or tap Finish.', count: pts ? pts + ' points' : '', finish: pts >= 3 };
-        return { text: 'Tap along the ' + label + ', corner by corner. Double-tap or tap Finish when done.', count: pts ? pts + ' points' : '', finish: pts >= 2 };
+        const count = pts + (pts === 1 ? ' point' : ' points');
+        if (ft.geometry === 'polygon' || ft.geometry === 'area') return { text: 'Tap around the ' + label.replace(/ \(.*\)/, '') + '. Tap the first point to close it, or tap Finish.', count, finish: pts >= 3 };
+        return { text: 'Tap along the ' + label + ', corner by corner. Double-tap or tap Finish when done.', count, finish: pts >= 2 };
       }
       if (mode.name === 'outlet') return { text: 'Tap where the outlet is on the photo.', count: '', finish: false };
       return null;
@@ -296,6 +297,51 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
       let lastPref = null;
       let lastSelKey = null;
       let hintPlaneKey = null;
+      const stageEl = $('stage');
+      const stageTop = hintbar ? hintbar.parentElement : null;
+      const workspace = stageEl ? stageEl.parentElement : null;
+
+      /**
+       * Keep the photo and the messages clear of what floats over the photo.
+       *  - While the hint bar is up (a tool in use, or "Trace next"), the viewport fits the photo into the room
+       *    under it and above the view buttons, so no tap aimed at the roof lands on a button of the bar.
+       *  - A message (toast) sits just under the hint bar, the sample note or a notice, never on top of them; while
+       *    a tool is in use it sits at the bottom of the photo instead, away from where the taps go.
+       */
+      function layoutOverlays() {
+        if (!stageEl) return;
+        const st = stageEl.getBoundingClientRect();
+        const hintUp = hintbar && !hintbar.hidden;
+        if (typeof viewport.setInsets === 'function') {
+          let top = 0;
+          let bottom = 0;
+          if (hintUp) {
+            top = Math.max(0, hintbar.getBoundingClientRect().bottom - st.top + 6);
+            const vc = document.querySelector('.view-controls');
+            const r = vc ? vc.getBoundingClientRect() : null;
+            // Only the buttons at the bottom of the photo take room there (on a wide screen the zoom buttons are at the top).
+            if (r && r.height > 0 && r.top > st.top + st.height / 2) bottom = Math.max(0, st.bottom - r.top + 6);
+          }
+          viewport.setInsets({ top, bottom });
+        }
+        if (toastRegion && workspace) {
+          const ws = workspace.getBoundingClientRect();
+          const tool = DRAW_MODES.includes(store.ui().mode.name);
+          if (tool) {
+            toastRegion.style.top = 'auto';
+            toastRegion.style.bottom = Math.max(8, Math.round(ws.bottom - st.bottom + 68)) + 'px';
+          } else {
+            let under = 0;
+            if (stageTop) for (const el of Array.from(stageTop.children)) { if (!el.hidden) under = Math.max(under, el.getBoundingClientRect().bottom - ws.top); }
+            toastRegion.style.bottom = 'auto';
+            toastRegion.style.top = Math.round(under > 0 ? under + 8 : 8) + 'px';
+          }
+        }
+      }
+      // The hint bar and the notes change height when their text wraps: follow them.
+      if (typeof ResizeObserver === 'function' && stageTop) {
+        try { const ro = new ResizeObserver(() => layoutOverlays()); ro.observe(stageTop); if (stageEl) ro.observe(stageEl); } catch (e) { /* ignore */ }
+      }
 
       const on = (el, ev, fn, opts) => { if (el) el.addEventListener(ev, fn, opts); };
 
@@ -600,6 +646,8 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
           a = 'Reload';
           b = 'Keep this tab\'s plan';
           closable = false;
+        } else if (n.kind === 'replanned') {
+          text = n.message || 'This plan was worked out again, and its totals changed.';
         }
         noticeText.textContent = text;
         noticeA.textContent = a || '';
@@ -653,6 +701,12 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
         const toolKey = toolOn ? ui.mode.name + '|' + ((ui.mode.opts && (ui.mode.opts.type || ui.mode.opts.purpose)) || '') : '';
         const toolStarted = !!toolKey && toolKey !== lastToolKey;
         lastToolKey = toolKey;
+        // A message that was already showing when a tool is picked has done its job: the hint bar takes over
+        // (otherwise it would jump from the top of the photo to the bottom). Errors and warnings stay.
+        if (toolStarted && ui.toast && ui.toast.id === shownToastId && (ui.toast.kind === 'ok' || ui.toast.kind === 'info' || !ui.toast.kind)) {
+          actions.dismissToast(ui.toast.id);
+          return;
+        }
         if (((drawing && !lastDrawing) || toolStarted) && !isDesktop() && ui.sheet !== 'min') {
           if (!restoreSheet) restoreSheet = ui.sheet;
           lastDrawing = drawing;
@@ -832,6 +886,7 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
 
         renderToast(ui);
         renderDialog(ui);
+        layoutOverlays();
       }
       function schedule() {
         if (scheduled) return;
