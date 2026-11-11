@@ -5,10 +5,13 @@
 //                                        blocked storage)
 //   node tests/e2e/smoke.mjs             run against the existing dist/lightplan.html
 //   node tests/e2e/smoke.mjs --only=phone        one pass: phone | desktop | dark | storage | inputs | measure |
-//                                                review | landscape
+//                                                review | landscape | v11-phone | v11-desktop
 //                                                (storage = localStorage and IndexedDB blocked;
 //                                                inputs = safe share, tax, file version, damaged photo;
-//                                                review = UI review findings on a phone; landscape = 844x390)
+//                                                review = UI review findings on a phone; landscape = 844x390;
+//                                                v11-* = the Phase 1.1 UI, SPEC 8.4 and 8.5: cords on the photo,
+//                                                the Power step, rough measurements, the flow, tap precision.
+//                                                They also write v11-<phone|desktop>-step<3|5|6>.png)
 //   LP_APP=/path/to/lightplan.html node tests/e2e/smoke.mjs   run against another build
 //   LP_SECTIONS='UX-0[45]' node tests/e2e/smoke.mjs --only=review   run only the matching review sections
 //
@@ -40,7 +43,7 @@ const PASSES = {
 };
 
 const onlyArg = process.argv.find((a) => a.startsWith('--only='));
-const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES).concat('storage', 'inputs', 'measure', 'review', 'landscape');
+const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES).concat('storage', 'inputs', 'measure', 'review', 'landscape', 'v11-phone', 'v11-desktop');
 
 if (!fs.existsSync(APP)) {
   console.error('dist/lightplan.html is missing. Run "node build.js" first (npm run e2e does both).');
@@ -962,6 +965,567 @@ async function runLandscape(browser) {
   return t;
 }
 
+// ------------------------------------------------------------------ Phase 1.1 UI (SPEC §8.4 and §8.5)
+// Cords on the photo (A), the Power step (B), the PDF report (C), rough measurements on Review (D), the flow (E),
+// tap precision (F) and the small fixes (G), on a 390 px phone and on a desktop.
+
+/** A 640x480 JPEG (a photo that is too small to measure well). */
+async function makeSmallJpeg(page) {
+  const file = path.join(OUT, 'fixture-small.jpg');
+  const b64 = await page.evaluate(() => {
+    const c = document.createElement('canvas');
+    c.width = 640; c.height = 480;
+    const g = c.getContext('2d');
+    g.fillStyle = '#9cc3e6'; g.fillRect(0, 0, 640, 480);
+    g.fillStyle = '#e9e1cf'; g.fillRect(140, 200, 360, 160);
+    g.fillStyle = '#5a4030'; g.fillRect(300, 270, 44, 90);
+    return c.toDataURL('image/jpeg', 0.9).split(',')[1];
+  });
+  fs.writeFileSync(file, Buffer.from(b64, 'base64'));
+  return file;
+}
+
+async function runPhase11(browser, name) {
+  const cfg = PASSES[name === 'v11-phone' ? 'phone' : 'desktop'];
+  const phone = !!cfg.hasTouch;
+  const t = new Check(name);
+  console.log('\n== Phase 1.1 UI ' + cfg.viewport.width + 'x' + cfg.viewport.height);
+  const context = await browser.newContext({
+    viewport: cfg.viewport, isMobile: cfg.isMobile, hasTouch: cfg.hasTouch, colorScheme: 'light',
+    deviceScaleFactor: 1, acceptDownloads: true, reducedMotion: 'no-preference',
+  });
+  await context.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push('page error: ' + e.message));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push('console error: ' + m.text()); });
+  const shot = (label) => page.screenshot({ path: path.join(OUT, name + '-' + label + '.png') });
+  const act = (fn, arg) => page.evaluate(fn, arg);
+  const goStep = async (n) => { await page.click('button.step[data-step="' + n + '"]'); await sleep(350); };
+  const only = process.env.LP_SECTIONS ? new RegExp(process.env.LP_SECTIONS) : null;
+  const sec = async (title, fn) => {
+    if (only && !only.test(title)) return;
+    try {
+      await page.evaluate(() => { const a = window.LightPlanApp.actions; a.cancelDraft(); a.select(null); window.LightPlanApp.store.setUI({ dialog: null, toast: null }); }).catch(() => {});
+      await fn();
+    } catch (e) {
+      t.ok(false, title + ': unexpected error: ' + (e && e.message ? e.message.split('\n')[0] : e));
+      await shot('error-' + title.replace(/[^a-z0-9]+/gi, '-').slice(0, 30)).catch(() => {});
+    }
+  };
+  /** The pinned button: its label, the action it holds, and whether all of it is inside the window. */
+  const pinned = () => page.evaluate(() => {
+    const b = document.getElementById('action-btn');
+    const bar = document.getElementById('action-bar');
+    if (!b || !bar || bar.hidden) return { label: null, inView: false };
+    const r = b.getBoundingClientRect();
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return {
+      label: b.textContent.trim(), action: b.getAttribute('data-action'), primary: b.classList.contains('primary'),
+      inView: r.height >= 40 && r.top >= 0 && r.bottom <= window.innerHeight + 0.5 && r.left >= 0 && r.right <= window.innerWidth + 0.5 && !!top && b.contains(top),
+      note: (document.getElementById('action-note') || {}).textContent || '',
+    };
+  });
+  /** Zoom the photo so image point c sits mid-canvas at k times the fit scale. */
+  const zoomTo = async (c, k) => {
+    await act(([pt, kk]) => {
+      const vp = window.LightPlanApp.viewport;
+      vp.fit();
+      const v = vp.getView();
+      const s = v.fitScale * 0.96 * kk;
+      vp.setView({ scale: s, tx: v.cssW / 2 - pt[0] * s, ty: v.cssH / 2 - pt[1] * s });
+    }, [c, k]);
+    await sleep(450);
+  };
+  /** What the cord labels on the canvas look like right now (see drawLabels / labelBoxes in viewport.js). */
+  const labelReport = () => page.evaluate(() => {
+    const vp = window.LightPlanApp.viewport;
+    const M = LP.require('ui.viewport');
+    const cr = document.querySelector('#viewport canvas').getBoundingClientRect();
+    const boxes = vp.labelBoxes();
+    const hit = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    const floats = Array.from(document.querySelectorAll('.canvas-controls, .hintbar, .sample-banner')).map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 0 && r.height > 0).map((r) => ({ x: r.left - cr.left, y: r.top - cr.top, w: r.width, h: r.height }));
+    const pairs = [];
+    for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) if (hit(boxes[i], boxes[j])) pairs.push(boxes[i].text + ' x ' + boxes[j].text);
+    const under = boxes.filter((b) => floats.some((f) => hit(b, f))).map((b) => b.text);
+    const outside = boxes.filter((b) => b.x < 0 || b.y < 0 || b.x + b.w > cr.width + 0.5 || b.y + b.h > cr.height + 0.5).map((b) => b.text);
+    // Every cord label lies right beside a cord that carries that label.
+    const power = window.LightPlanApp.store.plan().power;
+    const distToBox = (q, b) => Math.hypot(Math.max(b.x - q[0], 0, q[0] - (b.x + b.w)), Math.max(b.y - q[1], 0, q[1] - (b.y + b.h)));
+    const far = [];
+    const cordLabels = boxes.filter((b) => /ft (cord|jumper)$/.test(b.text));
+    for (const b of cordLabels) {
+      let best = Infinity;
+      for (const f of power.feeds) {
+        if (M.cordLabelText(f) !== b.text) continue;
+        const S = (f.cordPath || []).map((q) => vp.imageToScreen(q));
+        for (let i = 0; i + 1 < S.length; i++) {
+          const len = Math.hypot(S[i + 1][0] - S[i][0], S[i + 1][1] - S[i][1]);
+          const n = Math.max(1, Math.ceil(len / 2));
+          for (let k = 0; k <= n; k++) best = Math.min(best, distToBox([S[i][0] + (S[i + 1][0] - S[i][0]) * k / n, S[i][1] + (S[i + 1][1] - S[i][1]) * k / n], b));
+        }
+      }
+      if (best > 22) far.push(b.text + ' (' + Math.round(best) + ' px from its cord)');
+    }
+    return {
+      texts: boxes.map((b) => b.text), cords: cordLabels.filter((b) => / cord$/.test(b.text)).length, jumpers: cordLabels.filter((b) => / jumper$/.test(b.text)).length,
+      anchoredAll: cordLabels.every((b) => b.anchored), pairs, under, outside, far,
+    };
+  });
+
+  try {
+    await page.goto(URL);
+    await waitForApp(page);
+    await sleep(500);
+
+    // ---- The three screens the hand-off asks to be looked at, on the sample as it first opens.
+    for (const n of [3, 5, 6]) {
+      await goStep(n);
+      if (n === 5) await act(() => window.LightPlanApp.actions.setView({ night: false }));
+      await sleep(300);
+      await shot('step' + n);
+      const overflowX = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      t.ok(overflowX <= 0, 'step ' + n + ': no horizontal page scroll');
+    }
+
+    // ================================================================ A. cords on the photo
+    await sec('A1 cord labels', async () => {
+      await goStep(5);
+      await act(() => { const a = window.LightPlanApp.actions; a.dismissBanner(); a.setView({ night: false, preview: true, labels: true, overlay: true }); });
+      await zoomTo([700, 720], phone ? 2.4 : 1);
+      const a = await labelReport();
+      t.ok(a.cords >= 1 && a.jumpers >= 1 && a.anchoredAll, 'cords are labelled "N ft cord" and jumpers "N ft jumper" (' + a.texts.filter((x) => / ft /.test(x)).join(', ') + ')');
+      t.ok(a.texts.includes('25 ft cord') || a.texts.includes('15 ft cord'), 'a cord from an outlet carries the length that is bought');
+      t.ok(a.texts.some((x) => /outlet$/i.test(x)), 'outlet labels are still shown (' + a.texts.filter((x) => /outlet/i.test(x)).join(', ') + ')');
+      t.ok(a.pairs.length === 0, 'no label covers another label or an outlet label' + (a.pairs.length ? ': ' + a.pairs.join('; ') : ''));
+      t.ok(a.under.length === 0, 'no label sits under the buttons floating over the photo' + (a.under.length ? ': ' + a.under.join(', ') : ''));
+      t.ok(a.outside.length === 0 && a.far.length === 0, 'every cord label is on the canvas beside its own cord' + (a.far.length ? ': ' + a.far.join('; ') : ''));
+      await shot('cords');
+      // Zoomed in with half the cords off screen to the left (this is where four labels used to pile up at the edge).
+      await zoomTo([930, 700], phone ? 3.4 : 2.7);
+      const z = await labelReport();
+      t.ok(z.pairs.length === 0 && z.outside.length === 0 && z.far.length === 0 && z.under.length === 0,
+        'zoomed in with cords running off screen: labels stay beside their cords, none at the edge (' + z.texts.filter((x) => / ft /.test(x)).join(', ') + ')' +
+        (z.pairs.concat(z.far, z.under).length ? ' problems: ' + z.pairs.concat(z.far, z.under).join('; ') : ''));
+      await shot('cords-zoomed');
+    });
+
+    await sec('A2 cord styles and markers', async () => {
+      await goStep(5);
+      await act(() => { const a = window.LightPlanApp.actions; a.dismissBanner(); a.setView({ night: false, preview: false, labels: false, overlay: true }); });
+      await zoomTo([760, 730], phone ? 2.4 : 1.3);
+      const px = await page.evaluate(() => {
+        const vp = window.LightPlanApp.viewport;
+        const M = LP.require('ui.viewport');
+        const c = document.querySelector('#viewport canvas');
+        const ctx = c.getContext('2d');
+        const power = window.LightPlanApp.store.plan().power;
+        const near = (q, rgb, tol) => Math.abs(q[0] - rgb[0]) <= tol && Math.abs(q[1] - rgb[1]) <= tol && Math.abs(q[2] - rgb[2]) <= tol;
+        const at = (s) => ctx.getImageData(Math.round(s[0]), Math.round(s[1]), 1, 1).data;
+        /** Share of the points along a→b (from t0 to t1 of the way) painted in the cord colour. */
+        const share = (a, b, rgb, t0, t1) => {
+          const A = vp.imageToScreen(a), B = vp.imageToScreen(b);
+          const len = Math.hypot(B[0] - A[0], B[1] - A[1]);
+          let n = 0, on = 0;
+          for (let d = len * t0; d <= len * t1; d += 0.5) { n += 1; if (near(at([A[0] + (B[0] - A[0]) * d / len, A[1] + (B[1] - A[1]) * d / len]), rgb, 45)) on += 1; }
+          return { share: n ? on / n : 0, len: Math.round(len) };
+        };
+        const BLUE = [79, 157, 255], ORANGE = [255, 138, 61];
+        const home = power.feeds.find((f) => f.id === 'feed_ft_garage_gutter_1');
+        const riser = home.cord.route.find((r) => r.kind === 'rise');
+        const jumper = power.feeds.find((f) => f.id === 'feed_ft_tree_1');
+        const ground = jumper.cord.route.find((r) => r.kind === 'ground');
+        const taps = M.tapMarkers(power).map((tp) => { const s = vp.imageToScreen(tp.point); return s[0] > 4 && s[1] > 4 && s[0] < c.width - 4 && s[1] < c.height - 4 ? Array.from(at(s)).slice(0, 3) : null; }).filter(Boolean);
+        return {
+          homeKind: home.cord.kind, jumperKind: jumper.cord.kind,
+          home: share(riser.from, riser.to, ORANGE, 0.4, 0.85), jumper: share(ground.from, ground.to, BLUE, 0.2, 0.8),
+          taps, tapCount: power.counts.taps,
+        };
+      });
+      t.ok(px.homeKind === 'home' && px.home.len > 20 && px.home.share > 0.95, 'a cord from an outlet is drawn as a solid line in its circuit colour (' + (px.home.share * 100).toFixed(0) + '% of ' + px.home.len + ' px)');
+      t.ok(px.jumperKind === 'jumper' && px.jumper.len > 40 && px.jumper.share > 0.3 && px.jumper.share < 0.9, 'a jumper cord is drawn dashed (' + (px.jumper.share * 100).toFixed(0) + '% of ' + px.jumper.len + ' px painted)');
+      t.ok(px.taps.length >= 3 && px.taps.every((q) => q[0] > 215 && q[1] > 215 && q[2] > 215), 'each 3-way tap has a white marker where it sits (' + px.taps.length + ' of ' + px.tapCount + ' in view)');
+      await shot('cord-styles');
+      // A run that plugs straight into the one before it: a ring and "plugs in", and no cord of its own.
+      await act(() => window.LightPlanApp.store.commit('test: walkway starts at the door plug', (d) => { d.features.find((f) => f.id === 'ft_walk_right').points[0] = [732.4, 809.3]; }));
+      await act(() => window.LightPlanApp.actions.setView({ labels: true }));
+      await zoomTo([735, 800], phone ? 6 : 3.2);
+      const pi = await page.evaluate(() => {
+        const vp = window.LightPlanApp.viewport;
+        const ctx = document.querySelector('#viewport canvas').getContext('2d');
+        const feed = window.LightPlanApp.store.plan().power.feeds.find((f) => f.plugIn === true);
+        if (!feed) return null;
+        const s = vp.imageToScreen(feed.start.point);
+        let white = 0;
+        for (let k = 0; k < 24; k++) { const a = (k / 24) * Math.PI * 2; const q = ctx.getImageData(Math.round(s[0] + Math.cos(a) * 9), Math.round(s[1] + Math.sin(a) * 9), 1, 1).data; if (q[0] > 200 && q[1] > 200 && q[2] > 200) white += 1; }
+        const row = document.querySelector('.feed-item[data-key="' + feed.id + '"]');
+        return { id: feed.id, cord: feed.cord, white, labels: vp.labelBoxes().map((b) => b.text), kind: row ? row.getAttribute('data-kind') : null, rowText: row ? row.innerText : '' };
+      });
+      t.ok(!!pi && pi.cord === null, 'the test plan has a run that plugs straight in');
+      t.ok(pi && pi.white >= 12 && pi.labels.includes('plugs in'), 'it gets a ring and a "plugs in" label on the photo (' + (pi && pi.white) + '/24 ring points, labels ' + (pi && pi.labels.join(', ')) + ')');
+      t.ok(pi && pi.kind === 'plugIn' && /Plugs straight into the end of Front door \(no cord needed\)/.test(pi.rowText) && !/unknown/i.test(pi.rowText), 'the Power list says it plugs straight in, not "length unknown" (' + (pi && pi.rowText.replace(/\s+/g, ' ').slice(0, 90)) + ')');
+      await shot('plug-in');
+      await page.click('#btn-undo');
+      await sleep(300);
+      t.ok(await act(() => !window.LightPlanApp.store.plan().power.feeds.some((f) => f.plugIn)), 'undo puts the walkway back');
+      await act(() => { window.LightPlanApp.viewport.fit(); window.LightPlanApp.actions.setView({ preview: true, labels: true }); });
+    });
+
+    // ================================================================ B. the Power step
+    await sec('B1 verdict, outlets, tiles', async () => {
+      await goStep(5);
+      if (phone) { await act(() => window.LightPlanApp.actions.setSheet('half')); await sleep(350); }
+      await act(() => { document.getElementById('panel-root').scrollTop = 0; });
+      const b = await page.evaluate(() => {
+        const root = document.getElementById('panel-root');
+        const rr = root.getBoundingClientRect();
+        const box = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; };
+        const verdict = root.querySelector('[data-key="verdict"]');
+        const place = root.querySelector('[data-act="place-outlet"]');
+        const disc = root.querySelector('[data-key="disclaimer"]');
+        const tiles = {};
+        root.querySelectorAll('[data-key="counts"] .tile').forEach((el) => { tiles[el.querySelector('.tile-label').textContent] = el.querySelector('.tile-value').textContent; });
+        const feeds = root.querySelector('[data-key="feeds"]');
+        const clone = feeds.cloneNode(true);
+        clone.querySelectorAll('[data-key="cord-detail"]').forEach((el) => el.remove());
+        const rows = Array.from(feeds.querySelectorAll('.feed-item'));
+        return {
+          verdictText: verdict ? verdict.textContent.trim() : '', verdictClass: verdict ? verdict.className : '',
+          firstAfterHead: root.querySelector('.panel-content').children[1] === verdict,
+          v: box(verdict), p: box(place), d: box(disc), rootBottom: rr.bottom,
+          outletInfo: Array.from(root.querySelectorAll('.outlet-info')).map((el) => el.textContent.trim()),
+          tiles, rows: rows.length, kinds: rows.map((r) => r.getAttribute('data-kind')),
+          firstRow: rows[0] ? rows[0].innerText.replace(/\s+/g, ' ') : '',
+          treeText: clone.textContent, detailText: (feeds.querySelector('[data-key="cord-detail"]') || {}).textContent || '',
+          feeds: window.LightPlanApp.store.plan().power.feeds.length,
+          ownSwitches: feeds.querySelectorAll('[data-act="feed-own-cord"]').length,
+          daisy: !!(root.querySelector('[data-act="power-daisy"]') || {}).checked,
+          nextButtons: root.querySelectorAll('.panel-next').length,
+        };
+      });
+      t.ok(/^Good to go: these lights use 233 W, 16% of one outlet's safe limit\.$/.test(b.verdictText) && / ok/.test(b.verdictClass), 'the Power step opens with a plain verdict (' + b.verdictText + ')');
+      t.ok(b.firstAfterHead && b.v && b.p && b.d && b.v.bottom <= b.p.top && b.p.bottom <= b.d.top, 'order: verdict, Place outlet, then the planning-estimate note');
+      t.ok(b.v && b.v.bottom <= b.rootBottom + 1, 'the verdict is in view without scrolling' + (phone ? ' on a half-open sheet' : ''));
+      t.ok(b.outletInfo[0] === '1 cord at this outlet feeding 11 runs · 185 W', 'the outlet card counts the cords at the outlet and the runs they feed (' + b.outletInfo[0] + ')');
+      t.ok(b.rows === b.feeds && b.kinds[0] === 'home' && b.kinds.filter((k) => k === 'home').length === 2 && b.kinds.filter((k) => k === 'jumper').length === 10,
+        'the supply tree lists every cord: 2 from outlets, 10 jumper cords (' + b.rows + ' rows)');
+      t.ok(/Walkway left edge .*15 ft cord from Porch outlet .*Down 1\.5 ft, 2\.5 ft along the ground/.test(b.firstRow), 'a cord row says where it comes from and how it runs (' + b.firstRow.slice(0, 110) + ')');
+      t.ok(!/unknown/i.test(b.treeText) && /16-gauge/.test(b.treeText) && !/AWG/.test(b.treeText) && /16 AWG/.test(b.detailText), 'gauge reads "16-gauge" in the list; AWG only under Cord details');
+      t.ok(b.tiles['Cords to outlets'] === '2' && b.tiles['Jumper cords'] === '10' && b.tiles['3-way taps'] === '4', 'count tiles: cords to outlets, jumper cords, 3-way taps (' + JSON.stringify(b.tiles) + ')');
+      t.ok(/jumper cord \(a short cord from one run to the next\)/.test(b.treeText) && /3-way tap \(a plug with three outlets\)/.test(b.treeText), 'jumper cord and 3-way tap are explained in plain words');
+      t.ok(b.daisy === true && b.ownSwitches === 10, 'switches: link nearby runs (on) and one "own cord" per jumper-fed run (' + b.ownSwitches + ')');
+      t.ok(b.nextButtons === 0, 'the panel no longer ends in its own Next button');
+      await shot('power-top');
+    });
+
+    await sec('B2 daisy chain and own cord switches', async () => {
+      await goStep(5);
+      const own = page.locator('.feed-item[data-key="feed_ft_door_1"] [data-act="feed-own-cord"]');
+      await own.evaluate((el) => el.click());
+      await sleep(400);
+      const o = await page.evaluate(() => {
+        const s = window.LightPlanApp.store;
+        const door = s.plan().power.feeds.find((f) => f.runIds.includes('run_ft_door'));
+        const sw = document.querySelector('.feed-item[data-key="' + door.id + '"] [data-act="feed-own-cord"]');
+        return { param: s.project().features.find((f) => f.id === 'ft_door').params.ownCord, source: door.source.kind, checked: !!(sw && sw.checked), homeRuns: s.plan().power.counts.homeRuns, undo: s.undoLabel() };
+      });
+      t.ok(o.param === true && o.source === 'outlet' && o.checked && o.homeRuns > 2 && o.undo === 'Give a run its own cord', '"Give this run its own cord" gives the door a cord from the outlet (' + JSON.stringify(o) + ')');
+      await page.click('#btn-undo');
+      await sleep(300);
+      t.ok(await act(() => window.LightPlanApp.store.plan().power.counts.homeRuns === 2), 'one Undo takes it back');
+      await page.locator('[data-act="power-daisy"]').evaluate((el) => el.click());
+      await sleep(500);
+      const d = await page.evaluate(() => {
+        const s = window.LightPlanApp.store;
+        const c = s.plan().power.counts;
+        const tiles = {};
+        document.querySelectorAll('[data-key="counts"] .tile').forEach((el) => { tiles[el.querySelector('.tile-label').textContent] = el.querySelector('.tile-value').textContent; });
+        return {
+          cfg: s.project().library.config, jumpers: c.jumpers, homeRuns: c.homeRuns, feeds: s.plan().power.feeds.length, tiles,
+          verdict: document.querySelector('[data-key="verdict"]').textContent.trim(), verdictClass: document.querySelector('[data-key="verdict"]').className,
+          ownSwitches: document.querySelectorAll('[data-act="feed-own-cord"]').length,
+          info: document.querySelector('.outlet-info').textContent.trim(),
+        };
+      });
+      t.ok(d.cfg && d.cfg.power && d.cfg.power.daisyChain === false && d.jumpers === 0 && d.homeRuns === d.feeds, 'switching "Link nearby runs" off gives every run its own cord (' + d.homeRuns + ' cords, ' + d.jumpers + ' jumpers)');
+      t.ok(d.tiles['Jumper cords'] === '0' && d.tiles['Cords to outlets'] === String(d.homeRuns) && d.ownSwitches === 0, 'the tiles follow, and the own-cord switches go away');
+      t.ok(/^One thing to fix first: .*walkway/i.test(d.verdict) && / warn/.test(d.verdictClass), 'the verdict now names what to fix (' + d.verdict.slice(0, 80) + ')');
+      t.ok(/^\d+ cords at this outlet feeding \d+ runs · /.test(d.info), 'the outlet card follows (' + d.info + ')');
+      await shot('power-flat');
+      await page.locator('[data-act="power-daisy"]').evaluate((el) => el.click());
+      await sleep(400);
+      t.ok(await act(() => window.LightPlanApp.store.plan().power.counts.jumpers === 10 && !window.LightPlanApp.store.project().library.config), 'switching it back on restores the linked plan and leaves no override behind');
+    });
+
+    // ================================================================ D. rough measurements on Review
+    await sec('D rough measurements', async () => {
+      await goStep(6);
+      if (phone) { await act(() => window.LightPlanApp.actions.setSheet('full')); await sleep(350); }
+      const d = await page.evaluate(() => {
+        const root = document.getElementById('panel-root');
+        const sec = root.querySelector('[data-key="rough"]');
+        const plan = window.LightPlanApp.store.plan();
+        const low = Object.values(plan.measured.features).filter((m) => m.ok && !m.overridden && m.confidence.level === 'low').length;
+        const badge = document.querySelector('button.step[data-step="3"] .step-badge');
+        const cost = root.querySelector('[data-key="cost-tile"]');
+        return {
+          first: root.querySelector('.panel-content').children[1] === sec, title: sec ? sec.querySelector('.sec-title').textContent : '', low,
+          items: sec ? Array.from(sec.querySelectorAll('.rough-item')).map((li) => ({ id: li.getAttribute('data-key').replace('rough-', ''), text: li.querySelector('.rough-text').textContent, fields: li.querySelectorAll('[data-act="feature-len"]').length, link: !!li.querySelector('[data-act="show-feature"]') })) : [],
+          badge: badge && !badge.hidden ? { text: badge.textContent, cls: badge.className } : null,
+          cost: cost ? { rough: cost.getAttribute('data-rough'), text: cost.textContent } : null,
+        };
+      });
+      t.ok(d.first && d.title === 'Measurements to double-check (' + d.low + ')' && d.items.length === d.low && d.low >= 3, 'Review opens with "Measurements to double-check (' + d.low + ')"');
+      t.ok(d.items.every((it) => it.fields >= 1 && it.link) && d.items.some((it) => /could be \d+(\.5)? to \d+(\.5)? ft/.test(it.text)), 'each item has a range, a tape-measure field and a link (' + (d.items[d.items.length - 1] || {}).text + ')');
+      t.ok(d.badge && d.badge.text === String(d.low) && /neutral/.test(d.badge.cls), 'the Trace step counts them in a neutral badge (' + JSON.stringify(d.badge) + ')');
+      t.ok(d.cost && d.cost.rough === 'true' && /rough/.test(d.cost.text), 'the cost tile is marked rough');
+      await shot('review-rough');
+      // Type a tape length for the ridge: it leaves the list and the plan uses it.
+      const ridge = page.locator('.rough-item[data-key="rough-ft_ridge"] [data-act="feature-len"]');
+      await ridge.evaluate((el) => { const det = el.closest('details'); if (det) det.open = true; });
+      await ridge.scrollIntoViewIfNeeded();
+      await ridge.fill('33 6');
+      await ridge.press('Enter');
+      await ridge.evaluate((el) => el.blur()).catch(() => {});
+      await sleep(500);
+      const after = await page.evaluate(() => {
+        const s = window.LightPlanApp.store;
+        const sec = document.querySelector('[data-key="rough"]');
+        return { override: s.project().features.find((f) => f.id === 'ft_ridge').overrideFt, run: s.plan().runs.find((r) => r.featureId === 'ft_ridge').lengthFt, title: sec.querySelector('.sec-title').textContent, still: !!sec.querySelector('[data-key="rough-ft_ridge"]'), badge: document.querySelector('button.step[data-step="3"] .step-badge').textContent };
+      });
+      t.ok(after.override === 33.5 && after.run === 33.5 && !after.still && after.title === 'Measurements to double-check (' + (d.low - 1) + ')' && after.badge === String(d.low - 1),
+        'a tape-measured length sets the override and takes the item off the list (' + JSON.stringify(after) + ')');
+      // "Show it" opens the item in the Trace step.
+      const show = page.locator('.rough-item [data-act="show-feature"]').first();
+      const showId = await show.getAttribute('data-id');
+      await show.scrollIntoViewIfNeeded();
+      await show.click();
+      await sleep(500);
+      const shown = await ui(page);
+      t.ok(shown.step === 3 && shown.selection && shown.selection.id === showId, '"Show it" opens the item in the Trace step (' + showId + ')');
+      await act(() => window.LightPlanApp.actions.select(null));
+      await page.click('#btn-undo');
+      await sleep(300);
+      t.ok(await act(() => window.LightPlanApp.store.project().features.find((f) => f.id === 'ft_ridge').overrideFt == null), 'undo clears the tape length again');
+    });
+
+    // ================================================================ E. flow: the pinned button and the step bar
+    await sec('E1 pinned button on the sample', async () => {
+      const want = { 1: 'Next: Calibrate', 2: 'Next: Trace', 3: 'Next: Design', 4: 'Next: Power', 5: 'See the shopping list', 6: 'Save PDF' };
+      for (let n = 1; n <= 6; n += 1) {
+        await goStep(n);
+        for (const sheet of phone ? ['min', 'half', 'full'] : ['half']) {
+          if (phone) { await act((sh) => window.LightPlanApp.actions.setSheet(sh), sheet); await sleep(350); }
+          const p = await pinned();
+          t.ok(p.label === want[n] && p.inView && p.primary, 'step ' + n + (phone ? ' (sheet ' + sheet + ')' : '') + ': "' + p.label + '" is pinned in view');
+        }
+      }
+      const done = await page.evaluate(() => Array.from(document.querySelectorAll('#stepbar-list [data-step]')).map((b) => b.getAttribute('data-done')).join(','));
+      t.ok(done === 'true,true,true,true,true,false', 'the step bar marks steps done from the plan (' + done + ' while step 6 is open)');
+      await goStep(1);
+      const done1 = await page.evaluate(() => Array.from(document.querySelectorAll('#stepbar-list .step.done')).length);
+      t.ok(done1 === 5, 'the same five steps are done while step 1 is open (' + done1 + ')');
+      // The button moves on, and on step 6 it saves the PDF (C: the report carries the cord kinds, routes and taps).
+      if (phone) { await act(() => window.LightPlanApp.actions.setSheet('half')); await sleep(300); }
+      await page.click('#action-btn');
+      await sleep(350);
+      t.ok((await ui(page)).step === 2, 'the pinned button opens the next step');
+      await goStep(6);
+      const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 20000 }), page.click('#action-btn')]);
+      const pdfFile = path.join(OUT, name + '-' + dl.suggestedFilename());
+      await dl.saveAs(pdfFile);
+      let text = '';
+      try { text = execFileSync('pdftotext', [pdfFile, '-'], { encoding: 'utf8' }).replace(/\s+/g, ' '); } catch (e) { text = ''; }
+      t.ok(/\.pdf$/.test(pdfFile) && fs.readFileSync(pdfFile).subarray(0, 4).toString('latin1') === '%PDF', '"Save PDF" on Review saves the report');
+      t.ok(/PLUGS INTO/.test(text) && /CORD AND ROUTE/.test(text) && /15 ft cord, 16 AWG/.test(text) && /6 ft jumper cord, 16 AWG/.test(text) && /The end of Front door/.test(text),
+        'PDF cords table: what each cord plugs into, cord or jumper cord');
+      t.ok(/Down 1\.5 ft, 2\.5 ft along the ground\./.test(text) && /3-way tap at its start/.test(text), 'PDF cords table: route in words and where the 3-way taps go');
+      t.ok(/2 10 4 \d+ Cords to outlets Jumper cords 3-way taps Timers/.test(text), 'PDF counts: cords to outlets, jumper cords, 3-way taps');
+      t.ok(/Measurements to double-check \(\d+\)/.test(text) && /Materials cost \(rough\)/.test(text), 'PDF lists the measurements to double-check and marks the cost rough');
+      await sleep(600);
+    });
+
+    await sec('G lens wording', async () => {
+      await goStep(1);
+      await act(() => { const s = window.LightPlanApp.store; window.LightPlanApp.actions.updateImageCamera(s.project().images[0].id, { mode: 'preset', presetId: 'streetview' }); });
+      await sleep(400);
+      const g = await page.evaluate(() => {
+        const sel = document.querySelector('[data-act="lens-mode"]');
+        return { option: sel ? sel.options[sel.selectedIndex].textContent : '', options: sel ? Array.from(sel.options).map((o) => o.textContent).join(' | ') : '', text: document.getElementById('lp-app').innerText };
+      });
+      t.ok(g.option === 'Screenshot (wide view)', 'the wide lens preset is called "Screenshot (wide view)" (' + g.option + ')');
+      t.ok(!/street\s*view/i.test(g.text) && !/street\s*view/i.test(g.options), 'no "Street View" wording on screen');
+      await page.click('#btn-undo');
+      await sleep(300);
+    });
+
+    // ================================================================ E2, F, G on a fresh photo
+    await sec('E2 empty state and photo load', async () => {
+      await page.click('#btn-menu');
+      await sleep(200);
+      await page.click('[data-menu="start-over"]');
+      await sleep(250);
+      await page.click('#dialog-confirm');
+      await sleep(500);
+      const e = await page.evaluate(() => {
+        const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const buttons = Array.from(document.querySelectorAll('#lp-app button')).filter(vis).map((b) => b.textContent.trim());
+        const text = Array.from(document.querySelectorAll('#lp-app p, #lp-app h2, #lp-app span')).filter(vis).map((el) => el.textContent).join(' ');
+        return { take: buttons.filter((x) => x === 'Take photo').length, choose: buttons.filter((x) => x === 'Choose photo').length, drop: /drop (a|one|the) (photo)?/i.test(text) || /drop one/i.test(text), chooseOrTake: /Choose or take a photo/.test(text),
+          done: Array.from(document.querySelectorAll('#stepbar-list .step.done')).length };
+      });
+      const p0 = await pinned();
+      t.ok(p0.label === 'Choose photo' && p0.inView, 'with no photo the pinned button says "Choose photo"');
+      t.ok(e.take === 1, 'the Take photo button is shown once (' + e.take + ')');
+      t.ok(e.chooseOrTake && (phone ? !e.drop : e.drop), phone ? 'a phone reads "Choose or take a photo", with nothing about dropping a file' : 'a desktop also offers to drop a photo');
+      t.ok(e.done === 0, 'no step is marked done on an empty plan');
+      await shot('empty');
+      // A photo under 1,000 px wide: it loads, step 2 opens, and a warning says it is small.
+      const small = await makeSmallJpeg(page);
+      await page.setInputFiles('#file-input', small);
+      await page.waitForFunction(() => window.LightPlanApp.store.project().images.length === 1, null, { timeout: 10000 });
+      await sleep(600);
+      const sm = await page.evaluate(() => { const u = window.LightPlanApp.store.ui(); return { step: u.step, toast: u.toast, callout: !!document.querySelector('[data-key="small-photo"]') }; });
+      t.ok(sm.step === 2 && sm.toast && sm.toast.kind === 'warn' && /small \(640 px wide\)/.test(sm.toast.message) && sm.callout, 'a 640 px photo is accepted with a warning that it is small (' + (sm.toast && sm.toast.message.slice(0, 60)) + ')');
+      // The real fixture (1200 px): step 2 opens by itself and the app says so.
+      await page.evaluate(() => { window.LightPlanApp.store.setUI({ toast: null }); });
+      const jpg = await makeFixtureJpeg(page);
+      await page.setInputFiles('#file-input', jpg);
+      await sleep(300);
+      if (await page.locator('#dialog-backdrop').isVisible()) await page.click('#dialog-confirm');
+      await page.waitForFunction(() => { const im = window.LightPlanApp.store.project().images[0]; return im && im.width === 1200; }, null, { timeout: 10000 });
+      await sleep(600);
+      const up = await page.evaluate(() => {
+        const u = window.LightPlanApp.store.ui();
+        return { step: u.step, toast: u.toast, small: !!document.querySelector('[data-key="small-photo"]'), done: Array.from(document.querySelectorAll('#stepbar-list [data-step]')).map((b) => b.getAttribute('data-done')).join(',') };
+      });
+      t.ok(up.step === 2 && up.toast && up.toast.kind === 'ok' && /step 2/.test(up.toast.message) && !up.small, 'after the photo loads step 2 opens and a message says so (' + (up.toast && up.toast.message) + ')');
+      t.ok(up.done === 'true,false,false,false,false,false', 'only the Photo step is done, though step 2 is open (' + up.done + ')');
+      const p2 = await pinned();
+      t.ok(p2.label === 'Mark the 4 corners' && p2.inView && /Left to do: set the scale, trace the lights, place an outlet\./.test(p2.note), 'the pinned button says "Mark the 4 corners" and what is left (' + p2.note + ')');
+      await shot('photo-added');
+      // A toast does not follow to another step.
+      await goStep(3);
+      t.ok((await ui(page)).toast == null, 'the toast is gone after a step change');
+      await goStep(2);
+    });
+
+    await sec('F tap precision', async () => {
+      // Mark the 4 corners from the pinned button, at the zoom the photo opens with.
+      await act(() => window.LightPlanApp.actions.setCalib({ rectPresetId: 'garage-double' }));
+      await page.click('#action-btn');
+      await sleep(400);
+      const m = await ui(page);
+      t.ok(m.mode.name === 'rect' && m.mode.opts.purpose === 'planeRect', 'the pinned button starts marking the rectangle');
+      const pc = await pinned();
+      t.ok(pc.label === 'Cancel' && !pc.primary && pc.inView, 'while a tool is in use the pinned button is the way out (' + pc.label + ')');
+      // A phone marks them at the zoom the photo opens with; the desktop zooms out first, so that a mouse is
+      // coarser than the 2.5 px floor too and the stored value can be told from a later, finer tap.
+      if (!phone) await zoomTo([600, 450], 0.35);
+      const scale = await act(() => window.LightPlanApp.viewport.getView().scale);
+      const corners = [[250, 360], [950, 360], [950, 660], [250, 660]];
+      for (const c of await toPage(page, corners)) await tapAt(page, cfg, c[0], c[1]);
+      await sleep(300);
+      const rect = await act(() => window.LightPlanApp.store.project().planes[0].rect);
+      const k = phone ? 3 : 1.5;
+      const want = Math.round(Math.min(80, Math.max(2.5, k / scale)) * 100) / 100;
+      t.ok(rect && Array.isArray(rect.tapErr) && rect.tapErr.length === 4 && rect.tapErr.every((e) => Math.abs(e - want) < 0.011),
+        'each corner stores its tap precision: clamp(' + k + ' / ' + scale.toFixed(3) + ') = ' + want + ' px (' + JSON.stringify(rect && rect.tapErr) + ')');
+      t.ok(want > 5, (phone ? 'a finger at fit zoom on a phone' : 'a mouse on a zoomed-out photo') + ' is much coarser than the old 2.5 px (' + want + ' px)');
+      const pt = await pinned();
+      t.ok(pt.label === 'Trace the lights', 'with the scale set the pinned button says "Trace the lights" (' + pt.label + ')');
+      // Drag one corner while zoomed in: only that corner's value changes, and it gets better.
+      await act(() => window.LightPlanApp.actions.select({ kind: 'plane', id: window.LightPlanApp.store.project().planes[0].id }));
+      if (phone) { await act(() => window.LightPlanApp.actions.setSheet('min')); await sleep(350); }
+      await zoomTo([950, 660], 4);
+      const [from] = await toPage(page, [[950, 660]]);
+      if (phone) {
+        const cdp = await context.newCDPSession(page);
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from[0], y: from[1] }] });
+        for (let i = 1; i <= 6; i += 1) { await sleep(70); await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: from[0] + i * 3, y: from[1] + i * 2 }] }); }
+        await sleep(80);
+        await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      } else {
+        await page.mouse.move(from[0], from[1]);
+        await page.mouse.down();
+        for (let i = 1; i <= 6; i += 1) { await page.mouse.move(from[0] + i * 3, from[1] + i * 2); await sleep(30); }
+        await page.mouse.up();
+      }
+      await sleep(400);
+      const dragged = await act(() => { const r = window.LightPlanApp.store.project().planes[0].rect; return { tapErr: r.tapErr, corner: r.corners[2], scale: window.LightPlanApp.viewport.getView().scale }; });
+      const wantDrag = Math.round(Math.min(80, Math.max(2.5, k / (dragged.scale * (phone ? 2.5 : 1)))) * 100) / 100;
+      t.ok(Math.hypot(dragged.corner[0] - 950, dragged.corner[1] - 660) > 1 && Math.abs(dragged.tapErr[2] - wantDrag) < 0.011 && dragged.tapErr[0] === want && dragged.tapErr[1] === want && dragged.tapErr[3] === want,
+        'dragging one corner zoomed in' + (phone ? ' (aimed with the loupe)' : '') + ' updates that corner only: ' + JSON.stringify(dragged.tapErr) + ' (expected ' + wantDrag + ' at index 2)');
+      await page.click('#btn-undo');
+      await sleep(300);
+      const undone = await act(() => window.LightPlanApp.store.project().planes[0].rect.tapErr);
+      t.ok(undone.length === 4 && undone.every((e) => e === want), 'undo restores the corner and its value (' + JSON.stringify(undone) + ')');
+      // Trace an eave: the first end snaps onto a rectangle corner and copies its value; the second is a fresh tap.
+      await act(() => { window.LightPlanApp.viewport.fit(); window.LightPlanApp.actions.select(null); });
+      await goStep(3);
+      await press(page, '[data-act="trace-type"][data-type="roofline"]');
+      await zoomTo([420, 340], phone ? 2.5 : 1);
+      const view = await act(() => window.LightPlanApp.viewport.getView().scale);
+      const corner0 = await act(() => window.LightPlanApp.store.project().planes[0].rect.corners[0]);
+      const [a, b] = await toPage(page, [corner0, [600, 300]]);
+      await tapAt(page, cfg, a[0] + 2, a[1] + 1);
+      await tapAt(page, cfg, b[0], b[1]);
+      const draft = (await ui(page)).draft;
+      const fresh = Math.round(Math.min(80, Math.max(2.5, k / view)) * 100) / 100;
+      t.ok(draft.points.length === 2 && draft.points[0][0] === corner0[0] && draft.points[0][1] === corner0[1] && draft.tapErr[0] === want && Math.abs(draft.tapErr[1] - fresh) < 0.011 && fresh < want,
+        'a point snapped onto a corner copies that corner\'s value (' + want + '); a fresh tap gets its own (' + fresh + '): ' + JSON.stringify(draft.tapErr));
+      await page.click('#hint-finish');
+      await sleep(400);
+      const feat = await act(() => { const f = window.LightPlanApp.store.project().features; return f[f.length - 1]; });
+      t.ok(feat && feat.tapErr && feat.tapErr.length === feat.points.length && feat.tapErr[0] === want, 'the traced item stores one value per point (' + JSON.stringify(feat && feat.tapErr) + ')');
+      // Insert a point with the + handle, then delete it: the list stays in step.
+      const mid = [(feat.points[0][0] + feat.points[1][0]) / 2, (feat.points[0][1] + feat.points[1][1]) / 2];
+      const [mp] = await toPage(page, [mid]);
+      await tapAt(page, cfg, mp[0], mp[1]);
+      await sleep(300);
+      const ins = await act((id) => { const f = window.LightPlanApp.store.project().features.find((x) => x.id === id); return { n: f.points.length, e: f.tapErr }; }, feat.id);
+      t.ok(ins.n === 3 && ins.e.length === 3 && ins.e[1] === 2.5, 'inserting a point keeps the list aligned (' + JSON.stringify(ins.e) + ')');
+      await act((id) => window.LightPlanApp.actions.deleteVertex(id, 1), feat.id);
+      const del = await act((id) => { const f = window.LightPlanApp.store.project().features.find((x) => x.id === id); return { n: f.points.length, e: f.tapErr }; }, feat.id);
+      t.ok(del.n === 2 && del.e.length === 2 && del.e[0] === want, 'deleting it too (' + JSON.stringify(del.e) + ')');
+      await act(() => window.LightPlanApp.actions.finishTracing());
+    });
+
+    await sec('G hint wording', async () => {
+      await goStep(2);
+      await act(() => { const a = window.LightPlanApp.actions; a.setCalib({ refPresetId: 'door-height' }); a.startReference(window.LightPlanApp.store.project().planes[0].id); });
+      await sleep(350);
+      const hint = await page.evaluate(() => document.getElementById('hint-text').textContent);
+      t.ok(/^Tap both ends of the entry door height on /.test(hint) && !/the the/.test(hint), 'the reference hint reads "the entry door height" once (' + hint + ')');
+      await shot('hint');
+      await act(() => window.LightPlanApp.actions.cancelDraft());
+      // A walkway before any ground plane: the hint bar explains, and no toast repeats it.
+      await goStep(3);
+      await press(page, '[data-act="trace-type"][data-type="walkway"]');
+      await sleep(350);
+      const w = await page.evaluate(() => ({ hint: document.getElementById('hint-text').textContent, toast: window.LightPlanApp.store.ui().toast, mode: window.LightPlanApp.store.ui().mode }));
+      t.ok(w.mode.name === 'line' && w.mode.opts.purpose === 'groundBase' && /lie on the ground, so mark the ground first/.test(w.hint) && w.toast == null, 'starting a walkway explains the ground step in the hint bar only (' + w.hint.slice(0, 60) + ')');
+      await act(() => window.LightPlanApp.actions.cancelDraft());
+      // An outlet has not been placed: the Power step says so in one sentence and the pinned button offers it.
+      await goStep(5);
+      const v = await page.evaluate(() => document.querySelector('[data-key="verdict"]').textContent.trim());
+      const pp = await pinned();
+      t.ok(/^Place an outlet: these lights use/.test(v) && !/feed/i.test(v) && pp.label === 'Place an outlet' && pp.inView, 'with no outlet the verdict and the pinned button both say to place one (' + v.slice(0, 50) + ')');
+      await page.click('#action-btn');
+      await sleep(300);
+      t.ok((await ui(page)).mode.name === 'outlet', 'the pinned button starts placing an outlet');
+      await act(() => window.LightPlanApp.actions.cancelDraft());
+    });
+  } catch (e) {
+    t.ok(false, 'unexpected error: ' + (e && e.message ? e.message.split('\n')[0] : e));
+    await shot('error').catch(() => {});
+  }
+  t.ok(errors.length === 0, 'no console or page errors' + (errors.length ? ': ' + errors.slice(0, 5).join(' | ') : ''));
+  await context.close();
+  return t;
+}
+
 // ------------------------------------------------------------------ main
 
 const browser = await chromium.launch();
@@ -972,6 +1536,7 @@ for (const name of selected) {
   if (name === 'storage') { results.push(await runBlockedStorage(browser)); continue; }
   if (name === 'inputs') { results.push(await runPlanningInputs(browser)); continue; }
   if (name === 'measure') { results.push(await runMeasureChecks(browser)); continue; }
+  if (name === 'v11-phone' || name === 'v11-desktop') { results.push(await runPhase11(browser, name)); continue; }
   if (!PASSES[name]) { console.error('unknown pass ' + name); process.exitCode = 2; continue; }
   results.push(await runPass(browser, name));
 }
