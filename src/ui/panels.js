@@ -462,7 +462,14 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
 
     // ================================================================ text tables
     const PLANE_KIND = { wall: 'Wall', roof: 'Roof slope', ground: 'Ground' };
-    const SOURCE_KIND = { upload: 'Uploaded photo', camera: 'Phone camera', sample: 'Sample house', streetview: 'Street View', aerial: 'Aerial view' };
+    const SOURCE_KIND = { upload: 'Uploaded photo', camera: 'Phone camera', sample: 'Sample house', streetview: 'Street-level screenshot', aerial: 'Aerial view' };
+    /**
+     * Lens wording as shown on screen: the wide-view preset is called "Screenshot (wide view)" (SPEC §8.4), whatever
+     * an older catalog or message still calls it.
+     */
+    const OLD_WIDE_NAME = new RegExp(['Street', 'View'].join(' ') + '( screenshots?)?', 'gi');   // the preset's Phase 1 name
+    const lensWords = (t) => String(t == null ? '' : t).replace(OLD_WIDE_NAME, 'Screenshot (wide view)');
+    const smallPhotoText = (image) => 'This photo is small (' + fmtNum(image.width, 0) + ' px wide), so corners are hard to place and lengths come out rough. Use the original photo from the camera if you can.';
     const FOCAL_SOURCE = { exif: 'From the photo', rectangle: 'Measured', manual: 'Entered by hand', preset: 'Preset', default: 'Assumed' };
     const MODE_TEXT = {
       'rect-known': 'Measured from a rectangle of known size.',
@@ -625,13 +632,19 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const { image, plan } = ctx;
       const isSample = !!(image && image.source && image.source.kind === 'sample');
       const kids = [head(1, 'Use a photo of the front of the house. Every measurement comes from it.')];
-      kids.push(h('div', { class: 'dropzone', 'data-key': 'dropzone' },
-        icon('image', 'dz-icon'),
-        h('p', { class: 'dz-title' }, 'Drop a photo here'),
-        h('p', { class: 'dz-sub' }, 'You can also drop it anywhere on the picture.'),
-        h('div', { class: 'btn-row' },
-          button('Choose photo', { act: 'pick', data: { kind: 'file' }, cls: 'primary', icon: 'image' }),
-          button('Take photo', { act: 'pick', data: { kind: 'camera' }, icon: 'camera' }))));
+      // The two photo buttons are shown once: on the picture while there is no photo (the empty card there has
+      // them), here once there is one (to use a different photo). Dropping a file is a desktop extra.
+      if (image) {
+        kids.push(h('div', { class: 'dropzone', 'data-key': 'dropzone' },
+          h('p', { class: 'dz-title' }, 'Use a different photo'),
+          h('p', { class: 'dz-sub' }, 'Choose or take a photo', h('span', { class: 'desk-only' }, ', or drop one anywhere on the picture'), '.'),
+          h('div', { class: 'btn-row' },
+            button('Choose photo', { act: 'pick', data: { kind: 'file' }, icon: 'image' }),
+            button('Take photo', { act: 'pick', data: { kind: 'camera' }, icon: 'camera' }))));
+      } else {
+        kids.push(h('p', { class: 'lead', 'data-key': 'dropzone' }, 'Choose or take a photo to start',
+          h('span', { class: 'desk-only' }, ', or drop one anywhere on the page'), '.'));
+      }
       kids.push(section('Or try it first', [
         h('div', { class: 'btn-col' },
           button('Use sample house (traced)', { act: 'load-sample', data: { traced: '1' }, icon: 'house' }),
@@ -649,7 +662,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           ['Size', fmtNum(image.width, 0) + ' × ' + fmtNum(image.height, 0) + ' px', 'num'],
           ['Source', SOURCE_KIND[image.source && image.source.kind] || 'Photo'],
           isSample ? null : ['Camera', exText],
-        ])], { key: 'photo' }));
+        ]), actionsModule.isSmallPhoto(image) ? callout('warn', smallPhotoText(image), { key: 'small-photo' }) : null], { key: 'photo' }));
         kids.push(lensSection(ctx));
       }
       kids.push(disclosure('Photo tips', h('ul', { class: 'tips' }, PHOTO_TIPS.map((t) => h('li', null, t))), { open: !image || isSample, key: 'tips' }));
@@ -665,7 +678,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const options = [
         ['auto', 'Automatic (recommended)'],
         ['exif', hasExif ? 'From the photo data' : 'From the photo data (none in this photo)', !hasExif && value !== 'exif'],
-      ].concat(camera.CAMERA_PRESETS.map((p) => ['preset:' + p.id, p.label]))
+      ].concat(camera.CAMERA_PRESETS.map((p) => ['preset:' + p.id, lensWords(p.label)]))
         .concat([['manual', 'Enter the focal length in pixels']]);
       const kids = [
         field('Lens', selectInput({ act: 'lens-mode', value, options, data: { id: image.id } })),
@@ -677,18 +690,18 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       if (K && K.ok !== false) {
         kids.push(h('div', { class: 'lens-status' },
           h('span', { class: 'badge ' + (K.source === 'default' ? 'warn' : 'ok') }, FOCAL_SOURCE[K.source] || 'Lens'),
-          h('span', null, K.label + (isNum(K.f) ? ' · ' : ''), isNum(K.f) ? h('span', { class: 'num' }, fmtNum(K.f, 0) + ' px') : null)));
+          h('span', null, lensWords(K.label) + (isNum(K.f) ? ' · ' : ''), isNum(K.f) ? h('span', { class: 'num' }, fmtNum(K.f, 0) + ' px') : null)));
       }
-      // The lens setting disagrees with what the rectangles in the photo measure (zoomed Street View, a crop...).
+      // The lens setting disagrees with what the rectangles in the photo measure (a zoomed screenshot, a crop...).
       const mismatch = arr(plan.measured && plan.measured.warnings).find((w) => w && w.code === 'focal-mismatch' && w.imageId === image.id);
       if (mismatch) {
-        kids.push(callout('warn', mismatch.message, {
+        kids.push(callout('warn', lensWords(mismatch.message), {
           key: 'lens-mismatch',
           after: isNum(mismatch.suggestedFocalPx) ? button('Use ' + fmtNum(mismatch.suggestedFocalPx, 0) + ' px', { act: 'lens-use', data: { id: image.id, f: mismatch.suggestedFocalPx }, cls: 'small' }) : null,
         }));
       }
-      if (K && K.exifIgnored) kids.push(callout('info', K.exifIgnored, { key: 'lens-exif-ignored' }));
-      kids.push(h('p', { class: 'hint' }, 'Automatic uses the lens data in the photo, then measures it from a perspective rectangle, and otherwise assumes a phone main camera. For a Street View screenshot, keep Automatic once a rectangle is marked: Street View zooms, so its field of view is not fixed.'));
+      if (K && K.exifIgnored) kids.push(callout('info', lensWords(K.exifIgnored), { key: 'lens-exif-ignored' }));
+      kids.push(h('p', { class: 'hint' }, 'Automatic uses the lens data in the photo, then measures the lens from the rectangle you mark in step 2, and otherwise assumes a phone main camera. For a screenshot, keep Automatic once a rectangle is marked: a screenshot can be zoomed, so how wide it sees is not fixed.'));
       return section('Lens', kids, { key: 'lens' });
     }
 
@@ -700,6 +713,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         kids.push(callout('info', 'Add a photo first.', { after: button('Go to Upload', { act: 'go-step', data: { step: 1 }, cls: 'small' }) }));
         return kids;
       }
+      if (actionsModule.isSmallPhoto(image)) kids.push(callout('warn', smallPhotoText(image), { key: 'small-photo' }));
       // Surfaces
       const rows = planes.map((pl) => {
         const sol = sols[pl.id];
@@ -748,7 +762,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       } else {
         statusRows.push(['How', 'Not measured yet. ' + ((sol && sol.reason) || (pl.kind === 'wall' ? 'Mark a rectangle or add a reference length below.' : ''))]);
       }
-      if (K && K.ok !== false) statusRows.push(['Lens', K.label + (isNum(K.f) ? ' (' + fmtNum(K.f, 0) + ' px)' : '')]);
+      if (K && K.ok !== false) statusRows.push(['Lens', lensWords(K.label) + (isNum(K.f) ? ' (' + fmtNum(K.f, 0) + ' px)' : '')]);
       if (pl.kind === 'roof' && sol && sol.pitch) statusRows.push(['Pitch', sol.pitch.rise + '/' + sol.pitch.run + (sol.pitch.source === 'estimated' ? ' (estimated)' : sol.pitch.source === 'default' ? ' (assumed)' : '')]);
       kids.push(h('div', { class: 'status-card' }, dl(statusRows), conf ? confidenceBlock(conf, 'plane-conf-' + pl.id) : null));
 
@@ -2038,6 +2052,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
 
     return {
       mount, icon, h, morph, pickFile, exportFile, stepWarnings, warningStep, STEPS, validateProducts, diffConfig, ICONS,
-      powerVerdict, outletSummaryText, roughList, planProgress, nextAction, runNextAction,
+      powerVerdict, outletSummaryText, roughList, planProgress, nextAction, runNextAction, lensWords,
     };
   });

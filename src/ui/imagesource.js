@@ -2,7 +2,7 @@
  *
  * An ImageSource is anything that can hand LightPlan one photo of a house. Phase 1 has three working sources
  * (file upload, the phone camera through the file picker, and the built-in sample house) and two Phase 2
- * placeholders (Street View, aerial). New sources plug in through the registry without touching the rest of
+ * placeholders (street-level imagery, aerial). New sources plug in through the registry without touching the rest of
  * the app.
  *
  *   interface ImageSource {
@@ -240,19 +240,19 @@ LP.define('ui.imagesource', ['exif', 'catalog', 'sample'], function (exif, catal
   };
 
   /*
-   * Phase 2: Google Street View Static API. Licensing: Google's terms do not allow storing or caching Street
-   * View imagery beyond short-term caching, require the Google attribution to stay visible on the image, and
-   * forbid measuring from it in some regions' terms; any use needs an API key (billing) and a review of the
-   * current Maps Platform terms. The UI must show `source.attribution` on every view and report of the photo.
-   * Until that review is done the source stays unavailable; users can still upload a screenshot they are
-   * allowed to use and pick the "Street View screenshot" lens preset.
+   * Phase 2 placeholder: a street-level imagery service. The providers' terms generally do not allow storing
+   * their imagery, require their attribution to stay visible on it, and prohibit tracing or measuring from it;
+   * any use needs an API key (billing) and a review of the provider's current terms (see the roadmap). Until a
+   * licensed source is chosen this stays unavailable. Users can upload a photo or screenshot they are allowed to
+   * use and pick the "Screenshot (wide view)" lens preset. The id and kind keep their Phase 1 value ('streetview')
+   * so saved projects stay readable.
    */
   const StreetViewImageSource = {
     id: 'streetview',
-    label: 'Street View (coming later)',
+    label: 'Street-level imagery (not available)',
     kind: 'streetview',
     isAvailable: () => false,
-    acquire: () => Promise.reject(new Error('Street View photos are not available yet. Take a photo or upload a screenshot instead.')),
+    acquire: () => Promise.reject(new Error('Street-level imagery is not available. Take a photo, or upload one you are allowed to use.')),
   };
 
   /*

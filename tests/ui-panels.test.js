@@ -194,6 +194,70 @@ test('UX-06 after Finish the hint bar shows the result and what to trace next', 
   assert.match(app.hintFor(blankStore.ui(), blankStore.project(), blankStore.plan()).text, /no length yet: set the scale in step 2/);
 });
 
+// ---------------------------------------------------------------- Phase 1.1: small fixes (UX-18, SPEC §8.4 wording)
+test('UX-18 the reference hint reads "the entry door height" once, for every two-tap reference', () => {
+  const measure = LP.require('measure');
+  const p = tracedSample();
+  const hintForRef = (presetId) => app.hintFor(Object.assign(storeMod.defaultUI(), { step: 2, mode: { name: 'line', opts: { purpose: 'refLine', planeId: 'pl_front', presetId, lengthFt: 6.67, courses: null } } }), p, null);
+  assert.equal(hintForRef('door-height').text, 'Tap both ends of the entry door height on \'Front wall\'.');
+  const lines = measure.REF_PRESETS.filter((r) => r.kind === 'line');
+  assert.ok(lines.length >= 3);
+  for (const r of lines) {
+    const text = hintForRef(r.id).text;
+    assert.ok(!/\bthe the\b/i.test(text), r.id + ': ' + text);
+    assert.match(text, /^Tap both ends of the [a-z]/, r.id + ': ' + text);
+    assert.ok(!/[()]/.test(text), 'no size in brackets in the instruction: ' + text);
+  }
+  assert.equal(hintForRef('no-such-preset').text, 'Tap both ends of the reference on \'Front wall\'.');
+});
+
+test('UX-18 a walkway that needs the ground first says why in the hint bar, with no toast repeating it; toasts do not follow to the next step', () => {
+  const p = tracedSample();
+  p.planes = p.planes.filter((x) => x.kind !== 'ground');
+  p.features = p.features.filter((f) => f.planeId !== 'pl_yard');
+  const store = storeMod.createStore({ project: p, persist: null });
+  const actions = actionsMod.createActions(store);
+  actions.goStep(3);
+  actions.startTrace('walkway');
+  assert.equal(store.ui().mode.opts.purpose, 'groundBase');
+  assert.equal(store.ui().toast, null, 'no toast with the same sentence as the hint bar');
+  const hint = app.hintFor(store.ui(), store.project(), store.plan());
+  assert.equal(hint.text, 'Walkway lights lie on the ground, so mark the ground first: tap two points along the bottom of \'Front wall\', where it meets the ground.');
+  // The plain "add a ground plane" tool keeps the short instruction.
+  actions.cancelDraft();
+  actions.addPlane('ground');
+  assert.match(app.hintFor(store.ui(), store.project(), store.plan()).text, /^Tap two points along the bottom of 'Front wall'/);
+  actions.cancelDraft();
+  // A toast shown on one step is gone on the next.
+  actions.toast('Enter the length first, for example 6\' 8".', 'warn');
+  assert.ok(store.ui().toast);
+  actions.goStep(4);
+  assert.equal(store.ui().toast, null);
+});
+
+test('UX-18 a photo under 1,000 px wide is called small; the wide-view lens preset is "Screenshot (wide view)"', () => {
+  assert.equal(actionsMod.isSmallPhoto({ width: 640, height: 480, source: { kind: 'upload' } }), true);
+  assert.equal(actionsMod.isSmallPhoto({ width: 999, height: 750, source: { kind: 'camera' } }), true);
+  assert.equal(actionsMod.isSmallPhoto({ width: 1000, height: 750, source: { kind: 'upload' } }), false);
+  assert.equal(actionsMod.isSmallPhoto({ width: 2016, height: 1512, source: { kind: 'upload' } }), false);
+  assert.equal(actionsMod.isSmallPhoto({ width: 640, height: 480, source: { kind: 'sample' } }), false, 'the built-in sample is never called small');
+  assert.equal(actionsMod.isSmallPhoto(null), false);
+  // Whatever a catalog or message still calls it, the screen says "Screenshot (wide view)".
+  const old = ['Street', 'View'].join(' ');
+  assert.equal(panels.lensWords(old + ' screenshot'), 'Screenshot (wide view)');
+  assert.equal(panels.lensWords('Preset: ' + old + ' screenshot (90°)'), 'Preset: Screenshot (wide view) (90°)');
+  assert.equal(panels.lensWords('Phone main camera (1×)'), 'Phone main camera (1×)');
+  const camera = LP.require('camera');
+  for (const preset of camera.CAMERA_PRESETS) assert.ok(!new RegExp(old, 'i').test(panels.lensWords(preset.label)), preset.id);
+  // No on-screen string or comment in the UI sources uses the old name.
+  const fs = require('fs');
+  for (const f of ['actions', 'app', 'export', 'imagesource', 'panels', 'persist', 'preview', 'store', 'viewport']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'ui', f + '.js'), 'utf8');
+    assert.ok(!src.includes(old), 'src/ui/' + f + '.js');
+  }
+  assert.ok(!fs.readFileSync(path.join(__dirname, '..', 'src', 'template.html'), 'utf8').includes(old));
+});
+
 // ---------------------------------------------------------------- Phase 1.1: rough measurements (UX-03, SPEC §8.5 "Step 6")
 test('UX-03 Low-confidence items are counted on the Trace step and listed for Review until they are tape-measured', () => {
   const p = tracedSample();

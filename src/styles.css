@@ -680,6 +680,7 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
 .dz-icon { width: 32px; height: 32px; color: var(--accent); }
 .dz-title { margin: 0; font-weight: 700; font-size: 16px; }
 .dz-sub { margin: 0 0 6px; color: var(--muted); font-size: 14px; }
+.dropzone .btn-row { justify-content: center; }
 .lens-status { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 10px 12px; border-radius: var(--radius); background: var(--surface-2); }
 
 /* step 2 */
@@ -1017,6 +1018,10 @@ textarea.code { font: 13px/1.45 var(--font-mono); white-space: pre; overflow: au
   .lp-app[data-mode="outlet"] .toast-region { right: calc(var(--gutter-r) + 60px); }
 }
 .banner-short { display: none; }
+/* Words that only make sense with a mouse and a wide window (dropping a file onto the page). */
+@media (max-width: 899px), (hover: none) {
+  .desk-only { display: none !important; }
+}
 
 /* Phones: the sample note is one compact row so the photo keeps its room. */
 @media (max-width: 599px) {

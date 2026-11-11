@@ -35,7 +35,10 @@
  *    ground base line tool (line purpose 'groundBase' with opts.thenTrace) and then traces on the new ground.
  *  - addOutlet puts the outlet on the wall under the tap (wallForPoint), never on a roof or ground plane.
  *  - Module exports also parseLength(text) → feet | null, nextFeatureLabel, nextOutletLabel, wallForPoint,
- *    KINDS_FOR_TYPE.
+ *    KINDS_FOR_TYPE, isSmallPhoto(image) (under 1,000 px wide: loadImageFile warns, and the Upload and Calibrate
+ *    panels keep saying so).
+ *  - goStep clears the toast (a message about one step does not follow the user to the next), and starting a
+ *    walkway with no ground plane no longer toasts what the hint bar already says.
  */
 LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesource', 'ui.persist', 'ui.store'],
   function (catalog, schema, measure, sample, imagesource, persist, storeModule) {
@@ -172,6 +175,13 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       return base + ' ' + n;
     }
 
+    /** A photo under this many px wide is too coarse to place corners well (a thumbnail, a small screenshot). */
+    const SMALL_PHOTO_PX = 1000;
+    function isSmallPhoto(image) {
+      return !!(image && Number.isFinite(image.width) && image.width > 0 && image.width < SMALL_PHOTO_PX &&
+        !(image.source && image.source.kind === 'sample'));
+    }
+
     /** Surface kinds each feature type can lie on; the first is preferred when the active surface does not fit. */
     const KINDS_FOR_TYPE = {
       roofline: ['wall'], gutter: ['wall'], window: ['wall'], door: ['wall'], railing: ['wall'], column: ['wall'], bush: ['wall'],
@@ -285,7 +295,8 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       // ------------------------------------------------------------ navigation, selection, view
       actions.goStep = (n) => {
         const step = Math.max(1, Math.min(6, Math.round(Number(n) || 1)));
-        store.setUI(Object.assign({ step, selection: null }, SELECT()));
+        // A message about the step being left does not follow the user to the next one.
+        store.setUI(Object.assign({ step, selection: null, toast: null }, SELECT()));
       };
       actions.select = (sel) => {
         // Picking anything but the item just traced (or nothing) ends the "trace next" offer in the hint bar.
@@ -578,9 +589,9 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
           const active = byId(p.planes, U().activePlaneId);
           const wall = (active && active.kind === 'wall' ? active : null) || p.planes.find((x) => x.kind === 'wall' && (!img || x.imageId === img.id));
           if (!wall) { actions.toast('Add a photo first.', 'warn'); return; }
+          // The hint bar explains why (opts.thenTrace); a toast with the same sentence would only cover the wall.
           store.setUI({ traceType: type });
           actions.setMode('line', { purpose: 'groundBase', planeId: wall.id, pitch: null, thenTrace: type });
-          actions.toast(FEATURE_TYPES[type].short + 's lie on the ground, so LightPlan needs the ground first: tap two points along the bottom of \'' + wall.name + '\', where it meets the ground.', 'info');
           return;
         }
         const plane = pick.plane;
@@ -1076,7 +1087,11 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
             view: Object.assign({}, U().view, { night: false, twinkle: false }),
           }));
           const lens = img.exif && img.exif.focal35 ? ' The lens was read from the photo.' : '';
-          actions.toast('Photo added.' + lens + ' You are now on step 2: set the scale by marking something whose size you know.', 'ok');
+          if (isSmallPhoto(image)) {
+            actions.toast('Photo added, but it is small (' + image.width + ' px wide), so corners are hard to place and lengths come out rough. Use the original photo from the camera if you can. You are now on step 2: set the scale.', 'warn');
+          } else {
+            actions.toast('Photo added.' + lens + ' You are now on step 2: set the scale by marking something whose size you know.', 'ok');
+          }
           return true;
         })).catch((e) => {
           store.setUI({ busy: null });
@@ -1178,5 +1193,5 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       return actions;
     }
 
-    return { createActions, parseLength, nextFeatureLabel, nextOutletLabel, wallForPoint, KINDS_FOR_TYPE };
+    return { createActions, parseLength, nextFeatureLabel, nextOutletLabel, wallForPoint, KINDS_FOR_TYPE, isSmallPhoto, SMALL_PHOTO_PX };
   });

@@ -525,7 +525,7 @@ async function runMeasureChecks(browser) {
   try {
     await page.goto(URL);
     await waitForApp(page);
-    // Street View preset on the sample (its rectangles measure a ~69° lens, not 90°).
+    // The wide-screenshot lens preset on the sample (its rectangles measure a ~69° lens, not 90°).
     await page.evaluate(() => {
       const s = window.LightPlanApp.store;
       window.LightPlanApp.actions.updateImageCamera(s.project().images[0].id, { mode: 'preset', presetId: 'streetview' });

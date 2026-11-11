@@ -192,10 +192,15 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
       }
       if (mode.name === 'line') {
         if (o.purpose === 'roofEave') return { text: 'Tap both ends of the eave where the roof slope meets ' + pname + '.', count: pts + ' of 2', finish: false };
-        if (o.purpose === 'groundBase') return { text: 'Tap two points along the bottom of ' + pname + ', where it meets the ground.', count: pts + ' of 2', finish: false };
+        if (o.purpose === 'groundBase') {
+          // On the way to a walkway or stake lights: say why the ground comes first (the hint bar says it once;
+          // no toast repeats it over the wall being tapped).
+          const then = o.thenTrace && FEATURE_TYPES[o.thenTrace] ? FEATURE_TYPES[o.thenTrace].short : null;
+          return { text: (then ? then + ' lights lie on the ground, so mark the ground first: tap' : 'Tap') + ' two points along the bottom of ' + pname + ', where it meets the ground.', count: pts + ' of 2', finish: false };
+        }
         if (o.purpose === 'planeLine') return { text: plane && plane.kind === 'roof' ? 'Tap both ends of the eave again.' : 'Tap two points along the bottom of the wall again.', count: pts + ' of 2', finish: false };
         if (o.courses) return { text: 'Tap the bottom edge of one course, then the bottom edge of the course ' + o.courses + ' courses up.', count: pts + ' of 2', finish: false };
-        return { text: 'Tap both ends of the ' + referenceName(o.presetId).replace(/^an? /, '') + ' on ' + pname + '.', count: pts + ' of 2', finish: false };
+        return { text: 'Tap both ends of ' + referenceName(o.presetId) + ' on ' + pname + '.', count: pts + ' of 2', finish: false };
       }
       if (mode.name === 'trace') {
         const ft = FEATURE_TYPES[o.type];
@@ -214,12 +219,18 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
         'custom-rect': 'the rectangle', unknown: 'the rectangle (for example the wall corners)',
       }[presetId] || 'the rectangle';
     }
+    /** "the entry door height": a reference by name, with its article, for "Tap both ends of …". */
     function referenceName(presetId) {
-      return {
+      const known = {
         'door-height': 'the entry door height', 'door-width': 'the entry door width', 'door-rect': 'the entry door',
         'garage-single': 'the garage door', 'garage-double': 'the garage door', 'garage-height': 'the garage door height',
         'custom-line': 'the line you measured', 'custom-rect': 'the rectangle you measured',
-      }[presetId] || 'the reference';
+      }[presetId];
+      if (known) return known;
+      // Presets this file does not list (new ones in measure.REF_PRESETS): their own label, without the size.
+      const preset = measure.getRefPreset ? measure.getRefPreset(presetId) : null;
+      const label = preset && typeof preset.label === 'string' ? preset.label.replace(/\s*\(.*\)\s*$/, '').trim() : '';
+      return label ? 'the ' + label.charAt(0).toLowerCase() + label.slice(1) : 'the reference';
     }
 
     function wireShell(env) {
