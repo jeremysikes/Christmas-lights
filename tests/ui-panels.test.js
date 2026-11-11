@@ -54,13 +54,17 @@ test('warnings are routed to the step that can fix them', () => {
   const step5Of = (pl) => pl.warnings.filter((w) => (w.level === 'warn' || w.level === 'danger') && panels.warningStep(w) === 5).map((w) => w.code);
   // Phase 1.1: with runs linked by jumpers, two cords go back to the outlets and none crosses the door or the walkway.
   assert.deepEqual(step5Of(plan.computePlan(s.project)), [], 'the linked sample plan has no power warnings');
-  // One cord per run (daisy chains off): the cord to the door lights ends just inside the walkway in front of the door.
+  // One cord per run (daisy chains off): the cord to the door lights stops at the jamb, a foot inside the walkway
+  // edge, which is not a crossing (review finding U16), so the plan is still clean.
   const flat = JSON.parse(JSON.stringify(s.project));
   flat.library = { products: null, config: { power: { daisyChain: false } } };
+  assert.deepEqual(step5Of(plan.computePlan(flat)), [], 'one cord per run needs no cord cover on the sample');
+  // With no penalty for crossings the nearer porch outlet feeds Bush 2 and the far walkway edge, past the door.
+  flat.library.config.power.crossingPenaltyFt = 0;
   const samplePlan = plan.computePlan(flat);
   const counts = panels.stepWarnings(samplePlan);
   const step5 = step5Of(samplePlan);
-  assert.deepEqual(step5.slice().sort(), ['cord-walkway'], 'without jumpers the sample has a walkway warning');
+  assert.deepEqual(step5.slice().sort(), ['cord-doorway', 'cord-doorway', 'cord-walkway', 'cord-walkway', 'many-cords'], 'cords past the door and across the walkway are flagged');
   assert.equal(counts[5].count, step5.length);
   assert.equal(counts[5].level, 'warn');
   assert.equal(counts[1].count, 0, 'info and the disclaimer are not counted');
@@ -454,7 +458,10 @@ test('8.5 "Give this run its own cord" and "Link nearby runs" reach the planner 
   const flat = store.plan().power.counts;
   assert.equal(flat.jumpers, 0);
   assert.equal(flat.homeRuns, store.plan().power.feeds.length);
-  assert.equal(panels.powerVerdict(store.plan()).level, 'warn', 'one cord per run crosses the walkway on the sample: the sentence says to fix it');
+  assert.equal(panels.powerVerdict(store.plan()).level, 'ok', 'one cord per run is still a clean plan on the sample');
+  // Cords laid past the door (no penalty for crossings): the sentence says there is something to fix.
+  actions.setLibraryConfig({ power: { daisyChain: false, crossingPenaltyFt: 0 } });
+  assert.equal(panels.powerVerdict(store.plan()).level, 'warn');
 });
 
 // ---------------------------------------------------------------- Phase 1.1: tap precision on screen (SPEC §8.4)

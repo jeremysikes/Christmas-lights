@@ -61,8 +61,9 @@ test('light lines are grouped by product and color mode, in run order', () => {
     ['c9-led', 'C9 LED string, 25 bulbs - Warm white', 3],
     ['mini-led-100', '5 mm mini LED string, 100 bulbs - Warm white', 4],
     ['c9-led', 'C9 LED string, 25 bulbs - Multicolor', 3],
-    ['c9-led', 'C9 LED string, 25 bulbs - Custom (#ff0000)', 1],
-    ['c9-led', 'C9 LED string, 25 bulbs - Custom (#00ff00)', 1],
+    // Custom colours are named by colour family, not printed as codes (review finding U12).
+    ['c9-led', 'C9 LED string, 25 bulbs - Red', 1],
+    ['c9-led', 'C9 LED string, 25 bulbs - Green', 1],
   ]);
   const warm = lights[0];
   // SPEC section 8.3: every line also says where it is bought. With no supplier chosen that is "Any store".
@@ -170,7 +171,7 @@ test('a run whose product left the library still gets a line, priced at 0 with a
 });
 
 test('buildBom never throws, never mutates and copes with missing pieces', () => {
-  assert.deepEqual(bom.buildBom(null, null, null, null), { ok: true, lines: [], subtotal: 0, byCategory: { lights: 0, clips: 0, cords: 0, power: 0, hardware: 0 } });
+  assert.deepEqual(bom.buildBom(null, null, null, null), { ok: true, lines: [], subtotal: 0, byCategory: { lights: 0, clips: 0, cords: 0, power: 0, hardware: 0 }, orderTotal: 0, costBasis: 'bought' });
   const odd = bom.buildBom(42, [null, 1, 'x', { quantity: 'many' }, run('ok', { clips: { type: 'gutter', count: 'lots' } })], 'power', { products: 'nope' });
   assert.equal(odd.ok, true);
   assert.deepEqual(odd.lines.map((l) => l.sku), ['c9-led']);

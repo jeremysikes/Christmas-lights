@@ -760,7 +760,7 @@ test('a cord along the ground is flagged where it passes a traced door; a jumper
   assert.equal(feedOf(pw, 'run_ft_door').crossesDoorway, false, 'the door lights themselves start at the door');
   const dw = byCode(pw, 'cord-doorway');
   assert.equal(dw.length, 1);
-  assert.match(dw[0].message, /^The cord to the top-left corner of Window right passes Front door\. Run it along the bottom of the wall under a cord cover/);
+  assert.match(dw[0].message, /^The cord to the top-left corner of Window right runs along the ground in front of Front door\. Keep it tight against the doorstep under a cord cover so nobody trips, or use an outlet on the other side of the door\.$/);
   assert.equal(pw.counts.cordCovers, 1);
   // Linked runs: the door lights carry the power over the doorway, and the right window hangs off their end.
   const linked = plan(p).power;
@@ -787,11 +787,12 @@ test('sample house, one cord per run: Bush 2 is fed from the garage side; from t
     const f = feedOf(pw, id);
     assert.equal(f.crossesWalkway || f.crossesDoorway, false, id);
   }
-  // The door lights start at the door's bottom-left corner (u 15.5), just inside the walkway (u 15 to 19):
-  // that cord crosses the walkway's left edge but not its own doorway.
+  // The door lights start at the door's bottom-left corner (u 15.5), half a foot inside the walkway (u 15 to 19).
+  // That cord stops at the jamb: it lies across no more than a foot of the walkway and not across its own
+  // doorway, so it needs no cord cover (review finding U16; it used to count as crossing the walkway's left edge).
   assert.equal(feedOf(pw, 'run_ft_door').crossesDoorway, false);
-  assert.equal(feedOf(pw, 'run_ft_door').crossesWalkway, true);
-  assert.equal(pw.counts.cordCovers, 1);
+  assert.equal(feedOf(pw, 'run_ft_door').crossesWalkway, false);
+  assert.equal(pw.counts.cordCovers, 0);
   // Without the penalty the nearer porch outlet wins, and the crossings are flagged.
   const flat = run({ daisyChain: false, crossingPenaltyFt: 0 });
   const b2 = feedOf(flat.power, 'run_ft_bush_2');

@@ -126,8 +126,11 @@ test('setBuying: style and cost basis are stored only when they differ from the 
 });
 
 test('cost basis "used" charges the job for the share it uses; the order sheets still total what is ordered', () => {
-  const bought = planned('cle');
-  const used = planned('cle', { costBasis: 'used' });
+  // "Only what is used" is an installer's costing: it applies with installer mode on (review finding U04).
+  const installer = (p) => { p.quote = Object.assign({}, p.quote, { enabled: true }); };
+  const bought = planned('cle', null, installer);
+  const used = planned('cle', { costBasis: 'used' }, installer);
+  assert.deepEqual(planned('cle', { costBasis: 'used' }).plan.bom.subtotal, planned('cle').plan.bom.subtotal, 'installer mode off: priced as everything ordered');
   const shares = used.plan.bom.lines.filter((l) => l.usedQty < l.qty);
   assert.ok(shares.length >= 3, 'wire, bulbs and plugs are bought by the spool, box and pack');
   assert.ok(used.plan.bom.subtotal < bought.plan.bom.subtotal, 'the job costs less when leftovers are kept');

@@ -786,7 +786,8 @@ test('8.3 the shopping-list CSV gains Supplier, Part number, Price status and Li
       } else assert.equal(r[col('Supplier')], 'Any store');
     });
     assert.ok(plan.bom.lines.some((l) => l.supplierSku), 'the plan has part numbers to print');
-    assert.ok(text.includes('Prices were last checked on ' + PRICE_DATE + '; confirm at checkout.'));
+    // The list mixes supplier and any-store lines, so only the supplier prices are called "checked" (review finding D9).
+    assert.ok(text.includes('Supplier prices were last checked on ' + PRICE_DATE + '; the other prices are typical store prices. Confirm at checkout.'));
   }
 });
 
@@ -842,7 +843,7 @@ test('8.5 the report\'s materials table shows supplier and part number, the pric
     assert.ok(all.includes('as of ' + PRICE_DATE + ' · checked'));
     assert.ok(all.includes('typical price'), 'any-store lines say their price is a typical one');
     // Under the table.
-    assert.ok(flat.includes('Prices were last checked on ' + PRICE_DATE + '; confirm at checkout.'));
+    assert.ok(flat.includes('Supplier prices were last checked on ' + PRICE_DATE + '; the other prices are typical store prices. Confirm at checkout.'));
     // Where to buy: site, phone, the sentence about the prices, and the link of every line.
     const where = flat.slice(flat.indexOf('Where to buy'), flat.indexOf('Power plan'));
     assert.ok(where.includes(s.name) && where.includes('Site: ' + s.url), 'the supplier and its site');

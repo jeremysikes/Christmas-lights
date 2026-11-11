@@ -37,12 +37,14 @@
  *    never picked for someone who does not cut wire). No match keeps the generic product. resolveProduct then
  *    returns source 'supplier'. The stand-in search (fallbackProduct) only looks at generic products and the
  *    chosen supplier's, so another supplier's catalog never leaks into a plan; a product picked on the run
- *    itself may be from any supplier.
+ *    itself may be from any supplier. A supplier item that is not sold in the run's colour (its `colors` list)
+ *    is never picked automatically: the any-store product stays, so no part number of another colour is ordered.
  *  - Bulk products (unit 'foot', kind 'bulk') get one clip per socket (their own bulbSpacingIn, not
- *    config.clipSpacingIn) and the detail says how many sockets that is. Runs of supplier products carry
+ *    config.clipSpacingIn) and the detail says how many sockets that is. Their watts follow the run's colours
+ *    (suppliers.bulkWatts): a colour the supplier sells as a hungrier bulb line counts at its own watts. Runs of supplier products carry
  *    `supplierId`, and `productKind: 'bulk'` when cut to length.
  */
-LP.define('design', ['catalog'], function (catalog) {
+LP.define('design', ['catalog', 'suppliers'], function (catalog, suppliers) {
   'use strict';
 
   const { FEATURE_TYPES, LINEAR_TYPES } = catalog;
@@ -112,14 +114,21 @@ LP.define('design', ['catalog'], function (catalog) {
     const sup = preferredSupplier(lib);
     return lib.products.filter((p) => isObj(p) && (!catalog.isSupplierProduct(p) || p.supplierId === sup));
   }
+  /** Is the product sold in this colour mode? A product with no colour list, or no mode asked for, always is. */
+  function soldIn(p, colorMode) {
+    if (!colorMode || !Array.isArray(p.colors) || !p.colors.length) return true;
+    return p.colors.includes(colorMode);
+  }
   /**
    * The chosen supplier's usable product that fills the role of generic product `equivId`, or null.
    * Buying style 'bulk': the cut-to-length product first, else a ready-made one. 'strings': ready-made only.
+   * `colorMode` (the run's colour): a supplier item that is not sold in it is never picked, so the any-store
+   * product stays and no part number of another colour reaches the order sheet.
    */
-  function supplierEquivalent(equivId, lib) {
+  function supplierEquivalent(equivId, lib, colorMode) {
     const sup = preferredSupplier(lib);
     if (!sup || !equivId) return null;
-    const list = lib.products.filter((p) => isObj(p) && p.supplierId === sup && p.equiv === equivId && isUsable(p));
+    const list = lib.products.filter((p) => isObj(p) && p.supplierId === sup && p.equiv === equivId && isUsable(p) && soldIn(p, colorMode));
     const strings = list.filter((p) => !isBulk(p));
     const style = lib.config && lib.config.buying && lib.config.buying.style === 'strings' ? 'strings' : 'bulk';
     if (style === 'strings') return strings[0] || null;
@@ -162,10 +171,12 @@ LP.define('design', ['catalog'], function (catalog) {
    * (fallbackProduct: LED first, then the same category or unit as the default). A product the user picked
    * explicitly does not have to be "suitable" (nets on a roofline are allowed), it only has to exist and be
    * enabled. Whenever the type default is unavailable and another product stands in, a warning says which.
-   * Returns {product|null, source, warnings}.
+   * opts.colorMode (the run's colour mode) keeps the automatic choice away from supplier items that are not
+   * sold in that colour. Returns {product|null, source, warnings}.
    */
-  function resolveProduct(feature, library) {
+  function resolveProduct(feature, library, opts) {
     const lib = library && Array.isArray(library.products) ? library : catalog.getLibrary(null);
+    const colorMode = opts && typeof opts.colorMode === 'string' && opts.colorMode ? opts.colorMode : null;
     const type = feature && feature.type;
     const label = (feature && feature.label) || (FEATURE_TYPES[type] && FEATURE_TYPES[type].label) || 'This feature';
     const warnings = [];
@@ -184,7 +195,7 @@ LP.define('design', ['catalog'], function (catalog) {
     const defProduct = defId ? catalog.getProduct(lib.products, defId) : null;
     // Buying from a supplier: its product for the same job replaces the generic default (SPEC §8.3).
     if (defId && !catalog.isSupplierProduct(defProduct)) {
-      const own = supplierEquivalent(defId, lib);
+      const own = supplierEquivalent(defId, lib, colorMode);
       if (own) return { product: own, source: 'supplier', warnings };
     }
     if (isUsable(defProduct)) return { product: defProduct, source: 'typeDefault', warnings };
@@ -192,7 +203,7 @@ LP.define('design', ['catalog'], function (catalog) {
     const ref = defProduct || (defId && catalog.getProduct(catalog.DEFAULT_PRODUCTS, defId)) || wantedProduct ||
       (FEATURE_TYPES[type] && catalog.getProduct(catalog.DEFAULT_PRODUCTS, FEATURE_TYPES[type].defaultProduct)) || null;
     const generic = fallbackProduct(type, lib, ref);
-    const fallback = generic && !catalog.isSupplierProduct(generic) ? (supplierEquivalent(generic.id, lib) || generic) : generic;
+    const fallback = generic && !catalog.isSupplierProduct(generic) ? (supplierEquivalent(generic.id, lib, colorMode) || generic) : generic;
     if (fallback) {
       const what = PLURAL[type] || 'this feature';
       const name = fallback.name || fallback.id;
@@ -391,8 +402,8 @@ LP.define('design', ['catalog'], function (catalog) {
       const ftype = FEATURE_TYPES[feature.type];
       const label = (typeof feature.label === 'string' && feature.label.trim()) ? feature.label.trim() : ftype.label;
       const feat = Object.assign({}, feature, { label });
-      const { product, warnings } = resolveProduct(feat, lib);
       const colors = catalog.resolveColors(feature.color, settings);
+      const { product, warnings } = resolveProduct(feat, lib, { colorMode: colors.mode });
       const run = {
         id: 'run_' + feature.id, featureId: feature.id, featureType: feature.type, label,
         planeId: feature.planeId || null, imageId: feature.imageId || null,
@@ -411,8 +422,8 @@ LP.define('design', ['catalog'], function (catalog) {
         run.warnings.push(`${run.productName} has no valid price in the product library${shown}, so the shopping list prices it at $0. Fix it in the product library.`);
       }
       if (product && Array.isArray(product.colors) && product.colors.length && !product.colors.includes(colors.mode)) {
-        const modeLabel = (catalog.COLOR_MODES[colors.mode] && catalog.COLOR_MODES[colors.mode].label) || colors.mode;
-        run.warnings.push(`${label}: ${run.productName} is not sold in ${modeLabel.toLowerCase()}. Pick another color or product.`);
+        const modeLabel = colors.mode === 'custom' ? 'custom colors' : ((catalog.COLOR_MODES[colors.mode] && catalog.COLOR_MODES[colors.mode].label) || colors.mode).toLowerCase();
+        run.warnings.push(`${label}: ${run.productName} is not sold in ${modeLabel}. Pick another color or product.`);
       }
 
       const fm = fms[feature.id];
@@ -444,6 +455,12 @@ LP.define('design', ['catalog'], function (catalog) {
       if (isBulk(product) && q.method === 'per-foot' && quantity > 0 && pos(product.bulbSpacingIn)) {
         const sockets = Math.ceil((quantity * 12) / product.bulbSpacingIn - 1e-9);
         run.bulbs = sockets;
+        // Watts by the bulbs in this run's colours: a colour sold as a hungrier bulb line counts at its own figure.
+        const byColour = suppliers.bulkWatts(product, { colorMode: colors.mode, colors: colors.colors }, sockets);
+        if (byColour !== null && byColour > run.watts + 1e-9) {
+          run.watts = round(byColour, 2);
+          run.amps = round(run.watts / voltage, 4);
+        }
         run.detail += ` of socket wire = ${num(sockets, 0)} ${sockets === 1 ? 'socket' : 'sockets'} (one every ${short(product.bulbSpacingIn)} in), one bulb each`;
       }
       run.warnings.push(...q.warnings);

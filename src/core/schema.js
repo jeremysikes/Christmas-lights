@@ -341,7 +341,7 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
         description: 'How C7/C9 from the chosen supplier is bought and costed (library.config.buying). Both keys are optional.',
         properties: {
           style: { enum: ENUMS.buyingStyle.slice(), description: 'bulk = socket wire cut to length, bulbs by the box and slide-on plugs (default); strings = ready-made strings.' },
-          costBasis: { enum: ENUMS.costBasis.slice(), description: 'bought = the plan costs everything that is ordered (default); used = only the share of bulk wire, bulbs and plugs this job uses.' },
+          costBasis: { enum: ENUMS.costBasis.slice(), description: 'bought = the plan costs everything that is ordered (default); used = only the share of bulk wire, bulbs and plugs this job uses (applies in installer mode only; the order itself is the same).' },
         },
       },
       offer: {
@@ -355,7 +355,7 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
           price: { type: 'number', minimum: 0, description: 'Price of one pack, spool or piece in USD.' },
           packQty: { type: 'number', exclusiveMinimum: 0, description: 'How many come in one pack.' },
           priceAsOf: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Day the price was seen (YYYY-MM-DD).' },
-          priceStatus: { enum: ENUMS.priceStatus.slice(), description: 'verified = seen on the supplier\'s page that day; observed = seen in a search result, not confirmed.' },
+          priceStatus: { enum: ENUMS.priceStatus.slice(), description: 'verified = read on the item\'s own page at the supplier that day; observed = seen on the supplier\'s category list only, or a per-foot price worked out for a kit, or a colour whose own price was not read ("check the price").' },
           notes: { type: 'string', description: 'A short caution printed on the BOM line.' },
         },
       },
@@ -422,7 +422,7 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
           supplierSku: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'The part number to type at the supplier; null = not confirmed, order from the link.' },
           url: { anyOf: [{ type: 'string', pattern: '^https://' }, { type: 'null' }], description: 'Product page at the supplier (https only).' },
           priceAsOf: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Day the price was seen (YYYY-MM-DD).' },
-          priceStatus: { enum: ENUMS.priceStatus.slice(), description: 'verified = seen on the supplier\'s page that day; observed = seen in a search result, not confirmed.' },
+          priceStatus: { enum: ENUMS.priceStatus.slice(), description: 'verified = read on the item\'s own page at the supplier that day; observed = seen on the supplier\'s category list only, or a per-foot price worked out for a kit, or a colour whose own price was not read ("check the price").' },
           equiv: { type: 'string', description: 'Id of the generic product whose job this one does, e.g. "c9-led": the planner swaps it in when the project buys from this supplier.' },
           kind: { anyOf: [{ enum: ENUMS.productKind.slice() }, { type: 'null' }], description: 'bulk = socket wire cut to length + bulbs + plugs, planned per foot (unit "foot"). Missing or null = a ready-made product.' },
           components: { anyOf: [ref('bulkComponents'), { type: 'null' }], description: 'Bulk only: the parts it is bought as (wire, bulbs, plugs).' },
@@ -1258,11 +1258,11 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
         for (const k of ['stringLengthFt', 'maxEndToEnd']) if (!(typeof x[k] === 'number' && Number.isFinite(x[k]) && x[k] > 0)) err(who + ': "' + k + '" must be a number above 0.');
         // Supplier fields (SPEC §8.3) are free-form except links and the price status.
         if (x.url != null && suppliers.safeUrl(x.url) === null) err(who + ': the link must be an https address.');
-        if (x.priceStatus !== undefined && !ENUMS.priceStatus.includes(x.priceStatus)) err(who + ': "priceStatus" must be one of ' + ENUMS.priceStatus.join(', ') + '.');
+        if (x.priceStatus !== undefined && !ENUMS.priceStatus.includes(x.priceStatus)) err(who + ': the price check must be ' + ENUMS.priceStatus.map((v) => '"' + v + '"').join(' or ') + '.');
         if (x.kind !== undefined && x.kind !== null && !ENUMS.productKind.includes(x.kind)) err(who + ': "kind" must be "bulk" or left out.');
         for (const c of suppliers.componentOffers(x)) {
           if (c.offer.url != null && suppliers.safeUrl(c.offer.url) === null) err(who + ': the link of one of its parts must be an https address.');
-          if (c.offer.priceStatus !== undefined && !ENUMS.priceStatus.includes(c.offer.priceStatus)) err(who + ': the "priceStatus" of one of its parts must be one of ' + ENUMS.priceStatus.join(', ') + '.');
+          if (c.offer.priceStatus !== undefined && !ENUMS.priceStatus.includes(c.offer.priceStatus)) err(who + ': the price check of one of its parts must be ' + ENUMS.priceStatus.map((v) => '"' + v + '"').join(' or ') + '.');
         }
       });
       if (lib.config !== null && !isObj(lib.config)) err('The library config overrides must be an object or empty.');

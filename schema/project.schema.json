@@ -1291,7 +1291,7 @@
             "bought",
             "used"
           ],
-          "description": "bought = the plan costs everything that is ordered (default); used = only the share of bulk wire, bulbs and plugs this job uses."
+          "description": "bought = the plan costs everything that is ordered (default); used = only the share of bulk wire, bulbs and plugs this job uses (applies in installer mode only; the order itself is the same)."
         }
       }
     },
@@ -1361,7 +1361,7 @@
             "verified",
             "observed"
           ],
-          "description": "verified = seen on the supplier's page that day; observed = seen in a search result, not confirmed."
+          "description": "verified = read on the item's own page at the supplier that day; observed = seen on the supplier's category list only, or a per-foot price worked out for a kit, or a colour whose own price was not read (\"check the price\")."
         },
         "notes": {
           "type": "string",
@@ -1670,7 +1670,7 @@
             "verified",
             "observed"
           ],
-          "description": "verified = seen on the supplier's page that day; observed = seen in a search result, not confirmed."
+          "description": "verified = read on the item's own page at the supplier that day; observed = seen on the supplier's category list only, or a per-foot price worked out for a kit, or a colour whose own price was not read (\"check the price\")."
         },
         "equiv": {
           "type": "string",

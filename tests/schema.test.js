@@ -595,8 +595,8 @@ test('supplier fields on products are kept as they are, except links that are no
   const errors = schema.validateProject(dirty).errors;
   assert.equal(errors.filter((e) => /the link must be an https address/.test(e)).length, 2, errors.join(' | '));
   assert.equal(errors.filter((e) => /the link of one of its parts must be an https address/.test(e)).length, 2);
-  assert.ok(errors.some((e) => /"priceStatus" must be one of verified, observed/.test(e)));
-  assert.ok(errors.some((e) => /the "priceStatus" of one of its parts must be one of verified, observed/.test(e)));
+  assert.ok(errors.some((e) => /the price check must be "verified" or "observed"/.test(e)));
+  assert.ok(errors.some((e) => /the price check of one of its parts must be "verified" or "observed"/.test(e)));
   const fixed = schema.normalizeProject(dirty);
   const fs2 = fixed.library.products.find((x) => x.id === 'cle:c9-string-25');
   const fb = fixed.library.products.find((x) => x.id === 'cle:c9-bulk-12');

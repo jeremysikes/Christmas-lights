@@ -31,7 +31,7 @@ function bulkRun(id, o = {}) {
     colorMode: 'warmWhite', colors: ['#ffc46b'], lengthFt: 34, withWasteFt: 37.4, quantity: 38, bulbs: 38, watts: 30.4, amps: 0.25,
     clips: null, lightStakes: 0, method: 'per-foot', detail: '', warnings: [],
     start: null, end: null, reversed: false, chainId: null, feedIds: [], outletId: null, circuitId: null,
-  }, o);
+  }, o.quantity !== undefined && o.lengthFt === undefined ? { lengthFt: Math.round((o.quantity / 1.1) * 100) / 100, withWasteFt: o.quantity } : {}, o);
 }
 function project(o = {}) {
   return Object.assign({
@@ -141,8 +141,9 @@ test('safeUrl keeps plain https addresses only', () => {
 // ---------------------------------------------------------------- data integrity (what was seen on the suppliers' pages on 2026-11-11)
 test('data: every offer has a link, the day it was seen and a price status; a verified offer has its part number', () => {
   const offers = allOffers();
-  // Christmas Lights Etc: 22 bulk parts, 6 ready-made products, 5 accessories. 1000Bulbs: 20, 5 and 5.
-  assert.equal(offers.length, 63);
+  // Christmas Lights Etc: 24 bulk parts, 6 ready-made products, 5 accessories. 1000Bulbs: 23, 5 and 5.
+  // (The 50 ft lengths of socket wire were added after the review: finding D4.)
+  assert.equal(offers.length, 68);
   const skus = new Set();
   for (const { supplierId, where, offer: o, kind } of offers) {
     assert.ok(['cle', '1000bulbs'].includes(supplierId), where);
@@ -167,13 +168,13 @@ test('data: every offer has a link, the day it was seen and a price status; a ve
   }
   // Seen on a category list only (the item's own page was not opened): "check the price", and the line says why.
   const observed = offers.filter((x) => x.offer.priceStatus === 'observed');
-  assert.deepEqual(observed.map((x) => x.offer.supplierSku).sort(), ['CMS-10093', 'CMS-10323', 'CMS-C7BLU', 'CMS-C9BLU']);
+  assert.deepEqual(observed.map((x) => x.offer.supplierSku).sort(), ['CMS-10093', 'CMS-10122', 'CMS-10318', 'CMS-10319', 'CMS-10323', 'CMS-C7BLU', 'CMS-C9BLU']);
   for (const { offer: o, where } of observed) assert.ok(o.notes.endsWith(LISTED_ONLY), where);
   for (const { offer: o, where } of offers.filter((x) => x.offer.priceStatus === 'verified')) {
     assert.ok(!/category list only/.test((o.notes || '') + (o.orderNote || '')), where);
   }
-  assert.equal(offers.filter((x) => x.offer.priceStatus === 'verified').length, 59);
-  assert.equal(offers.filter((x) => x.supplierId === 'cle').length, 33);
+  assert.equal(offers.filter((x) => x.offer.priceStatus === 'verified').length, 61);
+  assert.equal(offers.filter((x) => x.supplierId === 'cle').length, 35);
   assert.ok(offers.filter((x) => x.supplierId === 'cle').every((x) => x.offer.priceStatus === 'verified'), 'every Christmas Lights Etc item was read on its own page');
 });
 
@@ -220,10 +221,10 @@ test('data: watts and a run limit on every product, taken from its page; the low
   // The net's page says 25 nets (240 W); the plan stays at 22 (216 W).
   assert.match(by('1000bulbs:net-4x6-100').notes, /The page says up to 25 nets end to end \(240 W\); LightPlan plans at most 22 \(216 W\)/);
   assert.ok(by('1000bulbs:net-4x6-100').maxEndToEnd * 9.6 <= 216);
-  // The 25-bulb, 25 ft sets: the page gives no connect limit, so the trade rule for the wire is used (250 bulbs).
+  // The 25-bulb, 25 ft sets: the trade rule for the wire is used (250 bulbs), whatever the page prints (finding D10).
   for (const id of ['cle:c9-string-25', 'cle:c7-string-25']) {
     assert.equal(by(id).maxEndToEnd * by(id).bulbsPerUnit, 250);
-    assert.match(by(id).notes, /gives no limit for sets joined end to end: LightPlan plans at most 10 sets \(250 ft, 250 bulbs\) on one run/);
+    assert.match(by(id).notes, /LightPlan plans at most 10 sets \(250 ft, 250 bulbs, 200 W\) on one run, the trade rule for this wire, whatever larger figure the supplier's page prints/);
   }
   // Every LED set stays within 216 W end to end.
   for (const p of suppliers.SUPPLIER_PRODUCTS.filter((x) => x.kind !== 'bulk')) assert.ok(p.maxEndToEnd * p.wattsPerUnit <= 216 + 1e-9, p.id);
@@ -312,7 +313,9 @@ test('bulk C7/C9 products are per-foot products with derived limits and priced c
     assert.equal(p.maxEndToEnd, 250, '250 bulbs or 250 ft of line, whichever comes first');
     assert.equal(p.maxRunFt, 250);
     assert.equal(p.maxBulbsPerRun, 250);
-    assert.ok(Math.abs(p.maxConnectedW - 250 * c.bulb.wattsEach) < 1e-9, p.id + ': one run carries at most 250 bulbs');
+    // 250 bulbs of the hungriest colour on file still fit one run (finding D5: blue C7 at 1000Bulbs is 0.54 W).
+    const top = Math.max(c.bulb.wattsEach, ...Object.values(c.bulb.variants).map((v) => v.wattsEach || 0));
+    assert.ok(Math.abs(p.maxConnectedW - 250 * top) < 1e-9, p.id + ': one run carries at most 250 bulbs');
     const amps = [c.wire].concat(c.wire.sizes).map((w) => w.maxAmps).filter((a) => a !== undefined);
     for (const a of amps) assert.ok(p.maxConnectedW <= a * 120 * 0.8, p.id + ': and never more than any amp rating printed for the wire');
     assert.equal(p.equiv, p.category === 'c9' ? 'c9-led' : 'c7-led');
@@ -336,13 +339,13 @@ test('bulk C7/C9 products are per-foot products with derived limits and priced c
   }
   const [cle9, cle7, tb9, tb7] = bulk;
   assert.deepEqual([cle9.wattsPerUnit, cle7.wattsPerUnit, tb9.wattsPerUnit, tb7.wattsPerUnit], [0.8, 0.8, 0.74, 0.48], 'watts per bulb as each supplier lists them');
-  assert.deepEqual([cle9.maxConnectedW, cle7.maxConnectedW, tb9.maxConnectedW, tb7.maxConnectedW], [200, 200, 185, 120]);
+  assert.deepEqual([cle9.maxConnectedW, cle7.maxConnectedW, tb9.maxConnectedW, tb7.maxConnectedW], [200, 200, 185, 135]);
   assert.deepEqual([cle9.price, cle7.price, tb9.price, tb7.price], [1.61, 1.37, 1.41, 1.23]);
   const wire = (p) => [[1000, p.components.wire.supplierSku, p.components.wire.price]].concat(p.components.wire.sizes.map((s) => [s.lengthFt, s.supplierSku, s.price]));
-  assert.deepEqual(wire(cle9), [[1000, '15085', 409.99], [500, '81832', 219.99], [100, '15098', 49.99], [25, '15100', 15.99]]);
-  assert.deepEqual(wire(cle7), [[1000, '15054', 369.99], [500, '72912', 199.99], [100, '15067', 44.99], [25, '15071', 11.99]]);
-  assert.deepEqual(wire(tb9), [[1000, 'CMS-10105', 391.13], [500, 'CMS-10110', 224.4], [100, 'CMS-10124', 39.43]]);
-  assert.deepEqual(wire(tb7), [[1000, 'CMS-10095', 481.47], [500, 'CMS-10093', 229.77], [100, 'CMS-10323', 57.64]]);
+  assert.deepEqual(wire(cle9), [[1000, '15085', 409.99], [500, '81832', 219.99], [100, '15098', 49.99], [50, '15106', 27.99], [25, '15100', 15.99]]);
+  assert.deepEqual(wire(cle7), [[1000, '15054', 369.99], [500, '72912', 199.99], [100, '15067', 44.99], [50, '15077', 22.99], [25, '15071', 11.99]]);
+  assert.deepEqual(wire(tb9), [[1000, 'CMS-10105', 391.13], [500, 'CMS-10110', 224.4], [100, 'CMS-10124', 39.43], [50, 'CMS-10319', 26.98]]);
+  assert.deepEqual(wire(tb7), [[1000, 'CMS-10095', 481.47], [500, 'CMS-10093', 229.77], [100, 'CMS-10323', 57.64], [50, 'CMS-10122', 18.85], [50, 'CMS-10318', 30.44]]);
   const bulbs = (p) => Object.values(p.components.bulb.variants).map((o) => [o.supplierSku, o.price]);
   assert.deepEqual(bulbs(cle9), [['72636', 29.99], ['72639', 29.99], ['72642', 29.99], ['72645', 29.99], ['72654', 29.99], ['72648', 29.99]]);
   assert.deepEqual(bulbs(cle7), [['72609', 24.99], ['72606', 24.99], ['72612', 24.99], ['72615', 24.99], ['72624', 24.99], ['72618', 24.99]]);
@@ -353,11 +356,11 @@ test('bulk C7/C9 products are per-foot products with derived limits and priced c
   assert.deepEqual(plugs(tb9), [['PLUG-10001', 6.73], ['PLUG-10002', 6.73]]);
   assert.equal(cle7.components.plugMale, cle9.components.plugMale, 'C9 and C7 wire take the same SPT-1 plugs');
   assert.equal(tb7.components.plugFemale, tb9.components.plugFemale);
-  // Lowest amp figure each page prints (table against text): 7 A on the spools, 5 A on the 25 ft C9 length.
-  assert.deepEqual([cle9.components.wire].concat(cle9.components.wire.sizes).map((w) => w.maxAmps), [7, 7, 7, 5]);
-  assert.deepEqual([cle7.components.wire].concat(cle7.components.wire.sizes).map((w) => w.maxAmps), [7, 7, 7, 8]);
+  // Lowest amp figure each page prints (table against text): 7 A on the spools, 5 A on the 25 ft C9 and 50 ft C7 lengths.
+  assert.deepEqual([cle9.components.wire].concat(cle9.components.wire.sizes).map((w) => w.maxAmps), [7, 7, 7, 7, 5]);
+  assert.deepEqual([cle7.components.wire].concat(cle7.components.wire.sizes).map((w) => w.maxAmps), [7, 7, 7, 5, 8]);
   // 1000Bulbs spool pages print no amp rating: none is made up. Its 100 ft C9 length says 5 A.
-  assert.deepEqual([tb9.components.wire].concat(tb9.components.wire.sizes).map((w) => w.maxAmps), [undefined, undefined, 5]);
+  assert.deepEqual([tb9.components.wire].concat(tb9.components.wire.sizes).map((w) => w.maxAmps), [undefined, undefined, 5, undefined]);
   assert.ok([tb7.components.wire].concat(tb7.components.wire.sizes).every((w) => !('maxAmps' in w)));
 });
 
@@ -370,7 +373,7 @@ test('data: every other length of socket wire is the same wire as the spool, and
     let last = spool.spoolFt;
     for (const s of spool.sizes) {
       assert.deepEqual([s.wireType, s.wireGauge], [spool.wireType, spool.wireGauge], p.id + ' ' + s.supplierSku + ': the spool\'s wire type and gauge');
-      assert.ok(s.lengthFt > 0 && s.lengthFt < last, p.id + ': shorter lengths, longest first');
+      assert.ok(s.lengthFt > 0 && s.lengthFt <= last, p.id + ': shorter lengths, longest first');
       last = s.lengthFt;
       assert.ok(s.name.startsWith(p.category.toUpperCase() + ' socket wire, ') && /a socket every 12 in, green SPT-1/.test(s.name), s.name);
       assert.ok(s.name.includes(s.lengthFt + ' ft '), s.name);
@@ -382,10 +385,10 @@ test('data: every other length of socket wire is the same wire as the spool, and
   }
   // A 20-gauge stringer is never a size of 18-gauge wire: the 1000Bulbs 25 ft lengths are 20 gauge, so its wire has no 25 ft size.
   const sizes = (id) => suppliers.SUPPLIER_PRODUCTS.find((p) => p.id === id).components.wire.sizes.map((s) => s.lengthFt);
-  assert.deepEqual(sizes('cle:c9-bulk-12'), [500, 100, 25]);
-  assert.deepEqual(sizes('cle:c7-bulk-12'), [500, 100, 25]);
-  assert.deepEqual(sizes('1000bulbs:c9-bulk-12'), [500, 100]);
-  assert.deepEqual(sizes('1000bulbs:c7-bulk-12'), [500, 100]);
+  assert.deepEqual(sizes('cle:c9-bulk-12'), [500, 100, 50, 25]);
+  assert.deepEqual(sizes('cle:c7-bulk-12'), [500, 100, 50, 25]);
+  assert.deepEqual(sizes('1000bulbs:c9-bulk-12'), [500, 100, 50]);
+  assert.deepEqual(sizes('1000bulbs:c7-bulk-12'), [500, 100, 50, 50]);   // one with a male plug only, one with a plug on each end
 });
 
 test('what could not be ordered or planned on the day of the check is left out, and the replacements are in', () => {
@@ -412,7 +415,7 @@ test('what could not be ordered or planned on the day of the check is left out, 
   assert.equal(tb7.warmWhite.notes, 'The plain warm white pack (CMS-10284) could not be ordered when checked, so the warm white deluxe pack stands in.');
   // Its blue bulbs are another bulb line, seen on a category list only: the line says both, and the watts as listed.
   assert.deepEqual([tb7.blue.wattsEach, tb7.blue.priceStatus], [0.54, 'observed']);
-  assert.match(tb7.blue.notes, /^A different bulb line from the other colours \(standard, not VividCore Premium\): 0\.54 W per bulb as listed, a little more than the 0\.48 W the plan counts\. Seen on the supplier's category list only/);
+  assert.match(tb7.blue.notes, /^A different bulb line from the other colours \(standard, not VividCore Premium\): 0\.54 W per bulb as listed, a little more than the 0\.48 W of the other colours, so the plan counts 0\.54 W for each blue bulb\. Seen on the supplier's category list only/);
   // No supplier product is a tree wrap: the generic tree-wrap string stays.
   assert.ok(suppliers.SUPPLIER_PRODUCTS.every((p) => p.category !== 'treewrap' && !/trunk|tree/i.test(p.name)));
 });
@@ -475,7 +478,7 @@ test('allLinks lists every link once with its kind, and linkHosts are the hosts 
     for (const c of suppliers.componentOffers(p)) assert.ok(urls.has(c.offer.url), c.offer.sku);
   }
   for (const m of Object.values(suppliers.SUPPLIER_ACCESSORIES)) for (const o of Object.values(m)) assert.ok(urls.has(o.url), o.sku);
-  assert.equal(links.filter((l) => l.kind === 'product').length, 63, 'one link per thing that can be ordered');
+  assert.equal(links.filter((l) => l.kind === 'product').length, 68, 'one link per thing that can be ordered');
   assert.equal(suppliers.formatDate('2026-11-11'), 'Nov 11, 2026');
   assert.equal(suppliers.formatDate('soon'), 'soon');
 });
@@ -600,11 +603,15 @@ test('a bulk run is planned by the foot: sockets, watts, one clip per socket and
   // Clips follow the socket spacing of the wire, not the library's clip spacing.
   const wide = catalog.getLibrary({ library: { products: null, supplierId: 'cle', config: { clipSpacingIn: 6 } } });
   assert.equal(design.planRuns(p, fx.measure(p), wide)[0].clips.count, 41);
-  // Multicolor is sold for bulk (a mixed box); the ready-made warm white set says it is not.
+  // Multicolor is sold for bulk (a mixed box). The ready-made set is warm white only, so with ready-made strings
+  // the any-store string stays (review finding D1); picked by hand, the set says it is not sold in that colour.
   const multi = fx.project({ features: [fx.feature('ft_eave', 'roofline', [fx.F(10, 10), fx.F(50, 10)], { color: { mode: 'multicolor' } })], library: p.library });
   assert.deepEqual(design.planRuns(multi, fx.measure(multi), lib)[0].warnings, []);
   const strings = libFor('cle', { style: 'strings' });
-  assert.match(design.planRuns(multi, fx.measure(multi), strings)[0].warnings[0], /is not sold in multicolor/);
+  const auto = design.planRuns(multi, fx.measure(multi), strings)[0];
+  assert.deepEqual([auto.productId, auto.warnings], ['c9-led', []]);
+  const picked = fx.project({ features: [fx.feature('ft_eave', 'roofline', [fx.F(10, 10), fx.F(50, 10)], { color: { mode: 'multicolor' }, productId: 'cle:c9-string-25' })], library: p.library });
+  assert.match(design.planRuns(picked, fx.measure(picked), strings)[0].warnings[0], /is not sold in multicolor/);
 });
 
 // ================================================================ ready-made supplier sets
@@ -663,29 +670,32 @@ test('power: a 300 ft bulk roofline is split into feeds at 250 ft, and each feed
   const lib = catalog.getLibrary(p);
   const { runs, measured, power: pw } = fx.plan(p, lib);
   assert.deepEqual([runs[0].productId, runs[0].quantity, runs[0].watts], ['cle:c9-bulk-12', 330, 264]);
-  assert.deepEqual(pw.feeds.map((f) => [f.strings, f.watts]), [[250, 200], [80, 64]]);
+  // 330 ft is bought (10% for waste); the 300 ft of eave is what is cut, hung and lit (review finding C3).
+  assert.deepEqual(pw.feeds.map((f) => [f.strings, f.watts]), [[250, 200], [50, 40]]);
   assert.deepEqual(pw.feeds.map((f) => f.runIds), [['run_ft_long'], ['run_ft_long']]);
   assert.deepEqual(fx.checkPlan(p, measured, pw, lib, { runs }), []);
   assert.deepEqual(pw.warnings.filter((w) => w.level === 'danger'), []);
-  assert.equal(pw.totals.watts, 264);
-  // BOM: 330 ft of wire, 330 bulbs, and one male and one female plug for each of the 2 feeds.
+  assert.equal(pw.totals.watts, 240);
+  // BOM: 330 ft of wire and 330 bulbs. The wire is three 100 ft lengths and a 50 ft length with a plug on each end:
+  // the 250 ft feed is 100 + 100 + 50 ft plugged end to end, the 50 ft feed is cut from the third 100 ft length, so
+  // only its cut far end needs a slide-on plug (review finding D2).
   const merged = planner.mergeRunInfo(runs, pw);
   const b = bom.buildBom(p, merged, pw, lib);
-  const male = lineBy(b, 'cle:88283'), female = lineBy(b, 'cle:88287');
-  assert.deepEqual([male.qty, male.usedQty, female.qty, female.usedQty], [1, 0.2, 1, 0.2]);
-  assert.equal(male.notes, 'One for each length of wire that is cut: 2 needed, 10 bought. It goes on the end where the cord arrives.');
-  assert.match(female.notes, /2 needed, 10 bought\. It goes on the far end, so the next run or a jumper cord can plug in\./);
+  const female = lineBy(b, 'cle:88287');
+  assert.equal(lineBy(b, 'cle:88283'), undefined);
+  assert.deepEqual([female.qty, female.usedQty], [1, 0.1]);
+  assert.match(female.notes, /^One for each cut end of wire that has no plug of its own: 1 needed, 10 bought\. It goes on the far end, so the next run or a jumper cord can plug in, and on the first piece wherever two pieces of wire are joined\./);
   const wire = b.lines.filter((l) => /socket wire/.test(l.name));
-  assert.deepEqual(wire.map((l) => [l.supplierSku, l.qty, l.unit]), [['15098', 3, 'each'], ['15100', 2, 'each']], '3 x 100 ft + 2 x 25 ft ($181.95) is cheaper than a 500 ft spool ($219.99)');
-  assert.match(wire[0].notes, /^330 ft needed for Long eave \(330 ft\)\. Bought as 3 × 100 ft \+ 2 × 25 ft = 350 ft, 20 ft left over\./);
+  assert.deepEqual(wire.map((l) => [l.supplierSku, l.qty, l.unit]), [['15098', 3, 'each'], ['15106', 1, 'each']], '3 x 100 ft + 1 x 50 ft ($177.96) is cheaper than a 500 ft spool ($219.99)');
+  assert.match(wire[0].notes, /^330 ft needed for Long eave \(330 ft\)\. Bought as 3 × 100 ft \+ 1 × 50 ft = 350 ft, 20 ft left over\./);
   assert.deepEqual([lineBy(b, 'cle:72636').qty, lineBy(b, 'cle:72636').usedQty], [14, 13.2]);
   // Checklist: each feed is cut, plugged and lamped on the ground, then hung.
   const steps = bom.buildChecklist(p, merged, pw, measured).flatMap((g) => g.steps);
   const cut = steps.filter((s) => /^On the ground, cut one length of socket wire/.test(s));
   assert.equal(cut.length, 2);
-  assert.match(cut[0], /for Long eave: 250 ft \(250 sockets\)\. Slide a male plug onto the end that meets the cord and a female plug onto the far end, then screw a warm white bulb into every socket\./);
-  assert.match(cut[1], /: 80 ft \(80 sockets\)/);
-  assert.ok(steps.some((s) => /^Hang the wire along Long eave \(250 of its 330 ft\), starting at the .*\. Plug its male plug into the cord\.$/.test(s)), steps.join('\n'));
+  assert.match(cut[0], /for Long eave: 250 ft \(250 sockets\)\. Slide a male plug onto the end that meets the cord and a female plug onto the far end, unless that end already has a plug, then screw a warm white bulb into every socket\./);
+  assert.match(cut[1], /: 50 ft \(50 sockets\)/);
+  assert.ok(steps.some((s) => /^Hang the wire along Long eave \(250 of its 300 ft\), starting at the .*\. Plug its male plug into the cord\.$/.test(s)), steps.join('\n'));
   assert.ok(steps.some((s) => /^Put up 301 all-in-one clips along Long eave, one every 12 in\.$/.test(s)));
 });
 
@@ -698,7 +708,7 @@ test('power: two bulk runs are linked by a jumper when one run can carry both, a
     outlets: [fx.outlet('out_1', fx.F(9, 1.5))],
     library: { products: null, config: null, supplierId: 'cle' },
   });
-  // 55 ft (44 W) + 44 ft (35.2 W): B hangs off the end of A with a short jumper, and A carries both.
+  // 50 ft (40 W) + 40 ft (32 W) of lit wire: B hangs off the end of A with a short jumper, and A carries both.
   let p = build(50, 40);
   let lib = catalog.getLibrary(p);
   let r = fx.plan(p, lib);
@@ -707,19 +717,20 @@ test('power: two bulk runs are linked by a jumper when one run can carry both, a
   assert.deepEqual(a.source, { kind: 'outlet', outletId: 'out_1' });
   assert.deepEqual(b.source, { kind: 'feed', feedId: a.id, port: 'end' });
   assert.equal(b.cord.kind, 'jumper');
-  assert.deepEqual([a.watts, b.watts, a.throughW], [44, 35.2, 35.2]);
+  assert.deepEqual([a.watts, b.watts, a.throughW], [40, 32, 32]);
   assert.ok(a.watts + a.throughW <= catalog.getProduct(lib.products, 'cle:c9-bulk-12').maxConnectedW);
   assert.deepEqual(fx.checkPlan(p, r.measured, r.power, lib, { runs: r.runs }), []);
   assert.deepEqual([r.power.counts.homeRuns, r.power.counts.jumpers], [1, 1]);
-  // Two cut lengths, so two plugs of each kind.
+  // Two lengths cut from one 100 ft ready-made length: each keeps one factory plug and needs one slide-on plug.
   const bill = bom.buildBom(p, planner.mergeRunInfo(r.runs, r.power), r.power, lib);
-  assert.match(lineBy(bill, 'cle:88283').notes, /: 2 needed, 10 bought\./);
-  // 165 ft (132 W) + 110 ft (88 W) = 220 W is more than one run may carry (200 W): B is not fed through A's wire.
-  p = build(150, 100);
+  assert.match(lineBy(bill, 'cle:88283').notes, /: 1 needed, 10 bought\./);
+  assert.match(lineBy(bill, 'cle:88287').notes, /: 1 needed, 10 bought\./);
+  // 160 ft (128 W) + 100 ft (80 W) = 208 W is more than one run may carry (200 W): B is not fed through A's wire.
+  p = build(160, 100);
   lib = catalog.getLibrary(p);
   r = fx.plan(p, lib);
   a = fx.feedOf(r.power, 'run_ft_a'); b = fx.feedOf(r.power, 'run_ft_b');
-  assert.deepEqual([a.watts, b.watts], [132, 88]);
+  assert.deepEqual([a.watts, b.watts], [128, 80]);
   assert.ok(!(b.source.kind === 'feed' && b.source.feedId === a.id && b.source.port === 'end'), 'B must not pass through A');
   assert.ok(!(a.source.kind === 'feed' && a.source.feedId === b.id && a.source.port === 'end'), 'A must not pass through B');
   assert.ok(a.watts + (a.throughW || 0) <= 200 && b.watts + (b.throughW || 0) <= 200);
@@ -728,42 +739,49 @@ test('power: two bulk runs are linked by a jumper when one run can carry both, a
 
 // ================================================================ BOM: bulk products
 test('bulk BOM: wire is the cheapest mix that covers the feet, with feet needed and left over', () => {
+  // "Cheapest" as a buyer sees it (bom.MIX_RULE, review findings D6 and K4): each piece counts as $5 of plugs and
+  // work, at most four ready-made lengths, and a price seen on a category list only counts as 10% dearer.
   const lib = libFor('cle');
   const wireLines = (feet) => bom.buildBom(project(), [bulkRun('Eave', { quantity: feet })], power(), lib).lines.filter((l) => /socket wire/.test(l.name));
   const shape = (ls) => ls.map((l) => [l.sku, l.qty, l.unit, l.unitPrice, l.lineTotal]);
-  // Christmas Lights Etc C9 wire: 1,000 ft $409.99, 500 ft $219.99, 100 ft $49.99, 25 ft $15.99.
-  assert.deepEqual(shape(wireLines(139)), [['cle:15098', 1, 'each', 49.99, 49.99], ['cle:15100', 2, 'each', 15.99, 31.98]]);
+  // Christmas Lights Etc C9 wire: 1,000 ft $409.99, 500 ft $219.99, 100 ft $49.99, 50 ft $27.99, 25 ft $15.99.
+  assert.deepEqual(shape(wireLines(139)), [['cle:15098', 1, 'each', 49.99, 49.99], ['cle:15106', 1, 'each', 27.99, 27.99]]);
   assert.deepEqual(shape(wireLines(20)), [['cle:15100', 1, 'each', 15.99, 15.99]]);
   assert.deepEqual(shape(wireLines(100)), [['cle:15098', 1, 'each', 49.99, 49.99]]);
-  // 760 ft: a 500 ft spool, two 100 ft and three 25 ft lengths ($367.94 for 775 ft) beat the 1,000 ft spool ($409.99).
-  assert.deepEqual(shape(wireLines(760)), [['cle:81832', 1, 'each', 219.99, 219.99], ['cle:15098', 2, 'each', 49.99, 99.98], ['cle:15100', 3, 'each', 15.99, 47.97]]);
+  // 760 ft: a 500 ft spool, two 100 ft, a 50 ft and a 25 ft length ($363.95 for 775 ft) beat the 1,000 ft spool ($409.99).
+  assert.deepEqual(shape(wireLines(760)), [['cle:81832', 1, 'spool', 219.99, 219.99], ['cle:15098', 2, 'each', 49.99, 99.98], ['cle:15106', 1, 'each', 27.99, 27.99], ['cle:15100', 1, 'each', 15.99, 15.99]]);
   // 950 ft: two 500 ft spools would be $439.98, so the 1,000 ft spool is the buy.
   assert.deepEqual(shape(wireLines(950)), [['cle:15085', 1, 'spool', 409.99, 409.99]]);
   assert.deepEqual(shape(wireLines(1090)), [['cle:15085', 1, 'spool', 409.99, 409.99], ['cle:15098', 1, 'each', 49.99, 49.99]]);
-  const [w100, w25] = wireLines(139);
-  assert.equal(w100.notes, '139 ft needed for Eave (139 ft). Bought as 1 × 100 ft + 2 × 25 ft = 150 ft, 11 ft left over. ' +
+  const [w100, w50] = wireLines(139);
+  assert.equal(w100.notes, '139 ft needed for Eave (139 ft). Bought as 1 × 100 ft + 1 × 50 ft = 150 ft, 11 ft left over. ' +
     'It comes with a plug on each end, so a length you use uncut needs no slide-on plugs.');
-  assert.equal(w25.notes, w100.notes);
-  assert.deepEqual([w100.usedQty, w25.usedQty], [0.9267, 1.8533]);
+  assert.equal(w50.notes, w100.notes);
+  assert.deepEqual([w100.usedQty, w50.usedQty], [0.9267, 0.9267]);
   assert.deepEqual([w100.supplierSku, w100.priceStatus, w100.priceAsOf, w100.url], ['15098', 'verified', '2026-11-11',
     'https://www.christmaslightsetc.com/p/C9-Christmas-Lights-String-100-ft-Length-12-inch-Spacing-7-Amp-Green-Wire--15098.htm']);
   assert.equal(wireLines(950)[0].notes, '950 ft needed for Eave (950 ft). 1,000 ft bought, 50 ft left over.');
-  // 1000Bulbs C9 wire has no 25 ft size (its 25 ft lengths are a thinner wire): 139 ft is two 100 ft lengths.
+  // 1000Bulbs C9 wire has no 25 ft size (its 25 ft lengths are a thinner wire): 139 ft is a 100 ft and a 50 ft length.
   const tbWire = bom.buildBom(project(), [bulkRun('Eave', { productId: '1000bulbs:c9-bulk-12', quantity: 139 })], power(), libFor('1000bulbs')).lines.filter((x) => /socket wire/.test(x.name));
-  assert.deepEqual(shape(tbWire), [['1000bulbs:CMS-10124', 2, 'each', 39.43, 78.86]]);
-  assert.equal(tbWire[0].notes, '139 ft needed for Eave (139 ft). 200 ft bought, 61 ft left over. It comes with a male plug only, so a length you use uncut needs no slide-on male plug.');
-  // 1000Bulbs C7 wire: two 500 ft spools ($459.54) cost less than its 1,000 ft spool ($481.47). They were seen on a
-  // category list only, so the line says to check the price.
+  assert.deepEqual(shape(tbWire), [['1000bulbs:CMS-10124', 1, 'each', 39.43, 39.43], ['1000bulbs:CMS-10319', 1, 'each', 26.98, 26.98]]);
+  assert.equal(tbWire[0].notes, '139 ft needed for Eave (139 ft). Bought as 1 × 100 ft + 1 × 50 ft = 150 ft, 11 ft left over. It comes with a male plug only, so a length you use uncut needs no slide-on male plug.');
+  // 1000Bulbs C7 wire: two 500 ft spools ($459.54) would cost a little less than its 1,000 ft spool ($481.47), but
+  // they were seen on a category list only. The spool read on its own page is the buy.
   const tb7 = bom.buildBom(project(), [bulkRun('Eave', { productId: '1000bulbs:c7-bulk-12', quantity: 900 })], power(), libFor('1000bulbs')).lines.filter((x) => /socket wire/.test(x.name));
-  assert.deepEqual(shape(tb7), [['1000bulbs:CMS-10093', 2, 'each', 229.77, 459.54]]);
-  assert.deepEqual([tb7[0].priceStatus, bom.priceStatusText(tb7[0])], ['observed', 'as of Nov 11, 2026 (check the price)']);
-  assert.match(tb7[0].notes, /100 ft left over\. Seen on the supplier's category list only, not on its own page: check the price and details there\.$/);
-  // Several runs of the same product share the wire; a short C7 run is one 25 ft length.
+  assert.deepEqual(shape(tb7), [['1000bulbs:CMS-10095', 1, 'spool', 481.47, 481.47]]);
+  assert.deepEqual([tb7[0].priceStatus, bom.priceStatusText(tb7[0])], ['verified', 'as of Nov 11, 2026']);
+  // Where a listed-only price is the clear saving it is used, and the line says to check the price.
+  const tb7s = bom.buildBom(project(), [bulkRun('Eave', { productId: '1000bulbs:c7-bulk-12', quantity: 450 })], power(), libFor('1000bulbs')).lines.filter((x) => /socket wire/.test(x.name));
+  assert.deepEqual(shape(tb7s), [['1000bulbs:CMS-10093', 1, 'spool', 229.77, 229.77]]);
+  assert.deepEqual([tb7s[0].priceStatus, bom.priceStatusText(tb7s[0])], ['observed', 'as of Nov 11, 2026 (check the price)']);
+  assert.match(tb7s[0].notes, /50 ft left over\. Seen on the supplier's category list only, not on its own page: check the price and details there\.$/);
+  // Several runs of the same product share the wire; a short C7 run is one 25 ft length. C9 and C7 wire take the
+  // same plugs, so there is one line for each plug (review finding C5).
   const b = bom.buildBom(project(), [bulkRun('A', { quantity: 60 }), bulkRun('B', { quantity: 30 }), bulkRun('C', { productId: 'cle:c7-bulk-12', quantity: 12 })], power(), lib);
   const lights = b.lines.filter((l) => l.category === 'lights');
   assert.deepEqual(lights.map((l) => [l.sku, l.qty]), [
     ['cle:15098', 1], ['cle:72636', 4], ['cle:88283', 1], ['cle:88287', 1],
-    ['cle:15071', 1], ['cle:72609', 1], ['cle:88283', 1], ['cle:88287', 1],
+    ['cle:15071', 1], ['cle:72609', 1],
   ]);
   assert.match(lights[0].notes, /^90 ft needed for A \(60 ft\), B \(30 ft\)\. 100 ft bought, 10 ft left over\./);
   assert.deepEqual(bom.cheapestMix(30, [{ lengthFt: 25, price: 10 }, { lengthFt: 50, price: 20 }]).map((m) => [m.size.lengthFt, m.count]), [[50, 1]], 'same cost: fewer pieces');
@@ -793,6 +811,8 @@ test('bulk BOM: bulbs are counted per socket and split by each run\'s colour pat
     ['cle:72636:purple', null, 1, 0.32], // not on file: priced like warm white, no part number
   ]);
   for (const l of bulbs.slice(0, 6)) assert.deepEqual([l.unitPrice, l.priceStatus, l.priceAsOf, l.findUrl], [29.99, 'verified', '2026-11-11', null], l.sku);
+  // Nobody read a price for purple: the stand-in line says "check the price" (review finding D3).
+  assert.deepEqual([bulbs[6].priceStatus, bom.priceStatusText(bulbs[6])], ['observed', 'as of Nov 11, 2026 (check the price)']);
   assert.equal(lineBy(b, 'cle:72636').notes, '42 bulbs needed for Warm (38), Sky (4). 50 bought, 8 spare. Quantity price from 20 boxes: see the supplier\'s page.');
   assert.equal(lineBy(b, 'cle:72645').notes, '13 bulbs needed for Candy (13). 25 bought, 12 spare. Quantity price from 20 boxes: see the supplier\'s page.');
   const blue = lineBy(b, 'cle:72648');
@@ -800,13 +820,13 @@ test('bulk BOM: bulbs are counted per socket and split by each run\'s colour pat
   const purple = lineBy(b, 'cle:72636:purple');
   assert.equal(purple.name, 'C9 OptiCore LED bulbs, faceted, box of 25 - Purple (choose the colour at the supplier)');
   assert.deepEqual([purple.unitPrice, purple.url, purple.findUrl, purple.supplierId], [29.99, null, suppliers.getSupplier('cle').categoryUrls.c9Bulbs, 'cle']);
-  assert.match(purple.notes, /^8 bulbs needed for Dusk \(8\)\. 25 bought, 17 spare\. No purple bulb is on file for this supplier, so it is priced like warm white: choose the colour at the supplier\.$/);
+  assert.match(purple.notes, /^8 bulbs needed for Dusk \(8\)\. 25 bought, 17 spare\. No purple bulb is on file for this supplier, so it is priced like warm white: choose the colour at the supplier and check its price\.$/);
   // 1000Bulbs blue is another bulb line seen on a category list only: the line carries its part number, says so, and says "check the price".
   const tbBlue = bom.buildBom(project(), [bulkRun('Sky', { productId: '1000bulbs:c7-bulk-12', quantity: 30, colorMode: 'custom', colors: ['#2f7bff'] })], power(), libFor('1000bulbs'))
     .lines.find((l) => /bulbs/.test(l.name));
   assert.deepEqual([tbBlue.sku, tbBlue.supplierSku, tbBlue.qty, tbBlue.unitPrice, tbBlue.priceStatus], ['1000bulbs:CMS-C7BLU', 'CMS-C7BLU', 2, 17.29, 'observed']);
   assert.equal(tbBlue.name, 'C7 LED bulbs, blue, faceted, pack of 25 (standard line)');
-  assert.match(tbBlue.notes, /0\.54 W per bulb as listed, a little more than the 0\.48 W the plan counts\. Seen on the supplier's category list only, not on its own page: check the price and details there\.$/);
+  assert.match(tbBlue.notes, /0\.54 W per bulb as listed, a little more than the 0\.48 W of the other colours, so the plan counts 0\.54 W for each blue bulb\. Seen on the supplier's category list only, not on its own page: check the price and details there\.$/);
   // Sockets follow the spacing of the wire: 12 in gives one per foot.
   const wide = clone(lib);
   const prod = wide.products.find((p) => p.id === 'cle:c9-bulk-12');
@@ -819,27 +839,32 @@ test('bulk BOM: bulbs are counted per socket and split by each run\'s colour pat
 });
 
 test('bulk BOM: plugs are one male and one female per power feed, or per run when there is no power plan', () => {
+  // The SPEC rule holds for bare wire off a spool. (Wire that comes with plugs needs fewer: review finding D2, tested in
+  // review-fixes.test.js.) An account price makes the 1,000 ft spool the buy here.
   const lib = libFor('cle');
+  const spool = () => project({ pricing: { overrides: { 'cle:15085': 20 } } });
   const runs = [bulkRun('A'), bulkRun('B'), bulkRun('C')];
-  const none = bom.buildBom(project(), runs, power(), lib);
+  const none = bom.buildBom(spool(), runs, power(), lib);
+  assert.deepEqual(none.lines.filter((l) => /socket wire/.test(l.name)).map((l) => [l.supplierSku, l.unit]), [['15085', 'spool']]);
   assert.match(lineBy(none, 'cle:88283').notes, /: 3 needed, 10 bought\./);
   assert.match(lineBy(none, 'cle:88287').notes, /: 3 needed, 10 bought\./);
   // A and B are one cut length (one feed); C is on a feed of its own; a feed of other lights does not count.
   const feeds = [{ id: 'fd_1', runIds: ['run_A', 'run_B'] }, { id: 'fd_2', runIds: ['run_C'] }, { id: 'fd_3', runIds: ['run_other'] }];
-  const two = bom.buildBom(project(), runs, power({ feeds }), lib);
+  const two = bom.buildBom(spool(), runs, power({ feeds }), lib);
   assert.match(lineBy(two, 'cle:88283').notes, /: 2 needed, 10 bought\./);
   assert.deepEqual([lineBy(two, 'cle:88283').qty, lineBy(two, 'cle:88283').usedQty], [1, 0.2]);
   // A split run (two feeds) needs two pairs; a run on no feed still needs one.
-  const split = bom.buildBom(project(), runs, power({ feeds: [{ id: 'fd_1', runIds: ['run_A'] }, { id: 'fd_2', runIds: ['run_A'] }, { id: 'fd_3', runIds: ['run_B'] }] }), lib);
+  const split = bom.buildBom(spool(), runs, power({ feeds: [{ id: 'fd_1', runIds: ['run_A'] }, { id: 'fd_2', runIds: ['run_A'] }, { id: 'fd_3', runIds: ['run_B'] }] }), lib);
   assert.match(lineBy(split, 'cle:88283').notes, /: 4 needed, 10 bought\./);
   // Eleven cut lengths: two packs of ten of each.
-  const eleven = bom.buildBom(project(), ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K'].map((n) => bulkRun(n)), power(), lib);
+  const eleven = bom.buildBom(spool(), ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K'].map((n) => bulkRun(n)), power(), lib);
   assert.deepEqual([lineBy(eleven, 'cle:88283').qty, lineBy(eleven, 'cle:88287').qty], [2, 2]);
   const m = lineBy(eleven, 'cle:88283');
   assert.deepEqual([m.name, m.supplierSku, m.unitPrice, m.lineTotal, m.priceStatus], ['Slide-on male plug for SPT-1 wire, green, pack of 10', '88283', 12.4, 24.8, 'verified']);
-  assert.equal(m.notes, 'One for each length of wire that is cut: 11 needed, 20 bought. It goes on the end where the cord arrives.');
+  assert.equal(m.notes, 'One for each cut end of wire that has no plug of its own: 11 needed, 20 bought. It goes on the end where the cord arrives.');
+  assert.equal(lineBy(eleven, 'cle:88287').notes, 'One for each cut end of wire that has no plug of its own: 11 needed, 20 bought. It goes on the far end, so the next run or a jumper cord can plug in.');
   // 1000Bulbs: both plugs are on file with their part numbers.
-  const tb = bom.buildBom(project(), [bulkRun('A', { productId: '1000bulbs:c9-bulk-12' })], power(), libFor('1000bulbs'));
+  const tb = bom.buildBom(project({ pricing: { overrides: { '1000bulbs:CMS-10105': 20 } } }), [bulkRun('A', { productId: '1000bulbs:c9-bulk-12' })], power(), libFor('1000bulbs'));
   const male = lineBy(tb, '1000bulbs:PLUG-10001'), female = lineBy(tb, '1000bulbs:PLUG-10002');
   assert.deepEqual([male.supplierId, male.supplierSku, male.unitPrice, male.priceStatus], ['1000bulbs', 'PLUG-10001', 6.73, 'verified']);
   assert.deepEqual([female.supplierId, female.supplierSku, female.unitPrice, female.priceStatus, female.url, female.findUrl],
@@ -855,23 +880,26 @@ test('bulk BOM: plugs are one male and one female per power feed, or per run whe
   // At Christmas Lights Etc the same line points at its electrical accessories page (it has no page for plugs alone).
   const clePlain = clone(lib);
   clePlain.products.find((p) => p.id === 'cle:c9-bulk-12').components.plugMale = null;
-  assert.equal(lineBy(bom.buildBom(project(), [bulkRun('A')], power(), clePlain), 'plug-spt1-male').findUrl,
+  assert.equal(lineBy(bom.buildBom(spool(), [bulkRun('A')], power(), clePlain), 'plug-spt1-male').findUrl,
     'https://www.christmaslightsetc.com/christmas-light-adapters-and-electrical-accessories--106.htm');
 });
 
-test('bulk BOM: cost basis "used" charges only the share used and buys wire by the cheapest foot', () => {
+test('bulk BOM: cost basis "used" charges only the share used; the order is the same', () => {
+  // Review findings C4, D13, U08 and U04: the basis changes what the job is charged, never what is ordered, and it
+  // applies in installer mode only.
   const runs = [bulkRun('Eave', { quantity: 139 })];
-  const bought = bom.buildBom(project(), runs, power(), libFor('cle'));
-  const used = bom.buildBom(project(), runs, power(), libFor('cle', { costBasis: 'used' }));
+  const installer = () => project({ quote: { enabled: true } });
+  const bought = bom.buildBom(installer(), runs, power(), libFor('cle'));
+  const used = bom.buildBom(installer(), runs, power(), libFor('cle', { costBasis: 'used' }));
   const row = (b) => b.lines.map((l) => [l.sku, l.qty, l.usedQty, l.total, l.buyTotal]);
   assert.deepEqual(row(bought), [
-    ['cle:15098', 1, 0.9267, 49.99, 49.99], ['cle:15100', 2, 1.8533, 31.98, 31.98],
-    ['cle:72636', 6, 5.56, 179.94, 179.94], ['cle:88283', 1, 0.1, 12.4, 12.4], ['cle:88287', 1, 0.1, 12.4, 12.4],
+    ['cle:15098', 1, 0.9267, 49.99, 49.99], ['cle:15106', 1, 0.9267, 27.99, 27.99],
+    ['cle:72636', 6, 5.56, 179.94, 179.94], ['cle:88287', 1, 0.1, 12.4, 12.4],
   ]);
   assert.deepEqual(row(used), [
-    ['cle:15085', 1, 0.139, 56.99, 409.99],        // 139 ft at $0.41 a foot (the 1,000 ft spool is the cheapest foot); the rest goes to the next job
-    ['cle:72636', 6, 5.56, 166.74, 179.94],        // 139 bulbs at $1.20
-    ['cle:88283', 1, 0.1, 1.24, 12.4], ['cle:88287', 1, 0.1, 1.24, 12.4],   // 1 plug of each kind out of a pack of 10
+    ['cle:15098', 1, 0.9267, 46.32, 49.99], ['cle:15106', 1, 0.9267, 25.94, 27.99],   // 139 of the 150 ft bought
+    ['cle:72636', 6, 5.56, 166.74, 179.94],                                        // 139 bulbs at $1.20
+    ['cle:88287', 1, 0.1, 1.24, 12.4],                                             // 1 plug out of a pack of 10
   ]);
   for (const b of [bought, used]) {
     for (const l of b.lines) {
@@ -880,13 +908,16 @@ test('bulk BOM: cost basis "used" charges only the share used and buys wire by t
     }
     assert.equal(b.subtotal, bom.round2(b.lines.reduce((s, l) => s + l.total, 0)));
     assert.equal(b.byCategory.lights, b.subtotal);
+    assert.equal(b.orderTotal, 270.32);
   }
-  assert.equal(bought.subtotal, 286.71);
-  assert.equal(used.subtotal, 226.21);
+  assert.deepEqual([bought.subtotal, bought.costBasis], [270.32, 'bought']);
+  assert.deepEqual([used.subtotal, used.costBasis], [240.24, 'used']);
   // The order sheet always lists what is ordered, whatever the basis.
-  assert.equal(bom.orderSheets(used, libFor('cle', { costBasis: 'used' }))[0].subtotal, 614.73);
+  assert.equal(bom.orderSheets(used, libFor('cle', { costBasis: 'used' }))[0].subtotal, 270.32);
+  // With installer mode off the basis is ignored.
+  assert.deepEqual(bom.buildBom(project(), runs, power(), libFor('cle', { costBasis: 'used' })), bom.buildBom(project(), runs, power(), libFor('cle')));
   // Lines that are not bulk parts are never charged by share.
-  const mixed = bom.buildBom(project(), runs.concat([bulkRun('Win', { productId: 'cle:mini-5mm-70', unit: 'string', quantity: 3, clips: { type: 'adhesive', count: 30 } })]),
+  const mixed = bom.buildBom(installer(), runs.concat([bulkRun('Win', { productId: 'cle:mini-5mm-70', unit: 'string', quantity: 3, clips: { type: 'adhesive', count: 30 } })]),
     power(), libFor('cle', { costBasis: 'used' }));
   for (const l of mixed.lines.filter((x) => /mini string|clips/i.test(x.name))) assert.deepEqual([l.usedQty, l.total], [l.qty, l.buyTotal]);
 });
@@ -945,8 +976,7 @@ test('accessories: the chosen supplier\'s own clips, stakes and timer replace th
   const rest = (b) => b.lines.filter((l) => l.category !== 'lights' || /tree-wrap/.test(l.name)).map((l) => [l.sku, l.qty, l.unitPrice, l.supplierSku, l.priceStatus]);
   assert.deepEqual(rest(cle), [
     ['treewrap-led', 2, 16.99, null, 'default'],
-    ['cle:82761', 1, 13.99, '82761', 'verified'],
-    ['clip-gutter', 1, 9.99, null, 'default'],
+    ['cle:82761', 1, 13.99, '82761', 'verified'],   // 36 all-in-one + 23 gutter clips: this clip hangs on a gutter too (review finding D8)
     ['cle:83965', 1, 24.99, '83965', 'verified'],
     ['cle:88780', 2, 26.25, '88780', 'verified'],   // 40 ridge clips in packs of 25
     ['cord-16-25', 1, 14.99, null, 'default'],
@@ -957,7 +987,6 @@ test('accessories: the chosen supplier\'s own clips, stakes and timer replace th
   const cats = suppliers.getSupplier('cle').categoryUrls;
   const link = (b, sku) => { const l = lineBy(b, sku); return [l.supplierId, l.url, l.findUrl]; };
   assert.deepEqual(link(cle, 'cle:82761'), ['cle', suppliers.SUPPLIER_ACCESSORIES.cle['clip-allinone'].url, null]);
-  assert.deepEqual(link(cle, 'clip-gutter'), [null, null, cats.clips]);
   assert.deepEqual(link(cle, 'cord-16-25'), [null, null, cats.extensionCords]);
   // No page for these at this supplier: its own search.
   assert.deepEqual(link(cle, 'tap-3way'), [null, null, 'https://www.christmaslightsetc.com/browse/?q=Outdoor+3-way+tap']);
@@ -971,8 +1000,7 @@ test('accessories: the chosen supplier\'s own clips, stakes and timer replace th
   const tb = bom.buildBom(project(), houseRuns().map((r) => (r.productId === 'cle:c9-bulk-12' ? Object.assign(r, { productId: '1000bulbs:c9-bulk-12' }) : r)), housePower(), libFor('1000bulbs'));
   assert.deepEqual(rest(tb), [
     ['treewrap-led', 2, 16.99, null, 'default'],
-    ['1000bulbs:CLIP-10007', 1, 6.83, 'CLIP-10007', 'verified'],   // 40 clips in packs of 50
-    ['clip-gutter', 1, 9.99, null, 'default'],
+    ['1000bulbs:CLIP-10007', 2, 6.83, 'CLIP-10007', 'verified'],   // 59 clips (36 + 23 for the gutter) + 10% = 65, in packs of 50
     ['1000bulbs:CLIP-10005', 1, 15.49, 'CLIP-10005', 'verified'],
     ['1000bulbs:CLIP-10003', 2, 17.59, 'CLIP-10003', 'verified'],  // 40 ridge clips in packs of 25
     ['cord-16-25', 1, 14.99, null, 'default'],
@@ -987,14 +1015,18 @@ test('accessories: the chosen supplier\'s own clips, stakes and timer replace th
   assert.equal(lineBy(tb, 'treewrap-led').findUrl, suppliers.getSupplier('1000bulbs').categoryUrls.treeWrap);
   assert.deepEqual([lineBy(tb, '1000bulbs:STAKE-10001').name, lineBy(tb, '1000bulbs:STAKE-10001').notes],
     ['Lawn light stakes for C7 and C9, 5 in tall, pack of 25', '21 stakes for Stakes, in packs of 25.']);
-  // The 1000Bulbs timer is rated 1,000 W: the line says so when an outlet carries more.
+  // The 1000Bulbs timer is rated 1,000 W: an outlet that carries more gets a heavy-duty timer instead (review finding C1).
   assert.equal(lineBy(tb, '1000bulbs:PLTS-12336').notes, 'One for each outlet used: Porch outlet. Rated for 1,000 W at most.');
   const heavy = bom.buildBom(project(), houseRuns(), housePower(1200), libFor('1000bulbs'));
-  assert.match(lineBy(heavy, '1000bulbs:PLTS-12336').notes, /Porch outlet \(1,200 W\) carries more than this timer's 1,000 W limit: use a heavier timer there\./);
+  assert.equal(lineBy(heavy, '1000bulbs:PLTS-12336'), undefined);
+  assert.match(lineBy(heavy, 'timer-outdoor').notes, /^For Porch outlet \(1,200 W\): more than the 1,000 W the 1000Bulbs timer is rated for, so this outlet needs a heavier timer\./);
   // A supplier's pack is what can be ordered, so the library's pack-size override does not apply to it.
   const packs = catalog.getLibrary({ library: { products: null, supplierId: 'cle', config: { clipPackSize: 10 } } });
   const p10 = bom.buildBom(project(), houseRuns(), housePower(), packs);
-  assert.deepEqual([lineBy(p10, 'cle:82761').qty, lineBy(p10, 'clip-gutter').qty], [1, 3]);
+  assert.deepEqual([lineBy(p10, 'cle:82761').qty, lineBy(p10, 'clip-gutter')], [1, undefined]);
+  // The generic clips that are left do follow it.
+  const adhesive = bom.buildBom(project(), [bulkRun('Win', { productId: 'cle:mini-5mm-70', unit: 'string', quantity: 3, clips: { type: 'adhesive', count: 23 } })], power(), packs);
+  assert.equal(lineBy(adhesive, 'clip-adhesive').qty, 3);
 });
 
 test('every line says where it is bought; with no supplier chosen that is "Any store" with no links', () => {
@@ -1045,7 +1077,7 @@ test('orderSheets: one sheet per supplier, then "Any store", with what is ordere
   assert.deepEqual(sheets.map((s) => [s.supplierId, s.supplierName, s.url, s.lines.length]), [
     ['cle', 'Christmas Lights Etc', 'https://www.christmaslightsetc.com/', 10],
     ['1000bulbs', '1000Bulbs', 'https://www.1000bulbs.com/', 1],
-    ['generic', 'Any store', null, 4],
+    ['generic', 'Any store', null, 3],
   ]);
   assert.deepEqual([sheets[0].wholesale.phone, sheets[0].wholesale.email, sheets[0].wholesale.url],
     ['1-855-WGC-7100', 'sales@wintergreencorp.com', 'https://www.christmaslightsetc.com/wholesale-Christmas-lights-and-trees.htm']);
@@ -1059,9 +1091,9 @@ test('orderSheets: one sheet per supplier, then "Any store", with what is ordere
   assert.equal(bom.round2(sheets.reduce((t, s) => t + s.subtotal, 0)), bom.round2(b.lines.reduce((t, l) => t + l.buyTotal, 0)));
   const bulbs = sheets[0].lines.find((l) => l.supplierSku === '72636');
   assert.deepEqual([bulbs.qty, bulbs.unit, bulbs.unitPrice, bulbs.total, bulbs.url], [6, 'pack', 29.99, 179.94, 'https://www.christmaslightsetc.com/p/C9--Warm-White-OptiCore-LED-Replacement-Bulbs-13603.htm']);
-  assert.deepEqual(sheets[0].lines.map((l) => l.supplierSku), ['15098', '15100', '72636', '88283', '88287', '82761', '83965', '88780', '80056', '84144']);
+  assert.deepEqual(sheets[0].lines.map((l) => l.supplierSku), ['15098', '15106', '72636', '88283', '88287', '82761', '83965', '88780', '80056', '84144']);
   assert.deepEqual(sheets[1].lines.map((l) => [l.supplierSku, l.qty, l.unitPrice]), [['CMS-25C9-8GWW', 2, 13.97]]);
-  assert.deepEqual(sheets[2].lines.map((l) => l.sku), ['treewrap-led', 'clip-gutter', 'cord-16-25', 'tap-3way']);
+  assert.deepEqual(sheets[2].lines.map((l) => l.sku), ['treewrap-led', 'cord-16-25', 'tap-3way']);
   // No supplier: one "Any store" sheet. Nothing to order: no sheets. Bad input: no sheets, no throw.
   const plain = bom.buildBom(project(), [bulkRun('E', { productId: 'c9-led', unit: 'string', quantity: 2 })], power(), libFor('generic'));
   assert.deepEqual(bom.orderSheets(plain, libFor('generic')).map((s) => [s.supplierId, s.lines.length, s.subtotal]), [['generic', 1, 65.98]]);
@@ -1093,16 +1125,18 @@ test('bomToCsv adds supplier columns only when the plan buys from a supplier', (
   assert.equal(rows[0], 'SKU,Item,Category,Qty,Unit,Unit Price,Line Total,Notes,Supplier,Part number,Price status,Link');
   const bulbs = rows.find((r) => r.startsWith('cle:72636,'));
   assert.match(bulbs, /,Christmas Lights Etc,72636,"as of Nov 11, 2026",https:\/\/www\.christmaslightsetc\.com\/p\/C9--Warm-White-OptiCore-LED-Replacement-Bulbs-13603\.htm$/);
-  const gutter = rows.find((r) => r.startsWith('clip-gutter,'));
-  assert.match(gutter, /,Any store,,,https:\/\/www\.christmaslightsetc\.com\/c7-c9-light-clips-and-hangers--753\.htm$/);
+  const cord = rows.find((r) => r.startsWith('cord-16-25,'));
+  assert.match(cord, /,Any store,,,https:\/\/www\.christmaslightsetc\.com\/christmas-extension-cords--104\.htm$/);
   assert.match(rows[rows.length - 2], /^Subtotal,\d+\.\d\d,,,,,,,,,,$/);
-  assert.match(rows[rows.length - 1], /^Note,"Prices were last checked on Nov 11, 2026; confirm at checkout\. Account \(wholesale\) prices differ: edit any price\.",/);
+  // The list holds any-store lines too, so only the supplier prices are called checked (review finding D9).
+  assert.match(rows[rows.length - 1], /^Note,"Supplier prices were last checked on Nov 11, 2026; the other prices are typical store prices\. Confirm at checkout\. Account \(wholesale\) prices differ: edit any price\.",/);
   // No supplier: the Phase 1 columns, byte for byte.
   const plain = bom.buildBom(project(), [bulkRun('E', { productId: 'c9-led', unit: 'string', quantity: 2 })], power(), libFor('generic'));
   assert.equal(bom.bomToCsv(plain), 'SKU,Item,Category,Qty,Unit,Unit Price,Line Total,Notes\r\nc9-led,C9 LED string, 25 bulbs - Warm white,lights,2,string,32.99,65.98,For E (2).\r\n'.replace('C9 LED string, 25 bulbs - Warm white', '"C9 LED string, 25 bulbs - Warm white"') +
     ',,,,,,,\r\nSubtotal,65.98,,,,,,\r\n');
   assert.equal(bom.priceNote(plain), '');
-  assert.equal(bom.priceNote(b), 'Prices were last checked on Nov 11, 2026; confirm at checkout. Account (wholesale) prices differ: edit any price.');
+  assert.equal(bom.priceNote(b), 'Supplier prices were last checked on Nov 11, 2026; the other prices are typical store prices. Confirm at checkout. Account (wholesale) prices differ: edit any price.');
+  assert.equal(bom.priceNote(bom.orderSheets(b, lib)[0]), 'Prices were last checked on Nov 11, 2026; confirm at checkout. Account (wholesale) prices differ: edit any price.');
   assert.equal(bom.priceStatusText({ priceStatus: 'observed', priceAsOf: '2026-11-11' }), 'as of Nov 11, 2026 (check the price)');
   assert.equal(bom.priceStatusText({ priceStatus: 'verified', priceAsOf: '2026-11-11' }), 'as of Nov 11, 2026');
   assert.equal(bom.priceStatusText({ priceStatus: 'yours', priceAsOf: null }), 'your price');
@@ -1155,8 +1189,10 @@ test('sample house: buying from a supplier changes the lights and accessories, n
     assert.equal(bom.round2(sheets[0].subtotal + sheets[1].subtotal), plan.bom.subtotal, tag);
     assert.ok(sheets[0].lines.length >= 5, tag);
     for (const l of plan.bom.lines) {
-      // Everything this house needs from either supplier was read on its own product page.
-      if (l.supplierId) assert.deepEqual([l.supplierId, l.priceStatus, l.priceAsOf], [sid, 'verified', '2026-11-11'], tag + ' ' + l.name);
+      // Everything this house needs from either supplier was read on its own product page, except the 50 ft length
+      // of wire at 1000Bulbs, which was seen on its category list (so that line says "check the price").
+      const listed = l.supplierSku === 'CMS-10319';
+      if (l.supplierId) assert.deepEqual([l.supplierId, l.priceStatus, l.priceAsOf], [sid, listed ? 'observed' : 'verified', '2026-11-11'], tag + ' ' + l.name);
       if (l.supplierId) assert.ok(l.supplierSku && l.url, tag + ' ' + l.name + ': part number and page');
       for (const u of [l.url, l.findUrl]) assert.ok(u === null || suppliers.linkHosts().includes(new URL(u).host), tag + ' ' + u);
     }
@@ -1165,22 +1201,29 @@ test('sample house: buying from a supplier changes the lights and accessories, n
     assert.deepEqual(schema.normalizeProject(prj), prj, tag);
     assert.deepEqual(planner.computePlan(schema.importProject(schema.exportProject(prj, null, {}, null)).project).bom, plan.bom, tag);
   }
-  // Bulk: 139 ft of wire and 139 bulbs for the six roof edges, three cut lengths.
+  // Bulk: 139 ft of wire and 139 bulbs for the six roof edges, three cut lengths. The wire is a 100 ft and a 50 ft
+  // length with plugs on, so the three cuts need one male and two female slide-on plugs, not three of each.
   const { plan } = samplePlan('cle', { style: 'bulk' });
   const lights = plan.bom.lines.filter((l) => l.category === 'lights').slice(0, 5);
-  assert.deepEqual(lights.map((l) => [l.sku, l.qty, l.lineTotal]), [['cle:15098', 1, 49.99], ['cle:15100', 2, 31.98], ['cle:72636', 6, 179.94], ['cle:88283', 1, 12.4], ['cle:88287', 1, 12.4]]);
+  assert.deepEqual(lights.map((l) => [l.sku, l.qty, l.lineTotal]), [['cle:15098', 1, 49.99], ['cle:15106', 1, 27.99], ['cle:72636', 6, 179.94], ['cle:88283', 1, 12.4], ['cle:88287', 1, 12.4]]);
   assert.match(lights[0].notes, /^139 ft needed for Front eave \(38 ft\), Garage gutter \(25 ft\)/);
-  assert.match(lights[3].notes, /: 3 needed, 10 bought\./);
-  assert.equal(plan.summary.watts, 224);
+  assert.match(lights[3].notes, /: 1 needed, 10 bought\./);
+  assert.match(lights[4].notes, /: 2 needed, 10 bought\./);
+  // Live load: the wire that is hung (the true lengths), not the feet bought with waste.
+  assert.equal(plan.summary.watts, 212.8);
   // What each way of buying costs for this house (materials), and what goes on the supplier's order sheet.
   const cost = (sid, style) => { const r = samplePlan(sid, { style }).plan; return [r.bom.subtotal, bom.orderSheets(r.bom, r.library)[0].subtotal, r.summary.watts]; };
-  assert.deepEqual(cost('cle', 'bulk'), [1133.74, 807.99, 224]);
-  assert.deepEqual(cost('cle', 'strings'), [1146.97, 821.22, 232.8]);
-  assert.deepEqual(cost('1000bulbs', 'bulk'), [974.37, 648.62, 234.86]);
-  assert.deepEqual(cost('1000bulbs', 'strings'), [869.23, 543.48, 156]);
+  assert.deepEqual(cost('cle', 'bulk'), [1119.76, 804, 212.8]);
+  assert.deepEqual(cost('cle', 'strings'), [1136.98, 821.22, 232.8]);
+  assert.deepEqual(cost('1000bulbs', 'bulk'), [958.76, 643, 224.5]);
+  assert.deepEqual(cost('1000bulbs', 'strings'), [866.07, 550.31, 156]);
   assert.equal(base.bom.subtotal, 767.51);
-  // Installer basis: the same order, a smaller job cost.
-  const used = samplePlan('cle', { style: 'bulk', costBasis: 'used' }).plan;
+  // Installer basis: the same order, a smaller job cost (installer mode on; with it off the basis is ignored).
+  const p = sample.createSample().project;
+  p.library = Object.assign({}, p.library, { supplierId: 'cle', config: { buying: { style: 'bulk', costBasis: 'used' } } });
+  p.quote = Object.assign({}, p.quote, { enabled: true });
+  const used = planner.computePlan(p);
   assert.ok(used.bom.subtotal < plan.bom.subtotal);
-  assert.ok(bom.orderSheets(used.bom, used.library)[0].subtotal > bom.orderSheets(plan.bom, plan.library)[0].subtotal, 'a whole spool is ordered');
+  assert.equal(bom.orderSheets(used.bom, used.library)[0].subtotal, bom.orderSheets(plan.bom, plan.library)[0].subtotal, 'the same order');
+  assert.equal(samplePlan('cle', { style: 'bulk', costBasis: 'used' }).plan.bom.subtotal, plan.bom.subtotal);
 });

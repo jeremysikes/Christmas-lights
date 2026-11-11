@@ -10,7 +10,8 @@
  *  - priceStatus 'verified': the price, part number, pack size and electrical figures were read on the
  *    item's own product page that day.
  *  - priceStatus 'observed': the item was seen on the supplier's category list only (its own page was not
- *    opened), so the app says "check the price". Four 1000Bulbs items are like this.
+ *    opened), so the app says "check the price". Seven 1000Bulbs items are like this (two spools or lengths of
+ *    C7 wire, three 50 ft lengths of wire and the two blue bulbs).
  *  - A cut-to-length product as a whole (kind 'bulk') has no part number and its per-foot price is worked
  *    out from its parts, not read from a page, so it is never 'verified': its parts carry their own status.
  *  - Nothing else is entered. Items that could not be ordered that day, items with no watts on their page,
@@ -73,7 +74,9 @@ LP.define('suppliers', [], function () {
         stringers: CLE + 'c7-c9-christmas-light-strings-spools-8015.htm',
         // There is no page for plugs alone: they are on the electrical accessories page (filter "Electrical Plugs").
         plugs: CLE + 'christmas-light-adapters-and-electrical-accessories--106.htm',
-        clips: CLE + 'c7-c9-light-clips-and-hangers--753.htm',
+        // The parent clips page ("Christmas Light Clips & Hangers"): it leads to the C7/C9 clips, the all-in-one clips
+        // and the mini-light clips, so the find link fits adhesive mini-light clips and zip ties as well.
+        clips: CLE + 'christmas-light-clips-and-hangers--102.htm',
         miniLights: CLE + 'Wide-Angle-Lens-LED-Lights--864.htm',
         icicle: CLE + 'Icicle-Lights.htm',
         net: CLE + 'led-net-lights--819.htm',
@@ -160,8 +163,9 @@ LP.define('suppliers', [], function () {
    * measuring, chaining and power feeds work unchanged (SPEC §8.3). Derived figures:
    * bulbsPerUnit = 12 / spacing, wattsPerUnit = wattsEach × bulbsPerUnit, maxEndToEnd = the feet one run may
    * be (maxRunFt, and never more sockets than maxBulbsPerRun), maxConnectedW = the watts one run may carry
-   * (maxBulbsPerRun × wattsEach, and never more than 80% of the lowest amp rating printed for any length of
-   * the wire, at 120 V), and `price` = a per-foot equivalent of the spool + default bulbs (display and
+   * (maxBulbsPerRun × the highest wattsEach of any bulb colour on file, so a full run of the hungriest colour
+   * still fits, and never more than 80% of the lowest amp rating printed for any length of the wire, at
+   * 120 V), and `price` = a per-foot equivalent of the spool + default bulbs (display and
    * fallback only; the BOM prices the components). The product itself has no part number and its price is
    * worked out, not read from a page, so its priceStatus is 'observed' whatever its parts are.
    */
@@ -174,12 +178,13 @@ LP.define('suppliers', [], function () {
     const def = c.bulb.variants[c.bulb.defaultVariant];
     const amps = [c.wire].concat(Array.isArray(c.wire.sizes) ? c.wire.sizes : []).map((w) => w && w.maxAmps).filter((a) => a > 0);
     const wireW = amps.length ? Math.min.apply(null, amps) * 120 * 0.8 : Infinity;
+    const topW = Math.max.apply(null, [c.bulb.wattsEach].concat(Object.keys(c.bulb.variants).map((v) => c.bulb.variants[v].wattsEach).filter((w) => w > 0)));
     return {
       id: spec.id, sku: spec.id, supplierId: spec.supplierId, supplierSku: null, equiv: spec.equiv, kind: 'bulk',
       name: spec.name, category: spec.category, tech: 'LED', unit: 'foot',
       bulbSpacingIn: spacing, stringLengthFt: 1, leadFt: 0, bulbsPerUnit: round(perFt, 4), wattsPerUnit: round(c.bulb.wattsEach * perFt, 4),
       maxEndToEnd: Math.floor(Math.min(maxRunFt, maxBulbs / perFt)), maxRunFt, maxBulbsPerRun: maxBulbs,
-      maxConnectedW: round(Math.min(maxBulbs * c.bulb.wattsEach, wireW), 2), endConnector: true,
+      maxConnectedW: round(Math.min(maxBulbs * topW, wireW), 2), endConnector: true,
       price: round(c.wire.price / c.wire.spoolFt + perFt * def.price / c.bulb.packQty, 2),
       colors: ALL_COLORS.slice(), clipEligible: true, enabled: true, suitableFor: LINE_TYPES.slice(),
       url: c.wire.url, priceAsOf: PRICE_AS_OF, priceStatus: 'observed', notes: spec.notes, components: c,
@@ -243,6 +248,9 @@ LP.define('suppliers', [], function () {
             cleWire('15098', 'C9 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
               'C9-Christmas-Lights-String-100-ft-Length-12-inch-Spacing-7-Amp-Green-Wire--15098.htm', 49.99,
               { lengthFt: 100, maxAmps: 7, plugsIncluded: 'both', notes: PLUGS_BOTH }),
+            cleWire('15106', 'C9 socket wire, 50 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
+              'C9-Christmas-Lights-String-50-ft-Length-12-inch-Spacing-5-Amp-Green-Wire--15106.htm', 27.99,
+              { lengthFt: 50, maxAmps: 7, plugsIncluded: 'both', notes: PLUGS_BOTH }),
             cleWire('15100', 'C9 socket wire, 25 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
               'C9-Christmas-Lights-String-25-ft-Length-12-inch-Spacing-Green-Wire--15100.htm', 15.99,
               { lengthFt: 25, maxAmps: 5, plugsIncluded: 'both', notes: PLUGS_BOTH }),
@@ -267,7 +275,8 @@ LP.define('suppliers', [], function () {
   const CLE_C7_BULK = bulkProduct({
     id: 'cle:c7-bulk-12', supplierId: 'cle', equiv: 'c7-led', category: 'c7', bulbSpacingIn: 12,
     name: 'C7 LED on socket wire, a bulb every 12 in (cut to length)',
-    notes: 'Bought as socket wire, boxes of 25 screw-in bulbs and slide-on plugs. 0.8 W per bulb as the supplier lists it. ' + RUN_RULE + ' ' + CLE_AMPS,
+    notes: 'Bought as socket wire, boxes of 25 screw-in bulbs and slide-on plugs. 0.8 W per bulb as the supplier lists it. ' + RUN_RULE + ' ' + CLE_AMPS +
+      ' (The table for the 50 ft length says 5 A.)',
     components: {
       wire: cleWire('15054', 'C7 socket wire, 1,000 ft spool, a socket every 12 in, green SPT-1 (no plugs)',
         'C7-Christmas-Lights-Spool-1000-ft-Length-12-inch-Spacing-7-Amp-Green-Wire--15054.htm', 369.99, {
@@ -278,6 +287,9 @@ LP.define('suppliers', [], function () {
             cleWire('15067', 'C7 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
               'C7-Christmas-Lights-String-100-ft-Length-12-inch-Spacing-5-Amp-Green-Wire--15067.htm', 44.99,
               { lengthFt: 100, maxAmps: 7, plugsIncluded: 'both', notes: PLUGS_BOTH }),
+            cleWire('15077', 'C7 socket wire, 50 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
+              'C7-Christmas-Lights-String-50-ft-Length-12-inch-Spacing-Green-Wire--15077.htm', 22.99,
+              { lengthFt: 50, maxAmps: 5, plugsIncluded: 'both', notes: PLUGS_BOTH }),
             cleWire('15071', 'C7 socket wire, 25 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
               'C7-Christmas-Lights-String-25-ft-Length-12-inch-Spacing-Green-Wire--15071.htm', 11.99,
               { lengthFt: 25, maxAmps: 8, plugsIncluded: 'both', notes: PLUGS_BOTH }),
@@ -299,8 +311,10 @@ LP.define('suppliers', [], function () {
     },
   });
 
-  const SET_RULE = 'The supplier\'s page gives no limit for sets joined end to end: LightPlan plans at most 10 sets (250 ft, 250 bulbs) on one run, ' +
-    'the trade rule for this wire.';
+  const SET_RULE = 'LightPlan plans at most 10 sets (250 ft, 250 bulbs, 200 W) on one run, the trade rule for this wire, ' +
+    'whatever larger figure the supplier\'s page prints for sets joined end to end.';
+  /** These pages offer the same string in more than one size: the line says which one the part number is. */
+  const sizeNote = (item) => `The page offers more than one size: pick the 25-light, 25 ft set (item ${item}).`;
   const CLE_PRODUCTS = [
     CLE_C9_BULK,
     CLE_C7_BULK,
@@ -309,6 +323,7 @@ LP.define('suppliers', [], function () {
       bulbSpacingIn: 12, stringLengthFt: 25, leadFt: 0.5, bulbsPerUnit: 25, wattsPerUnit: 20, maxEndToEnd: 10, price: 49.99,
       colors: ['warmWhite'], clipEligible: true, suitableFor: LINE_TYPES.slice(),
       url: CLE + 'p/C9-Warm-White-Opticore-Commercial-LED-Christmas-String-Lights-14953.htm',
+      orderNote: sizeNote('77667'),
       notes: 'Ready-made: screw-in bulbs already in, on 18-gauge SPT-1 wire with a fused plug. 20 W per set (0.8 W per bulb). ' + SET_RULE,
     }),
     product('cle', 'c9-string-17', '84095', {
@@ -325,6 +340,7 @@ LP.define('suppliers', [], function () {
       bulbSpacingIn: 12, stringLengthFt: 25, leadFt: 0.5, bulbsPerUnit: 25, wattsPerUnit: 20, maxEndToEnd: 10, price: 39.99,
       colors: ['warmWhite'], clipEligible: true, suitableFor: LINE_TYPES.slice(),
       url: CLE + 'p/C7-Warm-White-Opticore-Commercial-LED-Christmas-String-Lights-14949.htm',
+      orderNote: sizeNote('77653'),
       notes: 'Ready-made: screw-in bulbs already in, on 18-gauge SPT-1 wire with a fused plug. 20 W per set (0.8 W per bulb). ' + SET_RULE,
     }),
     product('cle', 'mini-5mm-70', '83768', {
@@ -358,7 +374,10 @@ LP.define('suppliers', [], function () {
   const tbUrl = (id, sku) => TB + 'product/' + id + '/' + sku + '.html';
   const tbBulb = (sku, id, base, colour, price, extra) => offer('1000bulbs', sku,
     `${base} VividCore Premium LED bulbs, ${colour}, faceted, pack of 25`, tbUrl(id, sku), price, 25, extra);
-  /** Socket wire at 1000Bulbs: 18-gauge SPT-1, a socket every 12 in, green. Its 25 ft lengths are 20-gauge, so they are not offered as a size of it. */
+  /**
+   * Socket wire at 1000Bulbs: 18-gauge SPT-1, a socket every 12 in, green. Its 25 ft lengths are 20-gauge, so they
+   * are not offered as a size of it; its 50 ft lengths are 18-gauge and were seen on its category list.
+   */
   const tbWire = (sku, id, name, price, extra) => offer('1000bulbs', sku, name, tbUrl(id, sku), price, 1,
     Object.assign({ wireType: 'SPT-1', wireGauge: 18 }, extra));
   const TB_AMPS = 'This supplier\'s spool pages give no amp rating for the wire; the page for its 100 ft length of C9 socket wire, the same ' +
@@ -382,6 +401,9 @@ LP.define('suppliers', [], function () {
             { lengthFt: 500, plugsIncluded: false }),
           tbWire('CMS-10124', 221897, 'C9 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1, 18 gauge (male plug only)', 39.43,
             { lengthFt: 100, maxAmps: 5, plugsIncluded: 'male', notes: PLUG_MALE_ONLY }),
+          // Seen on the supplier's category list only (its own page was not opened).
+          tbWire('CMS-10319', 231931, 'C9 socket wire, 50 ft ready-made length, a socket every 12 in, green SPT-1, 18 gauge (plugs on both ends)', 26.98,
+            { lengthFt: 50, plugsIncluded: 'both', listedOnly: true, notes: PLUGS_BOTH }),
         ],
       }),
       bulb: {
@@ -395,7 +417,7 @@ LP.define('suppliers', [], function () {
           // No VividCore Premium blue was seen: this is the supplier's standard blue bulb, from its category list.
           blue: offer('1000bulbs', 'CMS-C9BLU', 'C9 LED bulbs, blue, faceted, pack of 25 (standard line)', tbUrl(204203, 'CMS-C9BLU'), 22.33, 25, {
             listedOnly: true, wattsEach: 0.5,
-            notes: 'A different bulb line from the other colours (standard, not VividCore Premium): 0.5 W per bulb as listed; the plan counts 0.74 W.',
+            notes: 'A different bulb line from the other colours (standard, not VividCore Premium): 0.5 W per bulb as listed; the plan counts 0.74 W, like the other colours, to stay on the safe side.',
           }),
         },
       },
@@ -416,6 +438,11 @@ LP.define('suppliers', [], function () {
             { lengthFt: 500, plugsIncluded: false, listedOnly: true }),
           tbWire('CMS-10323', 233211, 'C7 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1, 18 gauge (plugs on both ends)', 57.64,
             { lengthFt: 100, plugsIncluded: 'both', listedOnly: true, notes: PLUGS_BOTH }),
+          // Two 50 ft lengths are on the category list: one with a male plug only, one with a plug on each end.
+          tbWire('CMS-10122', 221895, 'C7 socket wire, 50 ft ready-made length, a socket every 12 in, green SPT-1, 18 gauge (male plug only)', 18.85,
+            { lengthFt: 50, plugsIncluded: 'male', listedOnly: true, notes: PLUG_MALE_ONLY }),
+          tbWire('CMS-10318', 231930, 'C7 socket wire, 50 ft ready-made length, a socket every 12 in, green SPT-1, 18 gauge (plugs on both ends)', 30.44,
+            { lengthFt: 50, plugsIncluded: 'both', listedOnly: true, notes: PLUGS_BOTH }),
         ],
       }),
       bulb: {
@@ -432,7 +459,7 @@ LP.define('suppliers', [], function () {
           // No VividCore Premium blue was seen: this is the supplier's standard blue bulb, from its category list.
           blue: offer('1000bulbs', 'CMS-C7BLU', 'C7 LED bulbs, blue, faceted, pack of 25 (standard line)', tbUrl(204195, 'CMS-C7BLU'), 17.29, 25, {
             listedOnly: true, wattsEach: 0.54,
-            notes: 'A different bulb line from the other colours (standard, not VividCore Premium): 0.54 W per bulb as listed, a little more than the 0.48 W the plan counts.',
+            notes: 'A different bulb line from the other colours (standard, not VividCore Premium): 0.54 W per bulb as listed, a little more than the 0.48 W of the other colours, so the plan counts 0.54 W for each blue bulb.',
           }),
         },
       },
@@ -584,6 +611,75 @@ LP.define('suppliers', [], function () {
     for (const sid of Object.keys(SUPPLIER_ACCESSORIES)) for (const k of Object.keys(SUPPLIER_ACCESSORIES[sid])) m[SUPPLIER_ACCESSORIES[sid][k].sku] = SUPPLIER_ACCESSORIES[sid][k].price;
     return m;
   })();
+  /**
+   * Colour family of a hex colour, as bulbs are sold: warmWhite, coolWhite, red, orange, yellow, green, teal,
+   * blue, purple or pink. Pale or grey colours are a white (warm when it leans red, else cool).
+   */
+  function colourFamily(hex) {
+    let h = String(hex || '').trim().replace(/^#/, '');
+    if (/^[0-9a-f]{3,4}$/i.test(h)) h = h.slice(0, 3).split('').map((ch) => ch + ch).join('');
+    if (!/^[0-9a-f]{6}([0-9a-f]{2})?$/i.test(h)) return 'warmWhite';
+    const r = parseInt(h.slice(0, 2), 16) / 255, g = parseInt(h.slice(2, 4), 16) / 255, b = parseInt(h.slice(4, 6), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min, l = (max + min) / 2;
+    const sat = d < 1e-9 ? 0 : d / (1 - Math.abs(2 * l - 1) + 1e-9);
+    if (sat < 0.18 || l > 0.9 || l < 0.08) return r - b > 0.04 ? 'warmWhite' : 'coolWhite';
+    let hue;
+    if (max === r) hue = ((g - b) / d) % 6; else if (max === g) hue = (b - r) / d + 2; else hue = (r - g) / d + 4;
+    hue = (hue * 60 + 360) % 360;
+    if (hue < 15 || hue >= 345) return 'red';
+    if (hue < 40) return l >= 0.68 ? 'warmWhite' : 'orange';
+    if (hue < 65) return l >= 0.8 ? 'warmWhite' : 'yellow';
+    if (hue < 165) return 'green';
+    if (hue < 190) return 'teal';
+    if (hue < 255) return 'blue';
+    if (hue < 290) return 'purple';
+    return 'pink';
+  }
+  /**
+   * The bulb colours along a run ({colorMode, colors}), one entry per position of its repeating pattern: warm
+   * white and cool white are one colour, "multicolor" is the supplier's mixed box ('multi'), and a custom
+   * pattern lists the family of each of its colours (red, green → half red, half green).
+   */
+  function bulbPattern(run) {
+    const mode = isObj(run) && typeof run.colorMode === 'string' ? run.colorMode : 'warmWhite';
+    if (mode === 'coolWhite') return ['coolWhite'];
+    if (mode === 'multicolor') return ['multi'];
+    if (mode === 'custom') {
+      const list = (Array.isArray(run.colors) ? run.colors : []).filter((c) => typeof c === 'string' && /^#[0-9a-f]{3,8}$/i.test(c)).map(colourFamily);
+      if (list.length) return list;
+    }
+    return ['warmWhite'];
+  }
+  /** Plain names of a list of hex colours, each family once, in order: "red and green". '' when there are none. */
+  function colourNames(colors) {
+    const names = [];
+    for (const c of Array.isArray(colors) ? colors : []) {
+      if (typeof c !== 'string' || !/^#[0-9a-f]{3,8}$/i.test(c)) continue;
+      const n = (VARIANT_LABELS[colourFamily(c)] || '').toLowerCase();
+      if (n && !names.includes(n)) names.push(n);
+    }
+    if (names.length <= 1) return names.join('');
+    return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+  }
+  /**
+   * Watts of the bulbs along `sockets` sockets of a bulk product in the run's colours: each colour's own
+   * wattsEach when the supplier lists one that is higher than the family figure, never less than the family
+   * figure (so the load is not under-counted when a colour is a hungrier bulb line).
+   */
+  function bulkWatts(product, run, sockets) {
+    const bulb = isObj(product) && isObj(product.components) && isObj(product.components.bulb) ? product.components.bulb : null;
+    const n = Number.isFinite(sockets) && sockets > 0 ? sockets : 0;
+    if (!bulb || !(bulb.wattsEach >= 0)) return null;
+    const pattern = bulbPattern(run);
+    let watts = 0;
+    pattern.forEach((family, i) => {
+      const count = Math.floor(n / pattern.length) + (i < n % pattern.length ? 1 : 0);
+      const v = isObj(bulb.variants) && isObj(bulb.variants[family]) ? bulb.variants[family].wattsEach : null;
+      watts += count * Math.max(bulb.wattsEach, Number.isFinite(v) && v > 0 ? v : 0);
+    });
+    return watts;
+  }
+
   /** The price this catalog holds for a sku, or null when the sku is not from this catalog. */
   function catalogPrice(sku) {
     return Object.prototype.hasOwnProperty.call(CATALOG_PRICES, sku) ? CATALOG_PRICES[sku] : null;
@@ -642,6 +738,6 @@ LP.define('suppliers', [], function () {
   return {
     SUPPLIERS, SUPPLIER_PRODUCTS, SUPPLIER_ACCESSORIES, GENERIC_ID, ROLES, PRICE_STATUSES, PRICE_AS_OF, VARIANT_ORDER, VARIANT_LABELS,
     getSupplier, knownSupplierId, supplierSearchUrl, findUrl, safeUrl, productsOf, accessoryOffer, componentOffers, catalogPrice,
-    bulkProduct, allLinks, linkHosts, formatDate,
+    bulkProduct, allLinks, linkHosts, formatDate, colourFamily, bulbPattern, colourNames, bulkWatts,
   };
 });
