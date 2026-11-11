@@ -227,15 +227,26 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       if (w.featureId) return 3;
       return 6;
     }
-    /** {step: {count, level}} of warn/danger warnings per step (info and the disclaimer are not counted). */
+    /**
+     * {step: {count, level, low}} per step: `count` warn/danger warnings (info and the disclaimer are not counted)
+     * and their worst `level`; `low` is the number of traced items rated Low that have no tape-measured size yet
+     * (step 3 only: the step bar shows it in a neutral colour when the step has no warnings).
+     */
     function stepWarnings(plan) {
       const out = {};
-      for (const s of STEPS) out[s.n] = { count: 0, level: null };
+      for (const s of STEPS) out[s.n] = { count: 0, level: null, low: 0 };
       for (const w of arr(plan && plan.warnings)) {
         if (!w || w.code === 'disclaimer' || (w.level !== 'warn' && w.level !== 'danger')) continue;
         const s = out[warningStep(w)];
         s.count += 1;
         if (w.level === 'danger' || !s.level) s.level = w.level;
+      }
+      const measured = plan && plan.measured && plan.measured.features;
+      if (measured && typeof measured === 'object') {
+        for (const id of Object.keys(measured)) {
+          const m = measured[id];
+          if (m && m.ok && !m.overridden && m.confidence && m.confidence.level === 'low') out[3].low += 1;
+        }
       }
       return out;
     }
@@ -1319,6 +1330,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const sm = plan.summary;
       const kids = [head(6, 'Everything to buy, what it costs, and the order to put it up.')];
 
+      const rough = roughList(plan, project);
+      if (rough.length) kids.push(roughSection(ctx, rough));
+
       const problems = arr(plan.warnings).filter((w) => w.level === 'danger' || w.level === 'warn');
       if (problems.length) kids.push(section('Check before you buy (' + problems.length + ')', warningList(problems, true), { key: 'problems' }));
 
@@ -1333,7 +1347,10 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
             h('p', { class: 'tile-sub num' }, ctx.fmt(sm.totalFt) + ' measured'), byType.length ? h('ul', { class: 'type-list' }, byType) : null),
           tile('Strings', fmtNum(sm.strings, 0)), tile('Clips', fmtNum(sm.clips, 0)), tile('Cords', fmtNum(sm.cords, 0)), tile('Timers', fmtNum(sm.timers, 0)),
           tile('Total watts', watts(sm.watts), fmtNum(sm.amps, 1) + ' A'), tile('Circuits', fmtNum(sm.circuits, 0)),
-          h('div', { class: 'tile wide accent' }, h('p', { class: 'tile-value num' }, money(sm.cost)), h('p', { class: 'tile-label' }, 'Estimated materials cost'),
+          h('div', { class: 'tile wide accent', 'data-key': 'cost-tile', 'data-rough': rough.length ? 'true' : null },
+            h('p', { class: 'tile-value num' }, money(sm.cost)),
+            h('p', { class: 'tile-label' }, 'Estimated materials cost', rough.length ? h('span', { class: 'badge warn rough-badge' }, 'rough') : null),
+            rough.length ? h('p', { class: 'tile-sub' }, 'Rough until ' + (rough.length === 1 ? 'the measurement above is' : 'the ' + rough.length + ' measurements above are') + ' checked with a tape.') : null,
             isNum(sm.quoteTotal) ? h('p', { class: 'tile-sub num' }, 'Customer quote ' + money(sm.quoteTotal)) : null)),
       ], { key: 'summary' }));
 
@@ -1352,6 +1369,48 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       project.quote.enabled ? null : h('p', { class: 'hint' }, 'Turn on installer mode above to make a customer quote.')], { key: 'export' }));
       kids.push(nextButton(6));
       return kids;
+    }
+
+    /** The measurements worth a tape measure (ui.export.roughMeasurements); empty when that module is missing. */
+    function roughList(plan, project) {
+      const exp = exportModule();
+      try { return exp && typeof exp.roughMeasurements === 'function' ? exp.roughMeasurements(plan, project) : []; } catch (e) { return []; }
+    }
+
+    /**
+     * "Measurements to double-check (n)" at the top of Review: each Low-confidence item with the range it could be,
+     * a tape-measure field (the same override the Trace step edits) and a link to the item in step 3.
+     */
+    function roughSection(ctx, rough) {
+      // Roughest first, so the ones that matter most are in view; the rest fold away under "more".
+      const rank = (it) => (it.pct === Infinity ? 1e9 : isNum(it.pct) ? it.pct : 0);
+      const sorted = rough.slice().sort((a, b) => rank(b) - rank(a));
+      const items = sorted.map((it) => {
+        const f = byId(ctx.project.features, it.featureId) || { params: {} };
+        const ft = FEATURE_TYPES[it.type] || { color: '#999' };
+        const params = f.params || {};
+        const tape = it.kind === 'bush'
+          ? h('div', { class: 'row-2' },
+            field('Tape width', textInput({ act: 'feature-len', value: params.overrideWidthFt ? ctx.fmt(params.overrideWidthFt) : '', placeholder: 'e.g. 4\'', data: { id: it.featureId, field: 'overrideWidthFt' } })),
+            field('Tape height', textInput({ act: 'feature-len', value: params.overrideHeightFt ? ctx.fmt(params.overrideHeightFt) : '', placeholder: 'e.g. 3\'', data: { id: it.featureId, field: 'overrideHeightFt' } })))
+          : field(it.kind === 'height' ? 'Tape-measured height' : 'Tape-measured length',
+            textInput({ act: 'feature-len', value: f.overrideFt ? ctx.fmt(f.overrideFt) : '', placeholder: 'e.g. ' + ctx.fmt(it.lengthFt), data: { id: it.featureId, field: 'overrideFt' } }));
+        return h('li', { class: 'rough-item', 'data-key': 'rough-' + it.featureId },
+          h('p', { class: 'rough-title' }, swatch(ft.color, 'dot'), h('strong', null, it.label), pill(it.level)),
+          h('p', { class: 'rough-text' }, capFirst(it.text) + '.'),
+          h('div', { class: 'rough-row' }, tape,
+            button('Show it', { act: 'show-feature', data: { id: it.featureId }, icon: 'arrowRight', cls: 'small ghost', aria: 'Show ' + it.label + ' on the photo in step 3' })));
+      });
+      const FIRST = 4;
+      const rest = items.length > FIRST + 1 ? items.slice(FIRST) : [];
+      const first = rest.length ? items.slice(0, FIRST) : items;
+      return section('Measurements to double-check (' + rough.length + ')', [
+        h('p', { class: 'hint' }, 'The photo could not measure these well. Check each one with a tape measure and type what you get: the shopping list and the cost follow it straight away. Show it opens the item on the photo in step 3.'),
+        h('ul', { class: 'rough-list' }, first),
+        rest.length ? h('details', { class: 'disclosure rough-more', 'data-key': 'rough-more' },
+          h('summary', null, h('span', null, rest.length + ' more to double-check'), icon('chevronDown', 'chev')),
+          h('div', { class: 'disclosure-body' }, h('ul', { class: 'rough-list' }, rest))) : null,
+      ], { key: 'rough', cls: 'rough-sec' });
     }
 
     function bomSection(ctx) {
@@ -1673,6 +1732,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           else actions.startOutlet();
         },
         'select-outlet': (el) => actions.select({ kind: 'outlet', id: el.dataset.id }),
+        // From Review: open the Trace step with this item picked (its points and its editor show).
+        'show-feature': (el) => { actions.goStep(3); actions.select({ kind: 'feature', id: el.dataset.id }); },
         'delete-outlet': (el) => actions.deleteOutlet(el.dataset.id),
         'add-circuit': () => actions.addCircuit(),
         'delete-circuit': (el) => actions.deleteCircuit(el.dataset.id),
@@ -1901,6 +1962,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
 
     return {
       mount, icon, h, morph, pickFile, exportFile, stepWarnings, warningStep, STEPS, validateProducts, diffConfig, ICONS,
-      powerVerdict, outletSummaryText,
+      powerVerdict, outletSummaryText, roughList,
     };
   });

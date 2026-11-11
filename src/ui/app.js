@@ -620,13 +620,17 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'ui.persist', 'ui.store', 'u
           b.classList.toggle('done', n < ui.step);
           const badge = b.querySelector('.step-badge');
           const c = counts[n];
+          // Warnings first; a step with none shows how many of its measurements are rough (Low), in a neutral colour.
+          const lowOnly = !c.count && c.low > 0;
+          const shown = c.count || (lowOnly ? c.low : 0);
           if (badge) {
-            badge.hidden = !c.count;
-            badge.textContent = c.count ? String(c.count) : '';
-            badge.className = 'step-badge ' + (c.level || '');
+            badge.hidden = !shown;
+            badge.textContent = shown ? String(shown) : '';
+            badge.className = 'step-badge ' + (lowOnly ? 'neutral' : c.level || '');
           }
           const label = panels.STEPS[n - 1].label;
-          b.setAttribute('aria-label', 'Step ' + n + ': ' + label + (c.count ? ', ' + c.count + (c.count === 1 ? ' warning' : ' warnings') : ''));
+          b.setAttribute('aria-label', 'Step ' + n + ': ' + label + (c.count ? ', ' + c.count + (c.count === 1 ? ' warning' : ' warnings') : '') +
+            (c.low ? ', ' + c.low + (c.low === 1 ? ' rough measurement' : ' rough measurements') : ''));
         }
 
         // Canvas controls

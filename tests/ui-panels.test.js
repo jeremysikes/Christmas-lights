@@ -66,6 +66,29 @@ test('warnings are routed to the step that can fix them', () => {
   assert.equal(counts[1].count, 0, 'info and the disclaimer are not counted');
 });
 
+// ---------------------------------------------------------------- Phase 1.1: rough measurements (UX-03, SPEC §8.5 "Step 6")
+test('UX-03 Low-confidence items are counted on the Trace step and listed for Review until they are tape-measured', () => {
+  const p = tracedSample();
+  const pl = plan.computePlan(p);
+  const lows = p.features.filter((f) => pl.measured.features[f.id].confidence.level === 'low').map((f) => f.id);
+  assert.ok(lows.length >= 3, 'the sample has rough measurements (' + lows.length + ')');
+  const counts = panels.stepWarnings(pl);
+  assert.equal(counts[3].low, lows.length, 'the Trace step counts them');
+  assert.equal(counts[3].count, 0, 'they are not warnings: the badge stays neutral');
+  assert.equal(counts[3].level, null);
+  assert.deepEqual([1, 2, 4, 5, 6].map((n) => counts[n].low), [0, 0, 0, 0, 0]);
+  assert.deepEqual(panels.roughList(pl, p).map((r) => r.featureId), lows);
+  // Typing a tape-measured length takes the item off both.
+  const taped = clone(p);
+  taped.features.find((f) => f.id === lows[0]).overrideFt = 16;
+  const tp = plan.computePlan(taped);
+  assert.equal(panels.stepWarnings(tp)[3].low, lows.length - 1);
+  assert.ok(!panels.roughList(tp, taped).some((r) => r.featureId === lows[0]));
+  // No plan, no count.
+  assert.equal(panels.stepWarnings(null)[3].low, 0);
+  assert.deepEqual(panels.roughList(null, null), []);
+});
+
 // ---------------------------------------------------------------- Phase 1.1: Power step (SPEC §8.5 "Step 5")
 test('8.5 the Power step opens with one plain sentence: good to go, or what to fix', () => {
   const p = tracedSample();
