@@ -1578,7 +1578,7 @@ async function runPhase11(browser, name) {
       }
       if (phone) {
         // A collapsed sheet shows the step's title whole above the button, not a heading cut in half.
-        for (const n of [3, 5]) {
+        for (let n = 1; n <= 6; n += 1) {
           await goStep(n);
           await act(() => window.LightPlanApp.actions.setSheet('min'));
           await sleep(400);
@@ -1732,6 +1732,11 @@ async function runPhase11(browser, name) {
       await press(page, '[data-act="trace-type"][data-type="roofline"]');
       const pd = await pinned();
       t.ok(pd.label === 'Done tracing' && pd.primary && pd.inView, 'while tracing the pinned button says "Done tracing" (' + pd.label + ')');
+      const bars = await page.evaluate(() => ({
+        panel: Array.from(document.querySelectorAll('.trace-bar')).filter((el) => el.getBoundingClientRect().height > 0).length,
+        hint: Array.from(document.querySelectorAll('#hint-undo, #hint-cancel, #hint-finish')).filter((el) => el.getBoundingClientRect().height > 0).length,
+      }));
+      t.ok(bars.hint === 3 && bars.panel === (phone ? 0 : 1), phone ? 'phone: the tracing buttons are on the photo only, with no second (sticky) bar in the sheet' : 'desktop: the tracing buttons are on the photo and in the side panel\'s bar');
       await zoomTo([420, 340], phone ? 2.5 : 1);
       const view = await act(() => window.LightPlanApp.viewport.getView().scale);
       const corner0 = await act(() => window.LightPlanApp.store.project().planes[0].rect.corners[0]);
@@ -1770,6 +1775,11 @@ async function runPhase11(browser, name) {
       const del = await act((id) => { const f = window.LightPlanApp.store.project().features.find((x) => x.id === id); return { n: f.points.length, e: f.tapErr }; }, feat.id);
       t.ok(del.n === 2 && del.e.length === 2 && del.e[0] === want, 'deleting it too (' + JSON.stringify(del.e) + ')');
       await act(() => window.LightPlanApp.actions.finishTracing());
+      // The values are part of the saved plan: autosave, reload, still beside their points.
+      await reload();
+      const kept = await act((id) => { const p = window.LightPlanApp.store.project(); const f = p.features.find((x) => x.id === id); return { rect: p.planes[0].rect.tapErr, feature: f ? f.tapErr : null, points: f ? f.points.length : 0 }; }, feat.id);
+      t.ok(kept.rect && kept.rect.length === 4 && kept.rect.every((e) => e === want) && kept.feature && kept.feature.length === kept.points && kept.feature[0] === del.e[0] && kept.feature[1] === del.e[1],
+        'a reload keeps each list with its points (rectangle ' + JSON.stringify(kept.rect) + ', eave ' + JSON.stringify(kept.feature) + ')');
     });
 
     await sec('F2 zoomed-out taps lower the confidence', async () => {
