@@ -27,8 +27,21 @@
  *  - quoteFieldProblem(field, value) → plain reason or null: the quote rules of normalizeProject, for the UI.
  *  - importProject also accepts a JSON string. Extra exports: EXPORT_SCHEMA_ID, EXPORT_VERSION,
  *    ENUMS, ID_PREFIX, createDefaultSettings, createDefaultQuote.
+ *
+ * Phase 1.1 (SPEC §8.3 and §8.4). All of these are optional, so a project saved before them is still
+ * "already normalized" (nothing is added when a field is missing):
+ *  - library.supplierId (text or null): who the project buys from. Kept when present.
+ *  - library.config.buying {style, costBasis}: a value that is not a known word is dropped (the default applies).
+ *  - Supplier fields on products (supplierId, supplierSku, url, priceAsOf, priceStatus, equiv, kind, components)
+ *    are kept as they are, with two repairs: a link (product.url and every url inside components) that is not a
+ *    plain https address is dropped, and so is a priceStatus that is not 'verified' or 'observed'.
+ *    validateProject reports both.
+ *  - tapErr (expected tap error per point, stored-image pixels) beside rect.corners, ref.points, feature.points
+ *    and plane.derived.line: kept only when it is a list of finite numbers of 0 or more with exactly one entry
+ *    per point; otherwise dropped silently (no information = the 2.5 px default).
+ *  - ENUMS gains priceStatus, productKind, buyingStyle and costBasis.
  */
-LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
+LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, catalog, suppliers) {
   'use strict';
 
   const SCHEMA_ID = 'lightplan/project';
@@ -52,6 +65,10 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     productCategory: ['c9', 'c7', 'mini', 'icicle', 'net', 'rope', 'track', 'path', 'treewrap'],
     productUnit: ['string', 'net', 'set', 'foot'],
     productTech: ['LED', 'incandescent'],
+    priceStatus: suppliers.PRICE_STATUSES.slice(),
+    productKind: ['bulk'],
+    buyingStyle: catalog.BUYING_STYLES.slice(),
+    costBasis: catalog.COST_BASES.slice(),
   };
   const PLANE_COLORS = { wall: '#4f9dff', roof: '#ff8a3d', ground: '#7bd88f' };
   const HEX_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
@@ -100,6 +117,11 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
         description: 'Image point [x, y] in pixels of the stored image; origin top-left, y down.',
       },
       pointList: { type: 'array', items: ref('point'), description: 'Image points in tap order.' },
+      tapErr: {
+        type: 'array', items: { type: 'number', minimum: 0 },
+        description: 'Optional. Expected tap error (1 sigma) of each point beside it, in pixels of the stored image, index for index. ' +
+          'Set by the editor from the zoom at the moment of the tap. Missing, or not one number per point = no information (2.5 px is assumed).',
+      },
       quad: {
         type: 'array', minItems: 4, maxItems: 4, items: ref('point'),
         description: 'Four image points as tapped. Order them with geometry.orderQuad to get [TL, TR, BR, BL].',
@@ -202,6 +224,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
           widthFt: { anyOf: [{ type: 'number', exclusiveMinimum: 0 }, { type: 'null' }], description: 'True width in feet; null with heightFt null = size unknown (scale then comes from refs).' },
           heightFt: { anyOf: [{ type: 'number', exclusiveMinimum: 0 }, { type: 'null' }], description: 'True height in feet; null = size unknown.' },
           presetId: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Rectangle preset (measure.WALL_RECT_PRESETS), e.g. "garage-double".' },
+          tapErr: { $ref: '#/$defs/tapErr', minItems: 4, maxItems: 4, description: 'Optional tap error of each of the 4 corners (see #/$defs/tapErr).' },
         },
       },
       planeDerived: {
@@ -211,6 +234,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
           parentPlaneId: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Id of the wall this plane is built from.' },
           line: { anyOf: [{ type: 'array', minItems: 2, maxItems: 2, items: ref('point') }, { type: 'null' }], description: 'Two image points on the parent wall: the eave (roof) or the wall base (ground).' },
           pitch: { anyOf: [ref('pitch'), { type: 'null' }], description: 'Roof pitch for this plane; null = project roofPitch, else estimated, else 6/12.' },
+          tapErr: { $ref: '#/$defs/tapErr', minItems: 2, maxItems: 2, description: 'Optional tap error of the 2 points of line (see #/$defs/tapErr).' },
         },
       },
       ref: {
@@ -226,6 +250,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
           heightFt: { anyOf: [{ type: 'number', exclusiveMinimum: 0 }, { type: 'null' }], description: 'Rect refs: true height in feet.' },
           presetId: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Reference preset (measure.REF_PRESETS), e.g. "door-height".' },
           quality: { enum: ENUMS.quality.slice(), description: 'How much to trust it: high (door, garage door), medium (siding, brick), low.' },
+          tapErr: { $ref: '#/$defs/tapErr', description: 'Optional tap error of each point: 2 numbers for a line, 4 for a rect (see #/$defs/tapErr).' },
         },
         allOf: [
           { if: { properties: { kind: { const: 'line' } } }, then: { properties: { points: { minItems: 2, maxItems: 2 } } } },
@@ -247,6 +272,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
           productId: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Product to use; null = the type default from the library config.' },
           color: { anyOf: [ref('featureColor'), { type: 'null' }], description: 'Color for this run; null = project colorMode.' },
           params: ref('featureParams'),
+          tapErr: { $ref: '#/$defs/tapErr', description: 'Optional tap error of each point, one number per point (see #/$defs/tapErr).' },
         },
       },
       featureColor: {
@@ -302,8 +328,68 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
         type: 'object', required: ['products', 'config'],
         description: 'Project overrides of the product library and rules of thumb.',
         properties: {
-          products: { anyOf: [{ type: 'array', minItems: 1, items: ref('product') }, { type: 'null' }], description: 'Full replacement product list; null = catalog defaults.' },
-          config: { anyOf: [{ type: 'object' }, { type: 'null' }], description: 'Overrides deep-merged into catalog.DEFAULT_CONFIG (clip spacing, labor rates, power limits and so on); null = defaults.' },
+          products: { anyOf: [{ type: 'array', minItems: 1, items: ref('product') }, { type: 'null' }], description: 'Full replacement product list; null = catalog defaults. Supplier products that are not in the list are added from the supplier map when the plan is computed.' },
+          config: {
+            anyOf: [{ type: 'object', properties: { buying: ref('buying') } }, { type: 'null' }],
+            description: 'Overrides deep-merged into catalog.DEFAULT_CONFIG (clip spacing, labor rates, power limits, buying and so on); null = defaults.',
+          },
+          supplierId: { anyOf: [{ type: 'string', minLength: 1 }, { type: 'null' }], description: 'Optional. Who the project buys from: "generic" (any store), "cle" (Christmas Lights Etc) or "1000bulbs". Missing, null or an unknown id = any store.' },
+        },
+      },
+      buying: {
+        type: 'object',
+        description: 'How C7/C9 from the chosen supplier is bought and costed (library.config.buying). Both keys are optional.',
+        properties: {
+          style: { enum: ENUMS.buyingStyle.slice(), description: 'bulk = socket wire cut to length, bulbs by the box and slide-on plugs (default); strings = ready-made strings.' },
+          costBasis: { enum: ENUMS.costBasis.slice(), description: 'bought = the plan costs everything that is ordered (default); used = only the share of bulk wire, bulbs and plugs this job uses.' },
+        },
+      },
+      offer: {
+        type: 'object', required: ['sku', 'price'],
+        description: 'One thing that can be ordered from a supplier: a bulk component (wire, a bulb colour, a plug) or an accessory.',
+        properties: {
+          sku: { type: 'string', minLength: 1, description: 'Price key for pricing.overrides: "<supplierId>:<supplierSku>" (a short name instead of the part number when that is not confirmed).' },
+          supplierSku: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'The part number to type at the supplier; null = not confirmed, order from the link.' },
+          name: { type: 'string', description: 'Name shown in the BOM.' },
+          url: { anyOf: [{ type: 'string', pattern: '^https://' }, { type: 'null' }], description: 'Product page (https only).' },
+          price: { type: 'number', minimum: 0, description: 'Price of one pack, spool or piece in USD.' },
+          packQty: { type: 'number', exclusiveMinimum: 0, description: 'How many come in one pack.' },
+          priceAsOf: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Day the price was seen (YYYY-MM-DD).' },
+          priceStatus: { enum: ENUMS.priceStatus.slice(), description: 'verified = seen on the supplier\'s page that day; observed = seen in a search result, not confirmed.' },
+          notes: { type: 'string', description: 'A short caution printed on the BOM line.' },
+        },
+      },
+      bulkComponents: {
+        type: 'object', required: ['wire', 'bulb'],
+        description: 'The parts a bulk C7/C9 product is bought as (product.kind "bulk").',
+        properties: {
+          wire: {
+            $ref: '#/$defs/offer',
+            description: 'Socket wire by the spool (an offer with the extra fields below).',
+            properties: {
+              spoolFt: { type: 'number', exclusiveMinimum: 0, description: 'Feet of wire on the spool.' },
+              wireType: { enum: ['SPT-1', 'SPT-2'], description: 'Insulation grade of the wire; slide-on plugs must match it.' },
+              maxAmps: { type: 'number', exclusiveMinimum: 0, description: 'Amp rating of the wire as the supplier lists it (the lower figure when the listing gives two).' },
+              sizes: {
+                type: 'array', description: 'Other lengths of the same wire that can be bought, for jobs that do not need a whole spool.',
+                items: { $ref: '#/$defs/offer', properties: { lengthFt: { type: 'number', exclusiveMinimum: 0, description: 'Feet of wire in this length.' } } },
+              },
+            },
+          },
+          bulb: {
+            type: 'object', required: ['packQty', 'wattsEach', 'defaultVariant', 'variants'],
+            description: 'Screw-in bulbs by the pack, one offer per colour sold.',
+            properties: {
+              name: { type: 'string', description: 'Name of the bulb family without a colour, used for a colour that is not on file.' },
+              packQty: { type: 'number', exclusiveMinimum: 0, description: 'Bulbs in one pack.' },
+              wattsEach: { type: 'number', minimum: 0, description: 'Watts per bulb as the supplier lists it.' },
+              base: { enum: ['E17', 'E12'], description: 'Screw base: E17 (C9) or E12 (C7).' },
+              defaultVariant: { type: 'string', description: 'Key in variants used for pricing a colour the supplier does not list.' },
+              variants: { type: 'object', additionalProperties: ref('offer'), description: 'Colour key (warmWhite, coolWhite, multi, red, green, blue...) to the offer for that colour.' },
+            },
+          },
+          plugMale: { anyOf: [ref('offer'), { type: 'null' }], description: 'Slide-on male plug; null = none on file (the BOM lists a plain plug line).' },
+          plugFemale: { anyOf: [ref('offer'), { type: 'null' }], description: 'Slide-on female plug; null = none on file.' },
         },
       },
       product: {
@@ -332,6 +418,19 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
           enabled: { type: 'boolean', description: 'False hides the product from auto-planning.' },
           suitableFor: { type: 'array', items: { type: 'string' }, description: 'Feature types the planner may pick it for.' },
           notes: { type: 'string', description: 'Free text shown in the library editor.' },
+          supplierId: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Supplier this product is from ("cle", "1000bulbs"); missing = any store. Supplier product ids are "<supplierId>:<name>".' },
+          supplierSku: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'The part number to type at the supplier; null = not confirmed, order from the link.' },
+          url: { anyOf: [{ type: 'string', pattern: '^https://' }, { type: 'null' }], description: 'Product page at the supplier (https only).' },
+          priceAsOf: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Day the price was seen (YYYY-MM-DD).' },
+          priceStatus: { enum: ENUMS.priceStatus.slice(), description: 'verified = seen on the supplier\'s page that day; observed = seen in a search result, not confirmed.' },
+          equiv: { type: 'string', description: 'Id of the generic product whose job this one does, e.g. "c9-led": the planner swaps it in when the project buys from this supplier.' },
+          kind: { enum: ENUMS.productKind.slice(), description: 'bulk = socket wire cut to length + bulbs + plugs, planned per foot (unit "foot"). Missing = a ready-made product.' },
+          components: ref('bulkComponents'),
+          maxRunFt: { type: 'number', exclusiveMinimum: 0, description: 'Bulk: longest single run in feet (default 250).' },
+          maxBulbsPerRun: { type: 'number', exclusiveMinimum: 0, description: 'Bulk: most bulbs on one run (default 250).' },
+          maxConnectedW: { type: 'number', exclusiveMinimum: 0, description: 'Most watts this product\'s wiring may carry end to end, its own lights plus whatever is plugged into its end. Default maxEndToEnd x wattsPerUnit.' },
+          endConnector: { type: 'boolean', description: 'True when another run or a jumper cord can plug into its end. Default false only for unit "foot".' },
+          orderNote: { type: 'string', description: 'A short caution printed on the BOM line (for example which size to pick on a page that lists several).' },
         },
       },
       pricing: {
@@ -542,12 +641,51 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     if (typeof d[field] === 'number') return 'Enter a number of 0 or more.';
     return 'That value cannot be used for the quote.';
   }
+  /** A link is kept only when it is a plain https address (suppliers.safeUrl): product data can come from a file. */
+  function cleanUrl(obj) {
+    if (isObj(obj) && has(obj, 'url') && obj.url !== null && suppliers.safeUrl(obj.url) === null) delete obj.url;
+  }
+  /** Supplier fields of a product (SPEC §8.3) are kept as they are, except unsafe links and unknown price statuses. */
+  function cleanSupplierFields(p) {
+    cleanUrl(p);
+    if (has(p, 'priceStatus') && !ENUMS.priceStatus.includes(p.priceStatus)) delete p.priceStatus;
+    for (const c of suppliers.componentOffers(p)) {
+      cleanUrl(c.offer);
+      if (has(c.offer, 'priceStatus') && !ENUMS.priceStatus.includes(c.offer.priceStatus)) delete c.offer.priceStatus;
+    }
+  }
   function normLibrary(raw) {
     const l = isObj(raw) ? raw : {};
     const products = Array.isArray(l.products) ? l.products.filter((p) => isObj(p) && cleanId(p.id)).map(jsonClone).filter(Boolean) : [];
-    for (const p of products) p.id = cleanId(p.id);
+    for (const p of products) { p.id = cleanId(p.id); cleanSupplierFields(p); }
     const config = isObj(l.config) ? jsonClone(l.config) : null;
-    return keepExtras({ products: products.length ? products : null, config: isObj(config) ? config : null }, l, []);
+    if (isObj(config) && has(config, 'buying')) {
+      // Phase 1.1: how C7/C9 is bought. A value that is not a known word is dropped so the default applies.
+      if (!isObj(config.buying)) delete config.buying;
+      else {
+        if (has(config.buying, 'style') && !ENUMS.buyingStyle.includes(config.buying.style)) delete config.buying.style;
+        if (has(config.buying, 'costBasis') && !ENUMS.costBasis.includes(config.buying.costBasis)) delete config.buying.costBasis;
+      }
+    }
+    const out = { products: products.length ? products : null, config: isObj(config) ? config : null };
+    // Phase 1.1: optional, so projects saved before it are still normalized as they are. Missing means any store.
+    if (has(l, 'supplierId')) out.supplierId = cleanId(typeof l.supplierId === 'string' ? l.supplierId : null);
+    return keepExtras(out, l, ['supplierId']);
+  }
+  /**
+   * tapErr (SPEC §8.4) beside a point list: the list itself when it is finite numbers of 0 or more, one per
+   * point, else undefined (dropped: no information). `rawPointCount` guards against a point list that lost
+   * points in normalization, which would leave the errors out of step.
+   */
+  function normTapErr(v, pointCount, rawPointCount) {
+    if (!Array.isArray(v) || v.length !== pointCount || pointCount === 0 || rawPointCount !== pointCount) return undefined;
+    return v.every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0) ? v.slice() : undefined;
+  }
+  /** Sets out.tapErr when raw.tapErr is valid for `points`; never adds one. */
+  function keepTapErr(out, raw, points, rawPoints) {
+    const t = has(raw, 'tapErr') ? normTapErr(raw.tapErr, points ? points.length : 0, Array.isArray(rawPoints) ? rawPoints.length : -1) : undefined;
+    if (t) out.tapErr = t;
+    return out;
   }
   function normPricing(raw) {
     const p = isObj(raw) ? raw : {};
@@ -597,7 +735,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     return keepExtras(out, im, IMAGE_KEYS);
   }
 
-  const REF_KEYS = ['id', 'kind', 'points', 'lengthFt', 'courses', 'widthFt', 'heightFt', 'presetId', 'quality'];
+  const REF_KEYS = ['id', 'kind', 'points', 'lengthFt', 'courses', 'widthFt', 'heightFt', 'presetId', 'quality', 'tapErr'];
   /** Calibration ref, or null when its points do not fit its kind (2 for a line, 4 for a rect). */
   function normRef(raw, id) {
     const r = isObj(raw) ? raw : {};
@@ -612,6 +750,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     }
     base.presetId = strOrNull(r.presetId);
     base.quality = oneOf(r.quality, ENUMS.quality, 'high');
+    keepTapErr(base, r, points, r.points);
     return keepExtras(base, r, REF_KEYS);
   }
 
@@ -623,7 +762,8 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     if (isObj(pl.rect)) {
       const corners = toPoints(pl.rect.corners);
       if (corners.length === 4) {
-        rect = keepExtras({ corners, widthFt: posOrNull(pl.rect.widthFt), heightFt: posOrNull(pl.rect.heightFt), presetId: strOrNull(pl.rect.presetId) }, pl.rect, []);
+        rect = keepExtras(keepTapErr({ corners, widthFt: posOrNull(pl.rect.widthFt), heightFt: posOrNull(pl.rect.heightFt), presetId: strOrNull(pl.rect.presetId) },
+          pl.rect, corners, pl.rect.corners), pl.rect, ['tapErr']);
       }
     }
     const refs = [];
@@ -634,11 +774,11 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     let derived = null;
     if (kind !== 'wall' && isObj(pl.derived)) {
       const line = toPoints(pl.derived.line);
-      derived = keepExtras({
+      derived = keepExtras(keepTapErr({
         parentPlaneId: cleanId(pl.derived.parentPlaneId),
         line: line.length === 2 ? line : null,
         pitch: normPitch(pl.derived.pitch),
-      }, pl.derived, []);
+      }, pl.derived, line.length === 2 ? line : null, pl.derived.line), pl.derived, ['tapErr']);
     }
     const defaultName = kind === 'wall' ? 'Wall ' + (index + 1) : kind === 'roof' ? 'Roof' : 'Ground';
     const out = {
@@ -678,7 +818,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     return keepExtras(out, raw, ['colors']);
   }
 
-  const FEATURE_KEYS = ['id', 'imageId', 'planeId', 'type', 'label', 'points', 'closed', 'overrideFt', 'productId', 'color', 'params'];
+  const FEATURE_KEYS = ['id', 'imageId', 'planeId', 'type', 'label', 'points', 'closed', 'overrideFt', 'productId', 'color', 'params', 'tapErr'];
   function normFeature(raw, id) {
     const f = isObj(raw) ? raw : {};
     const type = typeof f.type === 'string' ? f.type : '';
@@ -696,6 +836,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
       color: normFeatureColor(f.color),
       params: normParams(f.params),
     };
+    keepTapErr(out, f, out.points, f.points);
     return keepExtras(out, f, FEATURE_KEYS);
   }
 
@@ -1022,6 +1163,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
         if (!isObj(pl.rect) || !Array.isArray(pl.rect.corners) || pl.rect.corners.length !== 4 || !pl.rect.corners.every(isPoint)) err(who + ': the rectangle needs exactly 4 corner points.');
         else for (const k of ['widthFt', 'heightFt']) if (pl.rect[k] !== null && !(typeof pl.rect[k] === 'number' && pl.rect[k] > 0)) err(who + ': the rectangle ' + (k === 'widthFt' ? 'width' : 'height') + ' must be a positive number of feet or empty.');
       }
+      if (isObj(pl.rect) && !tapErrOk(pl.rect.tapErr, 4)) err(who + ': the tap precision of the rectangle must be 4 numbers of 0 or more.');
       if (!Array.isArray(pl.refs)) err(who + ': the references list is missing.');
       arr(pl.refs).forEach((r, j) => {
         const rw = who + ', reference ' + (isObj(r) && typeof r.id === 'string' ? '"' + r.id + '"' : '#' + (j + 1));
@@ -1036,6 +1178,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
         for (const k of sizeKeys) if (r[k] != null && !(typeof r[k] === 'number' && r[k] > 0)) err(rw + ': the size must be a positive number of feet or empty.');
         if (r.kind === 'line' && r.courses != null && !(Number.isInteger(r.courses) && r.courses >= 1)) err(rw + ': the course count must be a whole number of 1 or more.');
         if (!ENUMS.quality.includes(r.quality)) err(rw + ': the quality must be high, medium or low.');
+        if (!tapErrOk(r.tapErr, need)) err(rw + ': the tap precision must be ' + need + ' numbers of 0 or more.');
       });
       if (pl.derived !== null) {
         const d = pl.derived;
@@ -1044,6 +1187,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
           if (!refOk(d.parentPlaneId, planeIds) || d.parentPlaneId === pl.id) err(who + ' is built from a wall that does not exist.');
           if (d.line !== null && !(Array.isArray(d.line) && d.line.length === 2 && d.line.every(isPoint))) err(who + ': the eave or base line needs exactly 2 points.');
           if (d.pitch !== null && !validPitch(d.pitch)) err(who + ': the pitch must be a rise and run (for example 6/12) or empty.');
+          if (!tapErrOk(d.tapErr, 2)) err(who + ': the tap precision of the eave or base line must be 2 numbers of 0 or more.');
         }
       }
     });
@@ -1074,6 +1218,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
       if (typeof f.label !== 'string') err(who + ': the label must be text.');
       if (!Array.isArray(f.points) || !f.points.every(isPoint)) err(who + ': the points must be a list of [x, y] points.');
       if (typeof f.closed !== 'boolean') err(who + ': "closed" must be true or false.');
+      if (!tapErrOk(f.tapErr, Array.isArray(f.points) ? f.points.length : 0)) err(who + ': the tap precision must be one number of 0 or more for each point.');
       if (f.overrideFt !== null && !(typeof f.overrideFt === 'number' && f.overrideFt > 0)) err(who + ': the tape-measured length must be a positive number of feet or empty.');
       if (f.productId !== null && typeof f.productId !== 'string') err(who + ': the product must be a product id or empty.');
       if (f.color !== null && !(isObj(f.color) && ENUMS.colorMode.includes(f.color.mode) && (f.color.colors === undefined || (Array.isArray(f.color.colors) && f.color.colors.every(isHex))))) {
@@ -1111,8 +1256,25 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
         if (!ENUMS.productUnit.includes(x.unit)) err(who + ': "unit" must be one of ' + ENUMS.productUnit.join(', ') + '.');
         for (const k of ['price', 'wattsPerUnit']) if (!(typeof x[k] === 'number' && Number.isFinite(x[k]) && x[k] >= 0)) err(who + ': "' + k + '" must be a number of 0 or more.');
         for (const k of ['stringLengthFt', 'maxEndToEnd']) if (!(typeof x[k] === 'number' && Number.isFinite(x[k]) && x[k] > 0)) err(who + ': "' + k + '" must be a number above 0.');
+        // Supplier fields (SPEC §8.3) are free-form except links and the price status.
+        if (x.url != null && suppliers.safeUrl(x.url) === null) err(who + ': the link must be an https address.');
+        if (x.priceStatus !== undefined && !ENUMS.priceStatus.includes(x.priceStatus)) err(who + ': "priceStatus" must be one of ' + ENUMS.priceStatus.join(', ') + '.');
+        if (x.kind !== undefined && x.kind !== null && !ENUMS.productKind.includes(x.kind)) err(who + ': "kind" must be "bulk" or left out.');
+        for (const c of suppliers.componentOffers(x)) {
+          if (c.offer.url != null && suppliers.safeUrl(c.offer.url) === null) err(who + ': the link of one of its parts must be an https address.');
+          if (c.offer.priceStatus !== undefined && !ENUMS.priceStatus.includes(c.offer.priceStatus)) err(who + ': the "priceStatus" of one of its parts must be one of ' + ENUMS.priceStatus.join(', ') + '.');
+        }
       });
       if (lib.config !== null && !isObj(lib.config)) err('The library config overrides must be an object or empty.');
+      if (isObj(lib.config) && lib.config.buying !== undefined) {
+        const b = lib.config.buying;
+        if (!isObj(b)) err('The buying settings must be an object.');
+        else {
+          if (b.style !== undefined && !ENUMS.buyingStyle.includes(b.style)) err('The buying style must be one of ' + ENUMS.buyingStyle.join(', ') + '.');
+          if (b.costBasis !== undefined && !ENUMS.costBasis.includes(b.costBasis)) err('The cost basis must be one of ' + ENUMS.costBasis.join(', ') + '.');
+        }
+      }
+      if (lib.supplierId !== undefined && lib.supplierId !== null && !(typeof lib.supplierId === 'string' && lib.supplierId)) err('The supplier must be a supplier id or empty.');
     }
     if (!isObj(p.pricing) || !isObj(p.pricing.overrides)) err('Price overrides are missing.');
     else for (const sku of Object.keys(p.pricing.overrides)) {
@@ -1133,6 +1295,11 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
       if (!(Number.isInteger(q.validDays) && q.validDays >= 0)) err('Quote validity must be a whole number of days.');
       if (typeof q.notes !== 'string') err('Quote notes must be text.');
     }
+  }
+  /** tapErr is optional; when present it must be `count` finite numbers of 0 or more. */
+  function tapErrOk(v, count) {
+    if (v === undefined) return true;
+    return Array.isArray(v) && v.length === count && v.every((n) => typeof n === 'number' && Number.isFinite(n) && n >= 0);
   }
   function validPitch(v) {
     return isObj(v) && typeof v.rise === 'number' && Number.isFinite(v.rise) && v.rise >= 0 &&

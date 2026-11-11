@@ -144,6 +144,14 @@
       },
       "description": "Image points in tap order."
     },
+    "tapErr": {
+      "type": "array",
+      "items": {
+        "type": "number",
+        "minimum": 0
+      },
+      "description": "Optional. Expected tap error (1 sigma) of each point beside it, in pixels of the stored image, index for index. Set by the editor from the zoom at the moment of the tap. Missing, or not one number per point = no information (2.5 px is assumed)."
+    },
     "quad": {
       "type": "array",
       "minItems": 4,
@@ -633,6 +641,12 @@
             }
           ],
           "description": "Rectangle preset (measure.WALL_RECT_PRESETS), e.g. \"garage-double\"."
+        },
+        "tapErr": {
+          "$ref": "#/$defs/tapErr",
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Optional tap error of each of the 4 corners (see #/$defs/tapErr)."
         }
       }
     },
@@ -682,6 +696,12 @@
             }
           ],
           "description": "Roof pitch for this plane; null = project roofPitch, else estimated, else 6/12."
+        },
+        "tapErr": {
+          "$ref": "#/$defs/tapErr",
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Optional tap error of the 2 points of line (see #/$defs/tapErr)."
         }
       }
     },
@@ -777,6 +797,10 @@
             "low"
           ],
           "description": "How much to trust it: high (door, garage door), medium (siding, brick), low."
+        },
+        "tapErr": {
+          "$ref": "#/$defs/tapErr",
+          "description": "Optional tap error of each point: 2 numbers for a line, 4 for a rect (see #/$defs/tapErr)."
         }
       },
       "allOf": [
@@ -924,6 +948,10 @@
         },
         "params": {
           "$ref": "#/$defs/featureParams"
+        },
+        "tapErr": {
+          "$ref": "#/$defs/tapErr",
+          "description": "Optional tap error of each point, one number per point (see #/$defs/tapErr)."
         }
       }
     },
@@ -1215,18 +1243,242 @@
               "type": "null"
             }
           ],
-          "description": "Full replacement product list; null = catalog defaults."
+          "description": "Full replacement product list; null = catalog defaults. Supplier products that are not in the list are added from the supplier map when the plan is computed."
         },
         "config": {
           "anyOf": [
             {
-              "type": "object"
+              "type": "object",
+              "properties": {
+                "buying": {
+                  "$ref": "#/$defs/buying"
+                }
+              }
             },
             {
               "type": "null"
             }
           ],
-          "description": "Overrides deep-merged into catalog.DEFAULT_CONFIG (clip spacing, labor rates, power limits and so on); null = defaults."
+          "description": "Overrides deep-merged into catalog.DEFAULT_CONFIG (clip spacing, labor rates, power limits, buying and so on); null = defaults."
+        },
+        "supplierId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional. Who the project buys from: \"generic\" (any store), \"cle\" (Christmas Lights Etc) or \"1000bulbs\". Missing, null or an unknown id = any store."
+        }
+      }
+    },
+    "buying": {
+      "type": "object",
+      "description": "How C7/C9 from the chosen supplier is bought and costed (library.config.buying). Both keys are optional.",
+      "properties": {
+        "style": {
+          "enum": [
+            "bulk",
+            "strings"
+          ],
+          "description": "bulk = socket wire cut to length, bulbs by the box and slide-on plugs (default); strings = ready-made strings."
+        },
+        "costBasis": {
+          "enum": [
+            "bought",
+            "used"
+          ],
+          "description": "bought = the plan costs everything that is ordered (default); used = only the share of bulk wire, bulbs and plugs this job uses."
+        }
+      }
+    },
+    "offer": {
+      "type": "object",
+      "required": [
+        "sku",
+        "price"
+      ],
+      "description": "One thing that can be ordered from a supplier: a bulk component (wire, a bulb colour, a plug) or an accessory.",
+      "properties": {
+        "sku": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Price key for pricing.overrides: \"<supplierId>:<supplierSku>\" (a short name instead of the part number when that is not confirmed)."
+        },
+        "supplierSku": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The part number to type at the supplier; null = not confirmed, order from the link."
+        },
+        "name": {
+          "type": "string",
+          "description": "Name shown in the BOM."
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^https://"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Product page (https only)."
+        },
+        "price": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Price of one pack, spool or piece in USD."
+        },
+        "packQty": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "How many come in one pack."
+        },
+        "priceAsOf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Day the price was seen (YYYY-MM-DD)."
+        },
+        "priceStatus": {
+          "enum": [
+            "verified",
+            "observed"
+          ],
+          "description": "verified = seen on the supplier's page that day; observed = seen in a search result, not confirmed."
+        },
+        "notes": {
+          "type": "string",
+          "description": "A short caution printed on the BOM line."
+        }
+      }
+    },
+    "bulkComponents": {
+      "type": "object",
+      "required": [
+        "wire",
+        "bulb"
+      ],
+      "description": "The parts a bulk C7/C9 product is bought as (product.kind \"bulk\").",
+      "properties": {
+        "wire": {
+          "$ref": "#/$defs/offer",
+          "description": "Socket wire by the spool (an offer with the extra fields below).",
+          "properties": {
+            "spoolFt": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "Feet of wire on the spool."
+            },
+            "wireType": {
+              "enum": [
+                "SPT-1",
+                "SPT-2"
+              ],
+              "description": "Insulation grade of the wire; slide-on plugs must match it."
+            },
+            "maxAmps": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "Amp rating of the wire as the supplier lists it (the lower figure when the listing gives two)."
+            },
+            "sizes": {
+              "type": "array",
+              "description": "Other lengths of the same wire that can be bought, for jobs that do not need a whole spool.",
+              "items": {
+                "$ref": "#/$defs/offer",
+                "properties": {
+                  "lengthFt": {
+                    "type": "number",
+                    "exclusiveMinimum": 0,
+                    "description": "Feet of wire in this length."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "bulb": {
+          "type": "object",
+          "required": [
+            "packQty",
+            "wattsEach",
+            "defaultVariant",
+            "variants"
+          ],
+          "description": "Screw-in bulbs by the pack, one offer per colour sold.",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Name of the bulb family without a colour, used for a colour that is not on file."
+            },
+            "packQty": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "Bulbs in one pack."
+            },
+            "wattsEach": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Watts per bulb as the supplier lists it."
+            },
+            "base": {
+              "enum": [
+                "E17",
+                "E12"
+              ],
+              "description": "Screw base: E17 (C9) or E12 (C7)."
+            },
+            "defaultVariant": {
+              "type": "string",
+              "description": "Key in variants used for pricing a colour the supplier does not list."
+            },
+            "variants": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/offer"
+              },
+              "description": "Colour key (warmWhite, coolWhite, multi, red, green, blue...) to the offer for that colour."
+            }
+          }
+        },
+        "plugMale": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/offer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Slide-on male plug; null = none on file (the BOM lists a plain plug line)."
+        },
+        "plugFemale": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/offer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Slide-on female plug; null = none on file."
         }
       }
     },
@@ -1367,6 +1619,94 @@
         "notes": {
           "type": "string",
           "description": "Free text shown in the library editor."
+        },
+        "supplierId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Supplier this product is from (\"cle\", \"1000bulbs\"); missing = any store. Supplier product ids are \"<supplierId>:<name>\"."
+        },
+        "supplierSku": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The part number to type at the supplier; null = not confirmed, order from the link."
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^https://"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Product page at the supplier (https only)."
+        },
+        "priceAsOf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Day the price was seen (YYYY-MM-DD)."
+        },
+        "priceStatus": {
+          "enum": [
+            "verified",
+            "observed"
+          ],
+          "description": "verified = seen on the supplier's page that day; observed = seen in a search result, not confirmed."
+        },
+        "equiv": {
+          "type": "string",
+          "description": "Id of the generic product whose job this one does, e.g. \"c9-led\": the planner swaps it in when the project buys from this supplier."
+        },
+        "kind": {
+          "enum": [
+            "bulk"
+          ],
+          "description": "bulk = socket wire cut to length + bulbs + plugs, planned per foot (unit \"foot\"). Missing = a ready-made product."
+        },
+        "components": {
+          "$ref": "#/$defs/bulkComponents"
+        },
+        "maxRunFt": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Bulk: longest single run in feet (default 250)."
+        },
+        "maxBulbsPerRun": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Bulk: most bulbs on one run (default 250)."
+        },
+        "maxConnectedW": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Most watts this product's wiring may carry end to end, its own lights plus whatever is plugged into its end. Default maxEndToEnd x wattsPerUnit."
+        },
+        "endConnector": {
+          "type": "boolean",
+          "description": "True when another run or a jumper cord can plug into its end. Default false only for unit \"foot\"."
+        },
+        "orderNote": {
+          "type": "string",
+          "description": "A short caution printed on the BOM line (for example which size to pick on a page that lists several)."
         }
       }
     },

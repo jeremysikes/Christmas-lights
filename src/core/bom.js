@@ -330,13 +330,12 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
       }
       const loose = g.runs.filter((r) => !onFeed.has(r.id)).length;
       cuts += loose;
-      const lengths = `${fmtNum(cuts, 0)} ${cuts === 1 ? 'length' : 'lengths'} of wire`;
       const wireType = typeof c.wire.wireType === 'string' && c.wire.wireType ? c.wire.wireType : 'SPT-1';
       const plugLine = (o, gender, use) => {
         const acc = accessory('plug-spt1-' + gender);
         const size = pos(o && o.packQty) || pos(acc && acc.packSize) || 10;
         const packs = Math.ceil(cuts / size - EPS);
-        const note = `One for each of the ${lengths} that is cut (${fmtNum(cuts, 0)} needed, ${fmtNum(packs * size, 0)} bought). ${use}`;
+        const note = `One for each length of wire that is cut: ${fmtNum(cuts, 0)} needed, ${fmtNum(packs * size, 0)} bought. ${use}`;
         const used = { usedQty: cuts / size };
         if (o) {
           addLine('lights', o.sku, o.name || `Slide-on ${gender} plugs`, packs, 'pack', o.price, note + cautionOf(o), Object.assign(offerMeta(sid, o), used));
