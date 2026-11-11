@@ -1831,6 +1831,34 @@ async function runPhase11(browser, name) {
         (phone ? 'a finger at fit zoom' : 'a mouse on a zoomed-out photo') + ' (±' + coarse + ' px) rates the wall ' + out.level + ', and the first reason says why (' + (out.reasons[0] || '').slice(0, 70) + ')');
       t.ok(out.seen && out.note === out.reasons[0] && out.pill.toLowerCase() === out.level, 'the Calibrate step shows that reason in a note on screen, and the wall\'s row reads ' + out.pill);
       await shot('zoomed-out');
+      // An item measured on that wall (the eave traced above, moved onto it) says the same in the Trace step.
+      const fid = await act((id) => {
+        const s = window.LightPlanApp.store;
+        const f = s.project().features[0];
+        s.commit('test: the eave is on the new wall', (d) => { d.features[0].planeId = id; });
+        return f.id;
+      }, wallId);
+      await goStep(3);
+      await act((id) => window.LightPlanApp.actions.select({ kind: 'feature', id }), fid);
+      await sleep(400);
+      const fnote = await page.evaluate((id) => {
+        const el = document.querySelector('.feat-editor [data-key="zoomed-out-' + id + '"]');
+        const conf = window.LightPlanApp.store.plan().measured.features[id].confidence;
+        if (!el) return { text: '', seen: false, level: conf.level, first: conf.reasons[0] };
+        el.scrollIntoView({ block: 'center' });
+        const b = el.getBoundingClientRect();
+        const rr = document.getElementById('panel-root').getBoundingClientRect();
+        const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+        return { text: el.textContent.trim(), seen: b.height > 0 && b.top >= rr.top - 0.5 && b.bottom <= rr.bottom + 0.5 && !!hit && el.contains(hit), level: conf.level, first: conf.reasons[0] };
+      }, fid);
+      t.ok(fnote.seen && /^Tapped zoomed out \(about ±\d+ px on the photo\): zoom in and re-tap/.test(fnote.text) && fnote.text === fnote.first && rank[fnote.level] < 2,
+        'the Trace step shows the note on an item measured on that wall (rated ' + fnote.level + ': ' + fnote.text.slice(0, 60) + ')');
+      await shot('zoomed-out-item');
+      await page.click('#btn-undo');
+      await sleep(300);
+      await goStep(2);
+      await act((id) => window.LightPlanApp.actions.select({ kind: 'plane', id }), wallId);
+      await sleep(300);
       // The same corners, each tapped with the photo zoomed in on it (on a phone the whole rectangle does not fit
       // on screen at that zoom, so the view moves between taps, as it does in a person's hands).
       if (phone) { await act(() => window.LightPlanApp.actions.setSheet('half')); await sleep(350); }
