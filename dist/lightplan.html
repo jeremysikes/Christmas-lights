@@ -2160,6 +2160,7 @@ LP.define('catalog', [], function () {
     { sku: 'light-stakes', name: 'C9 light stakes', category: 'hardware', unit: 'pack', packSize: 25, price: 14.99 },
     { sku: 'timer-outdoor', name: 'Outdoor plug-in timer or smart plug', category: 'power', unit: 'each', packSize: 1, price: 19.99 },
     { sku: 'splitter-3', name: 'Outdoor 3-outlet power stake', category: 'power', unit: 'each', packSize: 1, price: 12.99 },
+    { sku: 'tap-3way', name: 'Outdoor 3-way tap', category: 'power', unit: 'each', packSize: 1, price: 6.99 },
     { sku: 'gfci-adapter', name: 'Portable outdoor GFCI adapter', category: 'power', unit: 'each', packSize: 1, price: 24.99 },
     { sku: 'cord-cover', name: 'Walkway cord cover, 6 ft', category: 'hardware', unit: 'each', packSize: 1, price: 14.99 },
   ];
@@ -2184,7 +2185,9 @@ LP.define('catalog', [], function () {
     tree: { defaultDiameterIn: 10, spiralSpacingIn: 4, canopyLightsPerFtHeight: 100 },
     column: { defaultDiameterIn: 8, spiralSpacingIn: 6 },
     stakes: { spacingIn: 12, packSize: null }, // packSize null = the light-stakes accessory pack size (25); a number overrides
-    power: { voltage: 120, continuousFactor: 0.8, maxVoltageDropPct: 3, cordSlackFt: 4, routingFactor: 1.15, chainGapFt: 3, timerPerOutlet: true, splitterOutlets: 3, plugAmps: 15, timerTungstenW: 1250 },
+    power: { voltage: 120, continuousFactor: 0.8, maxVoltageDropPct: 3, cordSlackFt: 4, routingFactor: 1.15, chainGapFt: 3, timerPerOutlet: true, splitterOutlets: 3, plugAmps: 15, timerTungstenW: 1250,
+      // Phase 1.1 (SPEC §8): runs are linked with jumper cords, and cords run down to the ground, along it and up.
+      daisyChain: true, jumperMaxFt: 30, jumperDirectFt: 6, jumperSlackFt: 1.5, outletHeightFt: 1.5, openingMarginFt: 0.5, crossingPenaltyFt: 12, tapOutlets: 3 },
     labor: { ftPerHour: 40, setupHours: 1, hoursPerTree: 0.75, hoursPerBush: 0.25 },
     refDisagreementWarnPct: 5,
     confidence: { highMin: 75, mediumMin: 50 },
@@ -4361,12 +4364,13 @@ LP.define('design', ['catalog'], function (catalog) {
 </script>
 <script>
 /* src/core/power.js */
-/* LightPlan core: power (SPEC §5.7).
- * Chains light runs end to end, splits chains into feeds that respect each product's
- * "max end to end" limit, picks the run direction and outlet for each feed, sizes the extension cord
- * (ampacity + voltage drop), totals circuit loads against the 80% continuous-load rule, and counts
- * timers, splitters, cord covers and GFCI adapters. Pure: no DOM, no clock, never mutates inputs,
- * never throws on partial project data.
+/* LightPlan core: power (SPEC §5.7, as changed by §8.1 and §8.2).
+ * Chains light runs end to end, splits chains into feeds that respect each product's "max end to end"
+ * limit, links the feeds into supply trees (a cord from an outlet, then jumper cords from run to run),
+ * routes every cord along the ground and up beside the openings, sizes it (ampacity + voltage drop),
+ * totals circuit loads against the 80% continuous-load rule, and counts timers, power stakes, 3-way taps,
+ * cord covers and GFCI adapters. Pure: no DOM, no clock, never mutates inputs, never throws on partial
+ * project data.
  *
  * Distances. Image points become feet through the plane solutions from measure.js:
  *  - two points on the same calibrated plane: distance in plane coordinates (feet);
@@ -4375,21 +4379,53 @@ LP.define('design', ['catalog'], function (catalog) {
  *  - otherwise: the image vector scaled by each available plane's local Jacobian in that direction
  *    (|J·d|, averaged), never by a direction-blind scale; with no calibrated plane at either point the
  *    distance is unknown (no chaining, and the cord length is reported as unknown with a warning).
- * Cord routing: same plane → |Δu| + |Δv| (across at outlet height, then up or down the wall);
- * different planes → straight distance (as above) × 1.3; then × routingFactor + cordSlackFt.
  *
- * Deviations from SPEC §5.7 (documented signature and shapes unchanged):
+ * Cord routes (§8.1, makeRouter). A cord never crosses a wall face. A home run goes from the outlet down to
+ * the ground, along the ground (along the wall base on one wall; straight across the yard to a point on a
+ * ground plane; the 3D distance between the two feet for two walls) and straight up to where it plugs in.
+ * No piece passes through the inside of a traced window or door: a riser that would is moved to the nearest
+ * clear spot openingMarginFt beside the opening, with a level hop at the height of the lights. Targets within
+ * 1 ft of the ground need no riser; roof targets go up the parent wall to the eave and then up the slope;
+ * bushes, trees and columns are fed at their base (lowest point on the photo). Length = the pieces summed
+ * × routingFactor + slack (cordSlackFt for home runs, jumperSlackFt for jumpers). A point on no calibrated
+ * plane falls back to the photo distance to the other end's foot, scaled by that plane, × 1.3.
+ *   Jumpers (run to run) take the shortest valid of: a straight hop (within jumperDirectFt, missing every
+ *   opening); a path along the wall (straight up or down any height, across at most jumperDirectFt of open
+ *   wall: across at the higher of the two heights when that works); and down - along the ground - up.
+ *   feed.cord carries kind ('home' | 'jumper'), route [{kind, lengthFt, planeId, from, to}] and routeText;
+ *   feed.cordPath is the same route as an image polyline.
+ *
+ * Supply trees (§8.2). Outlets are the first sources. Prim-style, the cheapest feasible (unpowered feed, way
+ * of walking its chain, source) is taken again and again: cost = cord length needed + crossingPenaltyFt per
+ * doorway or walkway crossed; forced outlets (params.outletId) go first; ties prefer a jumper, the shorter
+ * cord, an end plug over a tap, then ids. A source is an outlet (home run) or a powered feed: the end plug of
+ * its last string (the load then passes through its strings) or a 3-way tap where its own cord arrives.
+ * A jumper needs config.power.daisyChain, no params.ownCord on either side, a length within jumperMaxFt, and:
+ *  - every string run the load passes through stays within maxConnectedW (product.maxConnectedW, else
+ *    maxEndToEnd × wattsPerUnit); products without an end connector (per-foot track) and wraps that are not
+ *    on a wall offer no end plug;
+ *  - every cord back to the outlet stays within the plug limit for everything below it;
+ *  - the root outlet and its circuit stay within their limits.
+ * A home run is always possible (nearest outlet within every limit, else within its circuit, else nearest
+ * with an overload warning), so every feed is powered when an outlet is marked on its photo.
+ * Afterwards each cord is sized for the watts it carries on the length bought; voltage drop adds up along a
+ * path (feed.pathDropPct), and where a path goes over the limit the cord that loses the most is bought one
+ * gauge thicker until the path fits or every cord is 12 AWG.
+ *
+ * Notes on the documented shapes (signature unchanged; extras are additions):
  *  - Extra warning codes: cord-unknown (no scale to size a cord), outlet-no-circuit (used outlet has no
  *    circuit; assumed to be alone on a 15 A breaker), outlet-missing (params.outletId names an outlet
- *    that does not exist), cord-ampacity (a feed draws more than a plug-in cord can carry: gauge ampacity
- *    capped at the 15 A plug, config.power.plugAmps), outlet-overload (danger: the cords at one outlet share
+ *    that does not exist), cord-ampacity (a cord carries more than a plug-in cord can: gauge ampacity
+ *    capped at the 15 A plug, config.power.plugAmps), outlet-overload (danger: everything at one outlet shares
  *    one receptacle, timer and power stake, all 15 A gear, so an outlet carries at most plugAmps × V ×
  *    continuous factor = 1,440 W), timer-tungsten (more incandescent watts through one timer than
- *    config.power.timerTungstenW, 1,250 W by default).
- *  - Same-wall cords run across the wall at outlet height, so a feed whose route passes a traced door on
- *    that wall gets crossesDoorway: true (extra feed fields crossesDoorway and doorway = the door's label),
- *    a cord cover and a 'cord-doorway' warning; one whose route passes where a walkway meets the wall
- *    (within 3 ft of its base) gets crossesWalkway: true, like a cord that crosses a walkway in the photo.
+ *    config.power.timerTungstenW, 1,250 W by default), daisy-chain (info: how many jumpers link the runs and
+ *    how many cords go back to the outlets), pass-through (a product whose own strings exceed its stated
+ *    maxConnectedW), and a second voltage-drop wording for a path of cords that is over the limit in total.
+ *  - Crossings are tested on the real route: crossesDoorway when the ground piece passes a traced door's
+ *    span within 3 ft of that wall (feed.doorway = the door's label), crossesWalkway when it passes where a
+ *    walkway meets the wall, crosses a walkway line on the photo, or joins two different walkway edges. Each
+ *    such feed gets a cord cover. A feed's own door or walkway never counts.
  *  - Strings along measured lengths. For string products laid along a run's length, only the strings that
  *    cover the true length are hung and loaded (feeds, circuit loads, totals); the rest of what is bought
  *    (waste rounding) are spares (chain.spares). Consecutive runs in a chain with the same string and colors
@@ -4400,17 +4436,23 @@ LP.define('design', ['catalog'], function (catalog) {
  *    [{runId, units, total, startsRun, endsRun}] for the checklist.
  *  - Feeding from the middle. Besides the two end-fed walks, a chain can be fed at the point nearest an
  *    outlet (by cord length): it is split there into two walks working outward (each filled up to the
- *    end-to-end limit), and that plan is kept when it needs at least 10% less cord in total.
- *  - Splitters: the power stakes at an outlet are chained from its one timer socket (each extra stake uses
- *    a socket of the one before), so an outlet with n > 1 cords needs ceil((n − 1) / (splitterOutlets − 1))
- *    stakes, not ceil(n / splitterOutlets). More than 6 cords at one outlet adds a 'many-cords' warning.
- *  - Outlet choice also keeps each outlet within its plug-in limit when another outlet can take the feed.
- *    Outlet objects carry extra limitW, overloaded and incandescentW fields.
+ *    end-to-end limit). That way of walking it is offered to the supply planner when it needs at least 10%
+ *    less cord and does not cost more in strings, cords and taps; with daisy chains the second walk plugs
+ *    into a tap on the first walk's cord (feed.plugIn, no cord of its own).
+ *  - Two plugs within 1 ft of each other need no jumper cord: the feed has plugIn: true and cord: null.
+ *  - Power stakes at an outlet are counted from its home runs only (outlet.directFeedIds) and are chained from
+ *    its one timer socket, so n > 1 cords need ceil((n − 1) / (splitterOutlets − 1)) stakes. More than 6
+ *    home runs at one outlet adds a 'many-cords' warning. A start junction with k jumpers needs
+ *    ceil(k / (tapOutlets − 1)) taps, an end plug with k jumpers needs 0 for k ≤ 1, else
+ *    ceil((k − 1) / (tapOutlets − 1)) (feed.taps, counts.taps).
+ *  - Outlet objects carry extra limitW, overloaded, incandescentW and directFeedIds; feedIds lists every feed
+ *    in the outlet's trees. groups[] has one entry per home run (supply tree).
  *  - Feeds only consider outlets on the same photo (unless forced with params.outletId); feeds with no
  *    outlet on their photo stay unassigned and get the 'unassigned' warning.
- *  - Feed objects carry an extra `cordUnknown: bool`; cord is null when there is no outlet or the length
- *    cannot be measured. cord.boughtFt is the total length of the standard pieces bought; the gauge and
- *    voltageDropPct are worked out on it (the whole cord carries the current), lengthFt is the length needed.
+ *  - Feed objects carry an extra `cordUnknown: bool`; cord is null when there is no outlet, the length
+ *    cannot be measured, or the run plugs straight in. cord.boughtFt is the total length of the standard pieces
+ *    bought; the gauge and voltageDropPct are worked out on it (the whole cord carries the current), lengthFt is
+ *    the length needed.
  *  - config.power.continuousFactor is bounded to (0, 1]: a value above 1 and up to 100 is read as a percent
  *    (80 → 0.8), anything else falls back to 0.8; both cases, and any share above 0.8, add a
  *    'continuous-factor' warning.
@@ -4420,7 +4462,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
   'use strict';
 
   const { FEATURE_TYPES } = catalog;
-  const CROSS_PLANE_FACTOR = 1.3;     // straight-line cord distance between planes → routed distance
+  const CROSS_PLANE_FACTOR = 1.3;     // photo distance from a point on no calibrated plane → routed distance
   const ASSUMED_BREAKER_AMPS = 15;    // outlets with no circuit are assumed to sit alone on a 15 A breaker
   const DEFAULT_CONTINUOUS_FACTOR = 0.8; // the 80% rule for continuous loads (ASSUMPTIONS.md #6)
   const DEFAULT_PLUG_AMPS = 15;       // plug-in cords, timers, power stakes and duplex outlets are 15 A devices
@@ -4429,6 +4471,10 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
   const WALKWAY_NEAR_WALL_FT = 3;     // a walkway edge within this distance of the wall base meets the wall
   const SPAN_TOL_FT = 0.25;           // spans that only touch at their ends do not cross
   const SPLIT_GAIN = 0.9;             // feeding a chain from the middle must save at least 10% of the cord
+  const NEAR_GROUND_FT = 1;           // a plug this close to the ground needs no riser
+  const ROUTE_TOL_FT = 0.05;          // a cord that only touches an opening's outline does not cross it
+  const TAP_PRICE = (catalog.getAccessory(null, 'tap-3way') || { price: 0 }).price; // for comparing ways to feed a chain
+  const PLUG_REACH_FT = 1;            // two plugs this close need no jumper cord: one plugs straight into the other
   const DISCLAIMER = 'This is a planning estimate, not an electrical inspection. Check your breaker sizes ' +
     'and what else shares each circuit, use outdoor-rated cords and GFCI protection, and ask a licensed ' +
     'electrician before adding outlets or circuits.';
@@ -4630,44 +4676,6 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       return crossPlaneFeet(a, b);
     }
     /**
-     * Cord route from an outlet to a feed start: {routedFt|null, path:[[x,y]...], samePlane}.
-     * routedFt is the walking distance along the house before routingFactor and slack are applied.
-     */
-    function cordRoute(outlet, start) {
-      const o = outlet.point, p = start.point;
-      if (!isPt(o) || !isPt(p)) return { routedFt: null, path: [], samePlane: false };
-      // Pixels on two different photos are not comparable: no distance and nothing to draw.
-      if (outlet.imageId && start.imageId && outlet.imageId !== start.imageId) return { routedFt: null, path: [], samePlane: false };
-      const straightPath = [o.slice(0, 2), p.slice(0, 2)];
-      if (outlet.planeId && outlet.planeId === start.planeId) {
-        const s = sol(start.planeId);
-        const uo = toPlane(s, o), us = toPlane(s, p);
-        if (uo && us) {
-          // Across at outlet height, then straight up/down the wall to the feed start.
-          const corner = toImage(s, [us[0], uo[1]]);
-          const path = corner ? [o.slice(0, 2), corner, p.slice(0, 2)] : straightPath;
-          return { routedFt: Math.abs(us[0] - uo[0]) + Math.abs(us[1] - uo[1]), path, samePlane: true };
-        }
-      }
-      // Different planes, or an outlet without a calibrated plane: the straight 3D distance (or the image
-      // vector scaled by each plane's Jacobian in that direction), plus 30% for routing around things.
-      const straight = crossPlaneFeet({ point: o, planeId: outlet.planeId }, { point: p, planeId: start.planeId });
-      if (straight === null) return { routedFt: null, path: straightPath, samePlane: false };
-      return { routedFt: straight * CROSS_PLANE_FACTOR, path: straightPath, samePlane: false };
-    }
-    /**
-     * The across-the-wall leg of a same-wall cord route (outlet → across at outlet height → up/down to the
-     * feed start): {planeId, uMin, uMax, v} in wall feet, or null when the route is not along one wall.
-     */
-    function wallLeg(outlet, start) {
-      if (!outlet.planeId || outlet.planeId !== start.planeId) return null;
-      const s = sol(start.planeId);
-      if (!s || s.kind !== 'wall') return null;
-      const uo = toPlane(s, outlet.point), us = toPlane(s, start.point);
-      if (!uo || !us) return null;
-      return { planeId: start.planeId, uMin: Math.min(uo[0], us[0]), uMax: Math.max(uo[0], us[0]), v: uo[1] };
-    }
-    /**
      * Wall-frame position (u along the wall, v up, w out from the wall) of image point p on plane `planeId`,
      * for the wall `wallId`. Same plane: (u, v, 0). Other planes: through the shared camera frame, which
      * needs a pose on both. null when unknown.
@@ -4704,22 +4712,30 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       }
       return us.length ? [Math.min.apply(null, us), Math.max.apply(null, us)] : null;
     }
-    return { sol, toPlane, toImage, scaleAt, feetAlong, toCamera, planeName, feetBetween, cordRoute, wallLeg, toWallFrame, walkwaySpanAtWall };
+    return { sol, toPlane, toImage, scaleAt, feetAlong, toCamera, planeName, feetBetween, toWallFrame, walkwaySpanAtWall };
   }
 
   // ---------------------------------------------------------------- run geometry
   /**
    * Geometry of a powered run: shape kind and its two "ports" (end 0 = first point, end 1 = last point).
-   * Closed outlines, bushes and wraps (trees, columns) plug in at one spot, so both ports are the same point.
+   * Closed outlines, bushes and wraps (trees, columns) plug in at one spot, so both ports are the same point:
+   * the first corner of an outline, the base (lowest point on the photo) of a bush, tree or column.
    */
   function runShape(feature) {
     const ft = FEATURE_TYPES[feature.type];
-    const pts = (Array.isArray(feature.points) ? feature.points : []).filter(isPt).map((p) => [p[0], p[1]]);
+    let pts = (Array.isArray(feature.points) ? feature.points : []).filter(isPt).map((p) => [p[0], p[1]]);
     if (!ft || !pts.length) return null;
     let kind = 'open';
     if (ft.geometry === 'vertical') kind = 'vertical';
     else if (ft.geometry === 'area') kind = 'area';
     else if (pts.length > 2 && (feature.closed === true || (feature.closed == null && ft.closedDefault))) kind = 'closed';
+    // Trees, columns and bushes are fed at their base: the lowest point on the photo, whichever way they were traced.
+    if (kind === 'vertical' && pts[pts.length - 1][1] > pts[0][1]) pts = pts.slice().reverse();
+    if (kind === 'area') {
+      let low = 0;
+      for (let i = 1; i < pts.length; i++) if (pts[i][1] > pts[low][1] + 1e-9) low = i;
+      pts = pts.slice(low).concat(pts.slice(0, low));
+    }
     const first = pts[0];
     const last = kind === 'open' ? pts[pts.length - 1] : first;
     return { kind, pts, ports: [first, last] };
@@ -4755,16 +4771,420 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
   /** "left end of Front eave", "top-left corner of Bay window", "base of Oak tree". */
   function portLabel(shape, path, label) {
     const p = path[0];
-    if (shape.kind === 'vertical') return 'base of ' + label;
-    if (shape.kind === 'closed' || shape.kind === 'area') {
+    if (shape.kind === 'vertical' || shape.kind === 'area') return 'base of ' + label;
+    if (shape.kind === 'closed') {
       const c = geometry.centroid(shape.pts);
-      const corner = (p[1] <= c[1] ? 'top' : 'bottom') + '-' + (p[0] <= c[0] ? 'left' : 'right');
-      return corner + (shape.kind === 'area' ? ' edge of ' : ' corner of ') + label;
+      return (p[1] <= c[1] ? 'top' : 'bottom') + '-' + (p[0] <= c[0] ? 'left' : 'right') + ' corner of ' + label;
     }
     const q = path[path.length - 1];
     const dx = p[0] - q[0], dy = p[1] - q[1];
     const side = Math.abs(dx) >= Math.abs(dy) ? (dx <= 0 ? 'left' : 'right') : (dy <= 0 ? 'top' : 'bottom');
     return side + ' end of ' + label;
+  }
+
+  // ---------------------------------------------------------------- cord routing (SPEC §8.1)
+  /** Does segment a→b pass through the inside of the box [x0, x1] × [y0, y1]? Touching its outline does not count. */
+  function segHitsBox(a, b, x0, x1, y0, y1) {
+    if (!(x1 > x0) || !(y1 > y0)) return false;
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    if (Math.hypot(dx, dy) < 1e-9) return a[0] > x0 && a[0] < x1 && a[1] > y0 && a[1] < y1;
+    let t0 = 0, t1 = 1;
+    const clip = (p, q) => {
+      if (Math.abs(p) < 1e-12) return q > 0;
+      const r = q / p;
+      if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r; } else { if (r < t0) return false; if (r < t1) t1 = r; }
+      return true;
+    };
+    if (!clip(-dx, a[0] - x0) || !clip(dx, x1 - a[0]) || !clip(-dy, a[1] - y0) || !clip(dy, y1 - a[1])) return false;
+    return (t1 - t0) * Math.hypot(dx, dy) > 1e-6;
+  }
+  /** "1.5", "18", "0.5": feet to the nearest half foot, for route descriptions. */
+  function fmtHalf(v) { return String(Math.max(0.5, Math.round(v * 2) / 2)); }
+
+  /**
+   * Plain words for a route: "down 1.5 ft, 18 ft along the ground, up 8.5 ft beside Window left".
+   * Pieces shorter than 3 in are left out.
+   */
+  function routeText(segs) {
+    const parts = [];
+    for (const s of segs) {
+      if (!(s.lengthFt >= 0.25)) continue;
+      const n = fmtHalf(s.lengthFt);
+      if (s.kind === 'drop') parts.push(`down ${n} ft` + (s.beside ? ` beside ${s.beside}` : ''));
+      else if (s.kind === 'rise') parts.push(`up ${n} ft` + (s.beside ? ` beside ${s.beside}` : ''));
+      else if (s.kind === 'ground') parts.push(`${n} ft along the ground` + (s.past ? ` past ${s.past}` : ''));
+      else if (s.kind === 'hop') parts.push(`${n} ft across`);
+      else if (s.kind === 'roof') parts.push(s.part === 'eave' ? `${n} ft along the eave` : `${s.dir === 'down' ? 'down' : 'up'} the roof ${n} ft`);
+      else if (s.kind === 'wall') parts.push((s.dir === 'across' ? `${n} ft across` : `${s.dir} ${n} ft`) + (s.past ? ` past ${s.past}` : ''));
+      else parts.push((s.photo ? `about ${n} ft (measured on the photo)` : `straight across, ${n} ft`) + (s.past ? ` past ${s.past}` : ''));
+    }
+    return parts.length ? parts.join(', ') : 'right next to it';
+  }
+
+  /**
+   * Cord routes bound to one project. A cord never crosses a wall face: it goes down to the ground, along the
+   * ground and straight up, and no piece passes through the inside of a traced window or door.
+   *
+   * A located point ("loc") is one of
+   *   {kind: 'wall', w, u, v}            on a calibrated wall (w = wallInfo), in wall feet;
+   *   {kind: 'roof', w, u, v, roof}      on a roof plane: (u, v) is the eave point on the parent wall under it,
+   *                                      roof = {slope, along, corner, eaveImg} the way up from there;
+   *   {kind: 'ground', w}                on a ground plane (w = its parent wall, or null);
+   *   {kind: 'none'}                     on no calibrated plane.
+   * Routes are {ft, segs, path, door, walkway, plug}: ft = feet before routingFactor and slack (null when the
+   * photo cannot size it), segs = [{kind, lengthFt, planeId, from, to}], path = image polyline.
+   */
+  function makeRouter(project, space, features, opt) {
+    const planeList = (Array.isArray(project && project.planes) ? project.planes : []).filter(isObj);
+    const planeById = new Map(planeList.map((p) => [p.id, p]));
+    const margin = opt.openingMarginFt;
+    const walls = new Map(), locs = new Map(), spans = new Map();
+    const sumFt = (segs) => segs.reduce((s, x) => s + x.lengthFt, 0);
+    const overlaps = (a0, a1, b0, b1) => a1 > b0 + SPAN_TOL_FT && a0 < b1 - SPAN_TOL_FT;
+    const finite = (p) => isPt(p);
+
+    /**
+     * A wall for routing: {id, s, groundV, groundId, openings, doors}. groundV is the wall's ground level in
+     * wall feet: the base line of a ground plane built on this wall, else the lowest of the wall rectangle's
+     * bottom corners, every feature point on the wall, each outlet on it minus outletHeightFt, and the yard of
+     * another wall on the same photo (placed in 3D when both walls have a camera pose). Openings are
+     * the boxes of the traced windows and doors (a door's box reaches down to the ground).
+     */
+    function wallInfo(wallId) {
+      if (walls.has(wallId)) return walls.get(wallId);
+      let info = null;
+      const s = space.sol(wallId);
+      if (s && s.kind === 'wall') {
+        let groundV = null, groundId = null;
+        for (const pl of planeList) {
+          if (pl.kind !== 'ground' || !isObj(pl.derived) || pl.derived.parentPlaneId !== wallId) continue;
+          if (groundV === null) {
+            const line = (Array.isArray(pl.derived.line) ? pl.derived.line : []).filter(isPt).map((p) => space.toPlane(s, p)).filter(finite);
+            if (line.length >= 2) groundV = mean(line.map((p) => p[1]));
+          }
+          if (groundId === null && space.sol(pl.id)) groundId = pl.id;
+        }
+        if (groundV === null) {
+          const vs = [];
+          const push = (p, off) => { const uv = isPt(p) ? space.toPlane(s, p) : null; if (finite(uv)) vs.push(uv[1] - off); };
+          const plane = planeById.get(wallId);
+          const corners = plane && isObj(plane.rect) && Array.isArray(plane.rect.corners) ? plane.rect.corners : [];
+          if (corners.length === 4) { push(corners[2], 0); push(corners[3], 0); }
+          for (const f of features) if (f.planeId === wallId) for (const p of (Array.isArray(f.points) ? f.points : [])) push(p, 0);
+          // Outlets on this wall, and outlets on the same photo that sit on no calibrated plane (taken to be on it).
+          for (const o of opt.outlets) {
+            const here = o.planeId === wallId || (!space.sol(o.planeId) && (!o.imageId || !plane || !plane.imageId || o.imageId === plane.imageId));
+            if (here) push(o.point, opt.outletHeightFt);
+          }
+          // The yard traced from another wall of the same photo is this wall's ground too (needs both camera poses).
+          for (const pl of planeList) {
+            if (pl.kind !== 'ground' || !isObj(pl.derived) || !space.sol(pl.id) || (plane && pl.imageId && plane.imageId && pl.imageId !== plane.imageId)) continue;
+            const q = (Array.isArray(pl.derived.line) ? pl.derived.line : []).find(isPt);
+            const x = q ? space.toWallFrame(wallId, pl.id, q) : null;
+            if (x && Number.isFinite(x[1])) vs.push(x[1]);
+          }
+          groundV = vs.length ? Math.min.apply(null, vs) : 0;
+        }
+        const openings = [];
+        for (const f of features) {
+          if ((f.type !== 'window' && f.type !== 'door') || f.planeId !== wallId) continue;
+          const pts = (Array.isArray(f.points) ? f.points : []).filter(isPt).map((p) => space.toPlane(s, p)).filter(finite);
+          if (pts.length < 2) continue;
+          const us = pts.map((p) => p[0]), vs = pts.map((p) => p[1]);
+          const box = { id: f.id, type: f.type, label: f.label || (f.type === 'door' ? 'the door' : 'the window'),
+            u0: Math.min.apply(null, us), u1: Math.max.apply(null, us), v0: Math.min.apply(null, vs), v1: Math.max.apply(null, vs) };
+          if (f.type === 'door') box.v0 = Math.min(box.v0, groundV);
+          if (box.u1 - box.u0 > 2 * ROUTE_TOL_FT && box.v1 - box.v0 > 2 * ROUTE_TOL_FT) openings.push(box);
+        }
+        info = { id: wallId, s, groundV, groundId, openings, doors: openings.filter((b) => b.type === 'door') };
+      }
+      walls.set(wallId, info);
+      return info;
+    }
+
+    /** The opening a riser at u between heights va and vb would pass through (within the margin beside it), or null. */
+    function riserBlock(w, u, va, vb) {
+      const lo = Math.min(va, vb), hi = Math.max(va, vb);
+      for (const b of w.openings) {
+        if (u <= b.u0 - margin + 1e-9 || u >= b.u1 + margin - 1e-9) continue;
+        if (Math.min(hi, b.v1) - Math.max(lo, b.v0) > ROUTE_TOL_FT) return b;
+      }
+      return null;
+    }
+    /** The opening whose inside the wall segment a→b (wall feet) passes through, or null. */
+    function wallBlock(w, a, b) {
+      for (const o of w.openings) {
+        if (segHitsBox(a, b, o.u0 + ROUTE_TOL_FT, o.u1 - ROUTE_TOL_FT, o.v0 + ROUTE_TOL_FT, o.v1 - ROUTE_TOL_FT)) return o;
+      }
+      return null;
+    }
+
+    function locate(point, planeId) {
+      if (!isPt(point)) return null;
+      const key = point[0] + ',' + point[1] + '|' + (planeId || '');
+      if (locs.has(key)) return locs.get(key);
+      const img = [point[0], point[1]];
+      const s = space.sol(planeId);
+      let loc = { kind: 'none', img, planeId: s ? planeId : null };
+      const uv = s ? space.toPlane(s, img) : null;
+      if (finite(uv)) {
+        const plane = planeById.get(planeId);
+        const parentId = s.parentPlaneId || (plane && isObj(plane.derived) ? plane.derived.parentPlaneId : null);
+        if (s.kind === 'wall') {
+          const w = wallInfo(planeId);
+          if (w) loc = { kind: 'wall', img, planeId, w, u: uv[0], v: uv[1] };
+        } else if (s.kind === 'roof') {
+          loc = roofLoc(img, planeId, s, uv, plane, parentId) || loc;
+        } else if (s.kind === 'ground') {
+          loc = { kind: 'ground', img, planeId, w: parentId ? wallInfo(parentId) : null };
+        }
+      }
+      locs.set(key, loc);
+      return loc;
+    }
+    /** A point on a roof plane: the eave point on the parent wall under it and the way up the slope from there. */
+    function roofLoc(img, planeId, s, uv, plane, parentId) {
+      const w = parentId ? wallInfo(parentId) : null;
+      if (!w) return null;
+      const line = (plane && isObj(plane.derived) && Array.isArray(plane.derived.line) ? plane.derived.line : [])
+        .filter(isPt).map((p) => space.toPlane(w.s, p)).filter(finite);
+      if (line.length < 2) return null;
+      const uA = line[0][0], uB = line[line.length - 1][0], vE = mean(line.map((p) => p[1]));
+      let u, slope, corner;
+      const f = s.frame;
+      if (f && isV3(f.origin) && isV3(f.e1)) {
+        // Roof coordinates (a along the eave, b up the slope); the eave line lies in the wall plane.
+        u = f.origin[0] + f.e1[0] * uv[0];
+        slope = Math.abs(uv[1]);
+        corner = space.toImage(s, [uv[0], 0]);
+      } else {
+        // No camera pose: the roof is measured in wall coordinates, heights above the eave are slope ÷ sin(pitch).
+        u = uv[0];
+        const sin = s.pitch && s.pitch.rise > 0 && s.pitch.run > 0 ? Math.sin(Math.atan2(s.pitch.rise, s.pitch.run)) : 1;
+        slope = Math.abs(uv[1] - vE) / Math.max(sin, 0.2);
+        corner = space.toImage(w.s, [u, vE]);
+      }
+      const uC = Math.min(Math.max(u, Math.min(uA, uB)), Math.max(uA, uB));
+      const eaveImg = space.toImage(w.s, [uC, vE]);
+      if (!finite(corner) || !finite(eaveImg) || !Number.isFinite(slope)) return null;
+      return { kind: 'roof', img, planeId, w, u: uC, v: vE, roof: { slope, along: Math.abs(u - uC), corner, eaveImg } };
+    }
+
+    /**
+     * Ways down the wall from (u, v) to the ground: [{segs, foot}] with segs ordered from the point down.
+     * Within a foot of the ground no riser is needed. Otherwise the riser stands at the point's own u when
+     * that passes no opening; if it would, it stands at the nearest clear u on each side (half a foot beside
+     * the opening) with a level hop at the point's height.
+     */
+    function wallDescents(w, u, v, img) {
+      const g = w.groundV, h = Math.abs(v - g);
+      const at = (uu, vv, fallback) => { const q = space.toImage(w.s, [uu, vv]); return finite(q) ? q : fallback; };
+      const make = (ur, beside) => {
+        const segs = [];
+        const hop = Math.abs(ur - u) > 0.01;
+        const top = hop ? at(ur, v, img) : img;
+        if (hop) segs.push({ kind: 'hop', lengthFt: Math.abs(ur - u), planeId: w.id, from: img, to: top });
+        const foot = h > 0.01 ? at(ur, g, top) : top;
+        if (h > 0.01) segs.push({ kind: 'vert', lengthFt: h, planeId: w.id, from: top, to: foot, beside: beside || null });
+        return { segs, foot: { img: foot, planeId: w.id, wallId: w.id, u: ur } };
+      };
+      if (h <= NEAR_GROUND_FT + 1e-9 || v < g || !riserBlock(w, u, g, v)) return [make(u, null)];
+      let left = null, right = null;
+      for (const needHop of [true, false]) {
+        for (const b of w.openings) {
+          for (const e of [b.u0 - margin, b.u1 + margin]) {
+            if (riserBlock(w, e, g, v) || (needHop && wallBlock(w, [e, v], [u, v]))) continue;
+            if (e < u && (!left || e > left.e)) left = { e, b };
+            if (e > u && (!right || e < right.e)) right = { e, b };
+          }
+        }
+        if (left || right) break;
+      }
+      const out = [];
+      if (left) out.push(make(left.e, left.b.label));
+      if (right) out.push(make(right.e, right.b.label));
+      return out.length ? out : [make(u, null)];
+    }
+    function descents(loc) {
+      if (loc.desc) return loc.desc;
+      let out;
+      if (loc.kind === 'wall') out = wallDescents(loc.w, loc.u, loc.v, loc.img);
+      else if (loc.kind === 'roof') {
+        const pre = [];
+        if (loc.roof.slope > ROUTE_TOL_FT) pre.push({ kind: 'roof', part: 'slope', lengthFt: loc.roof.slope, planeId: loc.planeId, from: loc.img, to: loc.roof.corner });
+        if (loc.roof.along > ROUTE_TOL_FT) pre.push({ kind: 'roof', part: 'eave', lengthFt: loc.roof.along, planeId: loc.planeId, from: loc.roof.corner, to: loc.roof.eaveImg });
+        out = wallDescents(loc.w, loc.u, loc.v, loc.roof.eaveImg).map((d) => ({ segs: pre.concat(d.segs), foot: d.foot }));
+      } else {
+        out = [{ segs: [], foot: { img: loc.img, planeId: loc.planeId, wallId: null, near: loc.kind === 'ground' ? loc.w : null, none: loc.kind === 'none' } }];
+      }
+      loc.desc = out;
+      return out;
+    }
+
+    /** Feet along the ground between two foot points: {lengthFt, planeId} or null when the photo has no scale there. */
+    function groundSeg(fa, fb) {
+      if (fa.wallId && fa.wallId === fb.wallId) return { lengthFt: Math.abs(fa.u - fb.u), planeId: fa.wallId };
+      const unlocated = fa.none || fb.none;
+      const ref = (f) => {
+        const w = f.wallId ? wallInfo(f.wallId) : null;
+        // A wall foot is measured on that wall's ground plane when it has one (same plane as yard items).
+        return { point: f.img, planeId: w ? (w.groundId && !unlocated ? w.groundId : w.id) : f.planeId };
+      };
+      const ra = ref(fa), rb = ref(fb);
+      const d = space.feetBetween(ra, rb);
+      if (d === null || !Number.isFinite(d)) return null;
+      return { lengthFt: unlocated ? d * CROSS_PLANE_FACTOR : d, planeId: ra.planeId && ra.planeId === rb.planeId ? ra.planeId : null };
+    }
+    /** [u along wall w, distance out from it] of a foot point, or null when it cannot be placed. */
+    function alongWall(w, foot) {
+      if (foot.wallId === w.id) return [foot.u, 0];
+      const planeId = foot.wallId || foot.planeId;
+      if (!planeId) return null;
+      const x = space.toWallFrame(w.id, planeId, foot.img);
+      return x && x.every(Number.isFinite) ? [x[0], Math.abs(x[2])] : null;
+    }
+    /**
+     * What a ground segment passes: a traced door (its label) when the segment runs past the door's span within
+     * 3 ft of that wall, and a walkway that meets the wall there. `own` features never count.
+     */
+    function groundCrossings(fa, fb, own, imageId) {
+      const res = { door: null, walkway: false };
+      const ids = [];
+      for (const f of [fa, fb]) { const id = f.wallId || (f.near ? f.near.id : null); if (id && !ids.includes(id)) ids.push(id); }
+      for (const id of ids) {
+        const w = wallInfo(id);
+        if (!w) continue;
+        const pa = alongWall(w, fa), pb = alongWall(w, fb);
+        if (!pa || !pb) continue;
+        // The part of the segment within WALKWAY_NEAR_WALL_FT of the wall.
+        let t0 = 0, t1 = 1;
+        const dd = pb[1] - pa[1];
+        if (pa[1] > WALKWAY_NEAR_WALL_FT && pb[1] > WALKWAY_NEAR_WALL_FT) continue;
+        if (pa[1] > WALKWAY_NEAR_WALL_FT) t0 = (WALKWAY_NEAR_WALL_FT - pa[1]) / dd;
+        if (pb[1] > WALKWAY_NEAR_WALL_FT) t1 = (WALKWAY_NEAR_WALL_FT - pa[1]) / dd;
+        const ua = pa[0] + (pb[0] - pa[0]) * t0, ub = pa[0] + (pb[0] - pa[0]) * t1;
+        const lo = Math.min(ua, ub), hi = Math.max(ua, ub);
+        if (hi - lo < 2 * SPAN_TOL_FT) continue;
+        if (!res.door) {
+          const d = w.doors.find((b) => !own.has(b.id) && overlaps(lo, hi, b.u0, b.u1));
+          if (d) res.door = d.label;
+        }
+        if (!res.walkway) {
+          res.walkway = opt.walkways.some((wf) => {
+            if (own.has(wf.id) || (wf.imageId && imageId && wf.imageId !== imageId)) return false;
+            const k = id + '|' + wf.id;
+            if (!spans.has(k)) spans.set(k, space.walkwaySpanAtWall(id, wf, WALKWAY_NEAR_WALL_FT));
+            const span = spans.get(k);
+            return !!span && overlaps(lo, hi, span[0], span[1]);
+          });
+        }
+      }
+      return res;
+    }
+
+    function finish(A, B, segs, extra) {
+      const path = [A.img];
+      const add = (p) => { const q = path[path.length - 1]; if (finite(p) && Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-6) path.push([p[0], p[1]]); };
+      for (const s of segs) { add(s.from); add(s.to); }
+      add(B.img);
+      if (path.length < 2) path.push([B.img[0], B.img[1]]);
+      return Object.assign({ ft: sumFt(segs), segs, path, door: null, walkway: false, plug: false }, extra || {});
+    }
+    /** Down from A (riser rules), along the ground, up to B (riser rules): the cheapest of the riser choices. */
+    function viaGround(A, B, own, imageId) {
+      let best = null;
+      for (const da of descents(A)) {
+        for (const db of descents(B)) {
+          const gs = groundSeg(da.foot, db.foot);
+          if (!gs) continue;
+          const cr = groundCrossings(da.foot, db.foot, own, imageId);
+          const ft = sumFt(da.segs) + gs.lengthFt + sumFt(db.segs);
+          const score = ft + ((cr.door ? 1 : 0) + (cr.walkway ? 1 : 0)) * opt.penaltyFt;
+          if (!best || score < best.score - 1e-9) best = { da, db, gs, cr, score };
+        }
+      }
+      if (!best) return null;
+      const segs = [];
+      for (const s of best.da.segs) segs.push(Object.assign({}, s, s.kind === 'vert' ? { kind: 'drop' } : { dir: 'down' }));
+      if (best.gs.lengthFt > 0.01) {
+        segs.push({ kind: 'ground', lengthFt: best.gs.lengthFt, planeId: best.gs.planeId, from: best.da.foot.img, to: best.db.foot.img,
+          past: best.cr.door, photo: !!(best.da.foot.none || best.db.foot.none) });
+      }
+      for (let i = best.db.segs.length - 1; i >= 0; i--) {
+        const s = best.db.segs[i];
+        segs.push(Object.assign({}, s, { from: s.to, to: s.from }, s.kind === 'vert' ? { kind: 'rise' } : { dir: 'up' }));
+      }
+      return finish(A, B, segs, { door: best.cr.door, walkway: best.cr.walkway, score: best.score });
+    }
+
+    /** Home run outlet → feed start. ft is null (with a straight path to draw) when the photo cannot size it. */
+    function home(A, B, own, imageId) {
+      return viaGround(A, B, own, imageId) || { ft: null, segs: [], path: [A.img.slice(), B.img.slice()], door: null, walkway: false, plug: false };
+    }
+
+    /** A hop that stays within a foot of the ground still lies in front of any door or walkway between its ends. */
+    function lowHop(A, B, route, own, imageId) {
+      const low = (loc) => loc.kind === 'ground' || (loc.kind === 'wall' && Math.abs(loc.v - loc.w.groundV) <= NEAR_GROUND_FT + 1e-9);
+      if (!low(A) || !low(B)) return route;
+      const cr = groundCrossings(descents(A)[0].foot, descents(B)[0].foot, own, imageId);
+      route.door = cr.door;
+      route.walkway = cr.walkway;
+      route.score = route.ft + ((cr.door ? 1 : 0) + (cr.walkway ? 1 : 0)) * opt.penaltyFt;
+      if (cr.door) for (const s of route.segs) s.past = cr.door;
+      return route;
+    }
+    /**
+     * Jumper from a powered run's plug (A) to the start of another run (B): the shortest valid of a straight
+     * hop (corner to corner, within jumperDirectFt), a path along the wall (straight up or down any height,
+     * across at most jumperDirectFt of open wall), and down - along the ground - up. Plugs within PLUG_REACH_FT
+     * of each other need no cord. null when nothing can be measured.
+     */
+    function jumper(A, B, own, imageId) {
+      const d = space.feetBetween({ point: A.img, planeId: A.planeId }, { point: B.img, planeId: B.planeId });
+      if (d !== null && d <= PLUG_REACH_FT + 1e-9) return { ft: d, segs: [], path: [A.img.slice(), B.img.slice()], door: null, walkway: false, plug: true };
+      const options = [];
+      const sameWall = A.kind === 'wall' && B.kind === 'wall' && A.w.id === B.w.id;
+      if (sameWall) {
+        const w = A.w, a = [A.u, A.v], b = [B.u, B.v];
+        const du = Math.abs(a[0] - b[0]), dv = Math.abs(a[1] - b[1]);
+        const leg = (p, q, from, to) => ({ kind: 'wall', lengthFt: Math.abs(p[0] - q[0]) + Math.abs(p[1] - q[1]), planeId: w.id, from, to,
+          dir: Math.abs(p[0] - q[0]) > Math.abs(p[1] - q[1]) ? 'across' : (q[1] > p[1] ? 'up' : 'down') });
+        if (du <= opt.jumperDirectFt + 1e-9) {
+          if (du <= 0.01 || dv <= 0.01) {
+            if (!wallBlock(w, a, b) && !(du <= 0.01 && riserBlock(w, a[0], a[1], b[1]))) options.push(lowHop(A, B, finish(A, B, [leg(a, b, A.img, B.img)]), own, imageId));
+          } else {
+            if (d !== null && d <= opt.jumperDirectFt + 1e-9 && !wallBlock(w, a, b)) {
+              options.push(lowHop(A, B, finish(A, B, [{ kind: 'direct', lengthFt: d, planeId: w.id, from: A.img, to: B.img }]), own, imageId));
+            }
+            // An L: across at the higher of the two heights first (along the eave or the top of a window, then
+            // down), else across at the lower. The upright leg follows the riser rule: beside openings, not up
+            // their edge.
+            const hi = Math.max(a[1], b[1]), lo = Math.min(a[1], b[1]);
+            for (const vAcross of [hi, lo]) {
+              const c = vAcross === a[1] ? [b[0], a[1]] : [a[0], b[1]];
+              const ci = space.toImage(w.s, c);
+              const upright = c[0] === a[0] ? [a, c] : [c, b];
+              if (!finite(ci) || wallBlock(w, a, c) || wallBlock(w, c, b) || riserBlock(w, c[0], upright[0][1], upright[1][1])) continue;
+              options.push(finish(A, B, [leg(a, c, A.img, ci), leg(c, b, ci, B.img)]));
+              break;
+            }
+          }
+        }
+      } else if (d !== null && d <= opt.jumperDirectFt + 1e-9) {
+        options.push(lowHop(A, B, finish(A, B, [{ kind: 'direct', lengthFt: d, planeId: A.planeId && A.planeId === B.planeId ? A.planeId : null, from: A.img, to: B.img,
+          photo: A.kind === 'none' || B.kind === 'none' }]), own, imageId));
+      }
+      const vg = viaGround(A, B, own, imageId);
+      if (vg) options.push(vg);
+      let best = null;
+      for (const o of options) {
+        const score = o.score !== undefined ? o.score : o.ft;
+        if (!best || score < best.score - 1e-9) best = { o, score };
+      }
+      return best ? best.o : null;
+    }
+
+    return { wallInfo, locate, home, jumper };
   }
 
   // ---------------------------------------------------------------- main
@@ -4845,6 +5265,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         imageId: feature.imageId || run.imageId || null,
         forcedReverse: params.reverse === true && shape.kind === 'open',
         forcedOutlet,
+        ownCord: params.ownCord === true,
         wattsPerUnit: Math.max(0, Number.isFinite(run.watts) ? run.watts : 0) / run.quantity,
         incandescent: (run.tech || (product && product.tech)) === 'incandescent',
         len: lengthBased ? len : null, L, LW,
@@ -5026,6 +5447,10 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       let cur = null;
       const product = items[placed[0].k].product;
       const maxE = pos(product && product.maxEndToEnd) || Infinity;
+      // The most watts this product's wiring may carry end to end: its own strings plus whatever is plugged into them.
+      const maxConnW = pos(product && product.maxConnectedW) ||
+        (pos(product && product.maxEndToEnd) && pos(product.wattsPerUnit) ? product.maxEndToEnd * product.wattsPerUnit : Infinity);
+      const endConnector = !(product && (product.endConnector === false || (product.endConnector == null && product.unit === 'foot')));
       const open = (ps, offset) => {
         const it = items[ps.k];
         const path = traversal(it.shape, ps.reversed);
@@ -5046,12 +5471,13 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
           else label = `point ${pct}% of the way along ${it.run.label}`;
           if (it.shape.kind === 'open' && path.length >= 2) toward = portLabel(it.shape, path.slice().reverse(), it.run.label);
         }
-        cur = { portions: [], units: 0, watts: 0, start: { point, imageId: it.imageId, planeId: it.planeId, label } };
+        cur = { portions: [], units: 0, watts: 0, start: { point, imageId: it.imageId, planeId: it.planeId, label }, first: ps, last: ps, mid: frac > 1e-9 };
         if (toward) cur.start.toward = toward;
         feeds.push(cur);
       };
       const add = (ps, units) => {
         const it = items[ps.k];
+        cur.last = ps;
         cur.portions.push({ k: ps.k, units });
         cur.units += units;
         cur.watts += units * it.wattsPerUnit;
@@ -5084,74 +5510,145 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         f.forcedOutlet = null;
         for (const p of f.portions) if (items[p.k].forcedOutlet) { f.forcedOutlet = items[p.k].forcedOutlet; break; }
         f.incandescent = f.portions.some((p) => items[p.k].incandescent);
+        f.ownCord = f.portions.some((p) => items[p.k].ownCord);
+        f.featureIds = new Set(f.portions.map((p) => items[p.k].feature.id));
+        f.firstFeature = items[f.portions[0].k].feature;
+        f.lastFeature = items[f.portions[f.portions.length - 1].k].feature;
         f.watts = round(f.watts, 2);
         f.units = round(f.units, 4);
+        f.maxConnW = maxConnW;
       }
+      // Where each feed's last string ends: the plug a jumper to another run can use. A feed cut mid-run ends
+      // where the next one starts; otherwise it ends where its last run does (a loop ends where it began, a wrap
+      // at its top). Products without an end connector (per-foot track) and wraps that are not on a wall
+      // (a tree in the yard: its top is not a point of the ground plane) offer no end plug.
+      feeds.forEach((f, i) => {
+        const next = feeds[i + 1];
+        const it = items[f.last.k];
+        const path = traversal(it.shape, f.last.reversed);
+        const point = next && next.mid && next.first === f.last ? next.start.point.slice() : path[path.length - 1].slice();
+        const sol = space.sol(it.planeId);
+        const reachable = it.shape.kind !== 'vertical' || (!!sol && sol.kind === 'wall');
+        f.endPort = endConnector && reachable ? { point, imageId: it.imageId, planeId: it.planeId } : null;
+      });
       return { feeds, maxE };
     }
 
-    // ---- outlet candidates and capacity
-    const routeCache = new Map();
-    function route(outlet, start) {
-      const key = outlet.id + '|' + start.point[0] + ',' + start.point[1] + '|' + start.planeId;
-      if (!routeCache.has(key)) {
-        const r = space.cordRoute(outlet, start);
-        const lengthFt = r.routedFt === null ? null : r.routedFt * routingFactor + slackFt;
-        routeCache.set(key, { lengthFt, path: r.path });
+    // ---- cord routes and what each candidate costs (SPEC §8.1)
+    const nonNeg = (v, d) => (Number.isFinite(v) && v >= 0 ? v : d);
+    const daisy = cfg.daisyChain !== false;
+    const jumperMaxFt = nonNeg(cfg.jumperMaxFt, 30);
+    const jumperSlackFt = nonNeg(cfg.jumperSlackFt, 1.5);
+    const penaltyFt = nonNeg(cfg.crossingPenaltyFt, 12);
+    const tapOutlets = Math.max(2, Math.round(pos(cfg.tapOutlets) || 3));
+    const walkways = features.filter((f) => f.type === 'walkway' && Array.isArray(f.points) && f.points.filter(isPt).length >= 2);
+    const router = makeRouter(project, space, features, {
+      outlets, walkways, penaltyFt,
+      outletHeightFt: nonNeg(cfg.outletHeightFt, 1.5), openingMarginFt: nonNeg(cfg.openingMarginFt, 0.5),
+      jumperDirectFt: nonNeg(cfg.jumperDirectFt, 6),
+    });
+    /** Does the image path cross a walkway traced on the same photo (other than the feed's own)? */
+    function pathCrossesWalkway(path, own, imageId) {
+      if (path.length < 2) return false;
+      return walkways.some((w) => {
+        if (own.has(w.id) || (w.imageId && imageId && w.imageId !== imageId)) return false;
+        const wp = w.points.filter(isPt);
+        const n = w.closed && wp.length > 2 ? wp.length : wp.length - 1;
+        for (let i = 0; i < n; i++) {
+          const a = wp[i], b = wp[(i + 1) % wp.length];
+          for (let j = 1; j < path.length; j++) if (geometry.segmentsIntersect(path[j - 1], path[j], a, b)) return true;
+        }
+        return false;
+      });
+    }
+    /** A cord from outlet o to the start of `feed`: {kind:'home', outlet, route, lengthFt|null, cost, door, walkway}. */
+    function homeCandidate(feed, o) {
+      let r = { ft: null, segs: [], path: [], door: null, walkway: false, plug: false };
+      // Pixels on two different photos are not comparable: no distance and nothing to draw.
+      const samePhoto = !(o.imageId && feed.start.imageId && o.imageId !== feed.start.imageId);
+      if (isPt(o.point) && samePhoto) {
+        const A = router.locate(o.point, o.planeId), B = router.locate(feed.start.point, feed.start.planeId);
+        if (A && B) r = router.home(A, B, feed.featureIds, feed.start.imageId);
       }
-      return routeCache.get(key);
+      const lengthFt = r.ft === null ? null : r.ft * routingFactor + slackFt;
+      const walkway = lengthFt !== null && (r.walkway || pathCrossesWalkway(r.path, feed.featureIds, feed.start.imageId));
+      const crossings = (r.door ? 1 : 0) + (walkway ? 1 : 0);
+      return { kind: 'home', outlet: o, node: null, port: null, route: r, lengthFt, plug: false, srcId: o.id,
+        cost: lengthFt === null ? Infinity : lengthFt + crossings * penaltyFt, door: r.door, walkway };
     }
-    /** Located outlets on the feed's photo, nearest cord first (unknown lengths last), ties by outlet id. */
-    function candidates(feed) {
-      return outlets
-        .filter((o) => isPt(o.point) && (!o.imageId || !feed.start.imageId || o.imageId === feed.start.imageId))
-        .map((o) => ({ outlet: o, lengthFt: route(o, feed.start).lengthFt }))
-        .sort((x, y) => {
-          const ax = x.lengthFt === null ? Infinity : x.lengthFt, ay = y.lengthFt === null ? Infinity : y.lengthFt;
-          return ax - ay || cmpStr(x.outlet.id, y.outlet.id);
-        });
+    /** Home-run candidates of a feed: its forced outlet, else every located outlet on its photo. */
+    function homeCandidates(feed) {
+      if (feed.homes) return feed.homes;
+      const list = [];
+      if (feed.forcedOutlet) list.push(homeCandidate(feed, outletById.get(feed.forcedOutlet)));
+      else {
+        for (const o of outlets) {
+          if (!isPt(o.point) || (o.imageId && feed.start.imageId && o.imageId !== feed.start.imageId)) continue;
+          list.push(homeCandidate(feed, o));
+        }
+      }
+      feed.homes = list;
+      return list;
     }
-    const circuitFits = (loads, o, watts) => (loads.get(circuitKey(o)) || 0) + watts <= limits.get(circuitKey(o)) + 1e-9;
-    const outletFits = (loads, o, watts) => (loads.get(socketKey(o)) || 0) + watts <= outletLimit(o) + 1e-9;
+    /** Cord cost of the cheapest home run to `feed` (penalties included); Infinity without an outlet or a scale. */
+    const soloCost = (feed) => homeCandidates(feed).reduce((best, c) => Math.min(best, c.cost), Infinity);
     /**
-     * Greedy outlet choice: forced outlet → nearest outlet whose circuit and plug-in gear both stay within
-     * their limits → nearest whose circuit does → nearest.
+     * A jumper from a powered feed (`node`) to the start of `feed`, plugged into the end of the node's last
+     * string (port 'end') or into a tap where the node's own cord arrives (port 'start'); null when it cannot
+     * be routed or is longer than jumperMaxFt.
      */
-    function pickOutlet(feed, loads) {
-      if (feed.forcedOutlet) return outletById.get(feed.forcedOutlet);
-      const cands = candidates(feed);
-      if (!cands.length) return null;
-      const ok = cands.find((c) => circuitFits(loads, c.outlet, feed.watts) && outletFits(loads, c.outlet, feed.watts)) ||
-        cands.find((c) => circuitFits(loads, c.outlet, feed.watts));
-      return (ok || cands[0]).outlet;
+    function jumperCandidate(feed, node, port) {
+      const src = port === 'end' ? node.feed.endPort : node.feed.start;
+      if (!src || !isPt(src.point)) return null;
+      if (src.imageId && feed.start.imageId && src.imageId !== feed.start.imageId) return null;
+      const straight = space.feetBetween(src, feed.start);
+      if (straight === null || straight * routingFactor + jumperSlackFt > jumperMaxFt + 1e-9) return null;
+      const A = router.locate(src.point, src.planeId), B = router.locate(feed.start.point, feed.start.planeId);
+      if (!A || !B) return null;
+      const own = new Set(feed.featureIds);
+      for (const id of node.feed.featureIds) own.add(id);
+      const r = router.jumper(A, B, own, feed.start.imageId);
+      if (!r || r.ft === null) return null;
+      const lengthFt = r.plug ? 0 : r.ft * routingFactor + jumperSlackFt;
+      if (lengthFt > jumperMaxFt + 1e-9) return null;
+      // A cord from one walkway edge to another lies across the walkway between them.
+      const from = port === 'end' ? node.feed.lastFeature : node.feed.firstFeature;
+      const between = !!from && from.type === 'walkway' && feed.firstFeature.type === 'walkway' && from.id !== feed.firstFeature.id;
+      const walkway = !r.plug && (r.walkway || between || pathCrossesWalkway(r.path, own, feed.start.imageId));
+      const crossings = (r.door && !r.plug ? 1 : 0) + (walkway ? 1 : 0);
+      return { kind: 'jumper', outlet: null, node, port, route: r, lengthFt, plug: !!r.plug, srcId: node.feed.id,
+        cost: lengthFt + crossings * penaltyFt, door: r.plug ? null : r.door, walkway };
     }
-    const cordLen = (o, feed) => {
-      const L = o ? route(o, feed.start).lengthFt : null;
-      return L === null ? Infinity : L;
-    };
 
-    // ---- 3. chains: pick the walk whose first feed has the shortest cord to an outlet with capacity
+    // ---- 3. chains: every way a chain can be walked (from either end, or outward from the point nearest an
+    // outlet) with the feeds each needs. The supply planner below picks one per chain.
     const comps = [];
     for (let c = 0; c < items.length; c++) if (members[c].length) comps.push(members[c].slice().sort((x, y) => x - y));
     comps.sort((x, y) => x[0] - y[0]);
-    const chainWatts = (m) => m.reduce((s, k) => s + Math.max(0, items[k].run.watts || 0), 0);
-    const order = comps.map((m, n) => n).sort((x, y) => chainWatts(comps[y]) - chainWatts(comps[x]) ||
-      cmpStr(items[comps[x][0]].run.id, items[comps[y][0]].run.id));
-    const tentative = new Map(baseLoads);
-    const chosen = new Array(comps.length);
-    /** Feeds and cord totals for an option made of one or more walks (each walk is fed from its first step). */
-    function evaluate(opt) {
+    /** Feeds and stand-alone cord totals for an option made of one or more walks (each walk is fed from its first step). */
+    function evaluate(opt, key) {
       opt.placed = opt.walks.map(layout);
       if (opt.placed.length > 1) settleSpares(opt.placed);
       opt.feeds = [];
-      for (const pl of opt.placed) {
+      opt.placed.forEach((pl, wi) => {
         const built = buildFeeds(pl);
         opt.maxE = built.maxE;
-        for (const f of built.feeds) opt.feeds.push(f);
+        built.feeds.forEach((f, i) => { f.walk = wi; f.firstOfWalk = i === 0; opt.feeds.push(f); });
+      });
+      opt.feeds.forEach((f, fi) => { f.id = 'feed_' + key + '_' + (fi + 1); });
+      opt.firstCord = soloCost(opt.feeds[0]);
+      // With daisy chains the second walk of a split plugs into a tap on the first walk's cord: no cord of its own.
+      const tapped = (f) => daisy && !!opt.split && f.firstOfWalk && f.walk > 0 && !f.ownCord && !f.forcedOutlet;
+      opt.totalCord = 0;
+      // Rough dollars (strings bought, 16 AWG cords, taps) so a split is never chosen when it costs more than it saves.
+      const product = items[opt.walks[0][0].k].product;
+      opt.dollars = opt.placed.reduce((s, pl) => s + pl.reduce((t, ps) => t + ps.bought, 0), 0) * Math.max(0, Number.isFinite(product && product.price) ? product.price : 0);
+      for (const f of opt.feeds) {
+        if (tapped(f)) { opt.dollars += TAP_PRICE; continue; }
+        const L = soloCost(f);
+        opt.totalCord += L === Infinity ? 1e6 : L;
+        if (L !== Infinity) for (const piece of cordPieces(L)) opt.dollars += catalog.CORD_PRICES[16][piece] || 0;
       }
-      const first = opt.feeds[0];
-      opt.firstCord = cordLen(pickOutlet(first, tentative), first);
-      opt.totalCord = opt.feeds.reduce((s, f) => { const L = cordLen(pickOutlet(f, tentative), f); return s + (L === Infinity ? 1e6 : L); }, 0);
       return opt;
     }
     /**
@@ -5171,15 +5668,12 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
           const step = Math.max(0.5, it.L / 200);
           for (let x = step; x < it.L - 1e-6; x += step) xs.push(x);
         }
+        const own = new Set([it.feature.id]);
         for (const x of xs) {
           const point = x <= 1e-9 ? path[0].slice() : pointAlong(path, x / it.L, space.sol(it.planeId), space);
-          const start = { point, imageId: it.imageId, planeId: it.planeId };
-          for (const o of outlets) {
-            if (!isPt(o.point) || (o.imageId && it.imageId && o.imageId !== it.imageId)) continue;
-            if (it.forcedOutlet && it.forcedOutlet !== o.id) continue;
-            const L = route(o, start).lengthFt;
-            if (L !== null && (!bestPt || L < bestPt.cord - 1e-9)) bestPt = { si, x, cord: L };
-          }
+          const probe = { start: { point, imageId: it.imageId, planeId: it.planeId }, featureIds: own, forcedOutlet: it.forcedOutlet };
+          const L = soloCost(probe);
+          if (L !== Infinity && (!bestPt || L < bestPt.cord - 1e-9)) bestPt = { si, x, cord: L };
         }
       });
       if (!bestPt) return null;
@@ -5199,27 +5693,103 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       if (!A.length || !B.length) return null;
       return { walks: [A, B], w: 2, split: true, order: steps.map((st) => st.k) };
     }
-    for (const n of order) {
-      const m = comps[n];
+    const optionsOf = comps.map((m) => {
+      const key = items[m[0]].run.id.replace(/^run_/, '');
       let options = walks(m).map((steps, w) => ({ walks: [steps], w }));
       const allowed = options.filter((o) => o.walks[0].every((s) => !items[s.k].forcedReverse || s.reversed));
       if (allowed.length) options = allowed;
-      for (const opt of options) evaluate(opt);
+      for (const opt of options) evaluate(opt, key);
       options.sort((x, y) => x.firstCord - y.firstCord || x.totalCord - y.totalCord || x.w - y.w);
-      let best = options[0];
-      // An outlet under the middle of a long chain: two feeds working outward can need far less cord.
-      const split = splitOption(best.walks[0]);
+      // An outlet under the middle of a long chain: feeding it outward from there can need far less cord.
+      const split = splitOption(options[0].walks[0]);
       if (split) {
-        evaluate(split);
-        if (split.totalCord < SPLIT_GAIN * best.totalCord) best = split;
+        evaluate(split, key);
+        if (split.totalCord < SPLIT_GAIN * options[0].totalCord && split.dollars <= options[0].dollars + 1e-9) options.push(split);
       }
-      chosen[n] = best;
-      // Tentatively load circuits so later chains see what is already planned.
-      for (const f of best.feeds) {
-        const o = pickOutlet(f, tentative);
-        if (o) addLoad(tentative, o, f.watts);
+      return options;
+    });
+
+    // ---- 4. supply trees (SPEC §8.2). Outlets are the first sources. Prim-style, the cheapest feasible
+    // (unpowered feed, way of walking its chain, source) is taken again and again, where a source is an outlet
+    // (a home-run cord) or a feed that is already powered (a jumper from the end of its last string, or from a
+    // tap where its own cord arrives). The first feed taken from a chain settles how that chain is walked.
+    const circuitFits = (loadMap, o, watts) => (loadMap.get(circuitKey(o)) || 0) + watts <= limits.get(circuitKey(o)) + 1e-9;
+    const outletFits = (loadMap, o, watts) => (loadMap.get(socketKey(o)) || 0) + watts <= outletLimit(o) + 1e-9;
+    const loads = new Map(baseLoads);
+    const fixed = comps.map(() => null);
+    const nodes = [];
+    const targets = [];
+    optionsOf.forEach((options, n) => options.forEach((opt, oi) => {
+      for (const feed of opt.feeds) targets.push({ feed, n, oi, done: false, cands: homeCandidates(feed).slice() });
+    }));
+    const active = (t) => !t.done && (fixed[t.n] === null || fixed[t.n] === t.oi);
+    /**
+     * May `watts` more hang off powered feed s at `port`? Every cord back to the outlet carries the whole tree
+     * below it (plug limit), every string run the load passes through must stay within what the product allows
+     * end to end, and the outlet and its circuit must stay within their limits.
+     */
+    function canAttach(s, port, watts) {
+      const o = s.outlet;
+      if (!circuitFits(loads, o, watts) || !outletFits(loads, o, watts)) return false;
+      const lim = outletLimit(o);
+      if (watts > lim + 1e-9) return false;
+      for (let n = s, p = port; n; p = n.port, n = n.parent) {
+        if (p === 'end' && n.feed.watts + n.throughW + watts > n.feed.maxConnW + 1e-9) return false;
+        if (n.supplyW + watts > lim + 1e-9) return false;
+      }
+      return true;
+    }
+    const cmpNum = (x, y) => (x === y || Math.abs(x - y) <= 1e-9 ? 0 : x < y ? -1 : 1);
+    for (;;) {
+      // Order: forced outlets first, then choices within every limit, then the cheapest cord (crossing penalties
+      // added); ties prefer a jumper, the shorter cord, an end plug over a tap, then ids.
+      let best = null;
+      for (const t of targets) {
+        if (!active(t)) continue;
+        const f = t.feed;
+        const forced = f.forcedOutlet ? 0 : 1;
+        for (const c of t.cands) {
+          const home = c.kind === 'home';
+          const tier = !home ? 0 : circuitFits(loads, c.outlet, f.watts) ? (outletFits(loads, c.outlet, f.watts) ? 0 : 1) : 2;
+          if (best) {
+            const b = best.c;
+            const d = (forced - best.forced) || (tier - best.tier) || cmpNum(c.cost, b.cost) || ((home ? 1 : 0) - (b.kind === 'home' ? 1 : 0)) ||
+              cmpNum(c.lengthFt === null ? Infinity : c.lengthFt, b.lengthFt === null ? Infinity : b.lengthFt) ||
+              ((c.port === 'start' ? 1 : 0) - (b.port === 'start' ? 1 : 0)) || cmpStr(f.id, best.t.feed.id) || cmpStr(c.srcId, b.srcId) || (t.oi - best.t.oi);
+            if (d >= 0) continue;
+          }
+          if (!home && !canAttach(c.node, c.port, f.watts)) continue;
+          best = { t, c, tier, forced };
+        }
+      }
+      if (!best) break;
+      const { t, c } = best;
+      const f = t.feed;
+      t.done = true;
+      if (fixed[t.n] === null) fixed[t.n] = t.oi;
+      const o = c.kind === 'home' ? c.outlet : c.node.outlet;
+      const node = { feed: f, parent: c.node, port: c.port, outlet: o, cand: c, throughW: 0, supplyW: f.watts, children: [],
+        depth: c.node ? c.node.depth + 1 : 0, out: null, pathDrop: 0 };
+      f.node = node;
+      addLoad(loads, o, f.watts);
+      for (let n = c.node, p = c.port; n; p = n.port, n = n.parent) {
+        n.supplyW += f.watts;
+        if (p === 'end') n.throughW += f.watts;
+      }
+      if (c.node) c.node.children.push(node);
+      nodes.push(node);
+      // The feed just powered is a source for every feed still waiting.
+      if (daisy && !f.ownCord) {
+        for (const u of targets) {
+          if (!active(u) || u.feed.ownCord || u.feed.forcedOutlet) continue;
+          for (const port of ['end', 'start']) {
+            const j = jumperCandidate(u.feed, node, port);
+            if (j) u.cands.push(j);
+          }
+        }
       }
     }
+    const chosen = optionsOf.map((options, n) => options[fixed[n] === null ? 0 : fixed[n]]);
 
     // ---- assemble chains and feeds (chain order = first run's position in the run list)
     const chainsOut = [];
@@ -5251,24 +5821,28 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       // Feed portions in feed order, with which portion starts and ends each run (for the checklist).
       const seen = new Map();
       const feedIds = [];
-      opt.feeds.forEach((f, fi) => {
-        const id = 'feed_' + key + '_' + (fi + 1);
-        feedIds.push(id);
+      const mine = [];
+      opt.feeds.forEach((f) => {
+        feedIds.push(f.id);
         const portions = f.portions.map((p) => {
           const before = seen.get(p.k) || 0;
           seen.set(p.k, before + 1);
           return { runId: items[p.k].run.id, units: p.units, total: perRun.get(p.k).hung, startsRun: before === 0, endsRun: false };
         });
-        feedsOut.push({
-          id, chainId, runIds: f.runIds.slice(), strings: f.units, watts: f.watts, amps: round(f.watts / V, 4),
-          start: f.start, outletId: null, circuitId: null, cord: null, cordPath: [], crossesWalkway: false, cordUnknown: false,
+        const out = {
+          id: f.id, chainId, runIds: f.runIds.slice(), strings: f.units, watts: f.watts, amps: round(f.watts / V, 4),
+          start: f.start, outletId: null, circuitId: null, cord: null, cordPath: [], crossesWalkway: false, crossesDoorway: false, cordUnknown: false,
           portions,
-          _forced: f.forcedOutlet, _incandescent: f.incandescent,
-        });
+          source: null, parentFeedId: null, childFeedIds: [], depth: 0, supplyW: 0, throughW: 0, pathDropPct: null, taps: 0, plugIn: false,
+          _incandescent: f.incandescent, _feature: items[f.portions[0].k].feature.id,
+        };
+        if (f.node) f.node.out = out;
+        mine.push(out);
+        feedsOut.push(out);
       });
       // Mark the last portion of each run.
       const lastSeen = new Map();
-      for (const f of feedsOut.filter((x) => x.chainId === chainId)) for (const p of f.portions) lastSeen.set(p.runId, p);
+      for (const f of mine) for (const p of f.portions) lastSeen.set(p.runId, p);
       for (const p of lastSeen.values()) p.endsRun = true;
       const runIds = runOrder.map((k) => items[k].run.id);
       const hungUnits = allSteps.reduce((s, ps) => s + ps.hung, 0);
@@ -5284,24 +5858,29 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         const path = traversal(it.shape, reversed[it.run.id] && it.shape.kind !== 'vertical');
         runInfo[it.run.id] = {
           chainId, feedIds: feedIds.filter((fid, fi) => opt.feeds[fi].runIds.includes(it.run.id)),
-          outletId: null, circuitId: null,
+          outletId: null, circuitId: null, sourceFeedId: null,
           start: path[0].slice(), end: path[path.length - 1].slice(), reversed: reversed[it.run.id],
           quantity: round(e.bought, 4), hung: round(e.hung, 4), watts: round(e.hung * it.wattsPerUnit, 2),
         };
         const pool = e.steps.map((ps) => ps.pool).find(Boolean);
         if (pool) {
           const others = pool.labels.filter((l) => l !== it.run.label);
-          const mine = round(e.bought, 4);
+          const own = round(e.bought, 4);
           runInfo[it.run.id].note = `Counted with ${listText(others.length > 3 ? others.slice(0, 2).concat([`${others.length - 2} more runs`]) : others)} ` +
             `as one continuous line: ${fmt1(pool.withWasteFt)} ft ÷ ${fmt1(pool.len)} ft per string = ${fmtInt(pool.strings)} ${unitWord(it.run.unit, pool.strings)}` +
-            (mine > 0 ? (mine >= pool.strings ? ', all bought for this run.' : `, ${fmtInt(mine)} of them bought for this run.`)
+            (own > 0 ? (own >= pool.strings ? ', all bought for this run.' : `, ${fmtInt(own)} of them bought for this run.`)
               : `; the last ${unitWord(it.run.unit, 1)} of the run before carries on along this one, so none is bought for it.`);
         }
       }
       if (opt.split) {
-        const o = pickOutlet(opt.feeds[0], tentative);
+        const firsts = opt.feeds.filter((f) => f.firstOfWalk);
+        const root = firsts.map((f) => f.node).find(Boolean);
+        const tapped = firsts.some((f) => f.node && f.node.cand.kind === 'jumper' && firsts.some((x) => x.node === f.node.parent));
+        // The split point is the one nearest an outlet; a jumper from another run may reach it first.
+        const where = !root || !root.parent ? `the point nearest ${(root && root.outlet.label) || 'the outlet'}` : `the middle, at the ${root.feed.start.label}`;
         warn('info', 'fed-from-middle',
-          `${chainLabels.get(chainId)} ${runIds.length > 1 ? 'are' : 'is'} fed from the point nearest ${(o && o.label) || 'the outlet'}: ${opt.feeds.length} cords work outward from there, ` +
+          `${chainLabels.get(chainId)} ${runIds.length > 1 ? 'are' : 'is'} fed from ${where}: ` +
+          (tapped ? 'one cord ends in a 3-way tap there and the lights run outward both ways, ' : `${opt.feeds.length} cords work outward from there, `) +
           'which needs much less cord than feeding from one end.', { featureId: items[m[0]].feature.id });
       }
       if (opt.feeds.length > opt.walks.length) {
@@ -5320,109 +5899,114 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       const f = featureById.get(run.featureId);
       const shape = f ? runShape(f) : null;
       const path = shape ? traversal(shape, false) : null;
-      runInfo[run.id] = { chainId: null, feedIds: [], outletId: null, circuitId: null,
+      runInfo[run.id] = { chainId: null, feedIds: [], outletId: null, circuitId: null, sourceFeedId: null,
         start: path ? path[0].slice() : null, end: path ? path[path.length - 1].slice() : null, reversed: false };
     }
 
-    // ---- 4. outlets: forced feeds first, then the rest by watts (largest first), ties by id
-    const loads = new Map(baseLoads);
-    const assignOrder = feedsOut.slice().sort((x, y) => (x._forced ? 0 : 1) - (y._forced ? 0 : 1) ||
-      y.watts - x.watts || cmpStr(x.id, y.id));
-    for (const feed of assignOrder) {
-      const o = pickOutlet({ forcedOutlet: feed._forced, start: feed.start, watts: feed.watts }, loads);
-      if (!o) continue;
+    // ---- cords: each one is sized for everything it carries (its own feed and every feed hanging off it)
+    for (const node of nodes) {
+      const feed = node.out, c = node.cand, o = node.outlet;
       feed.outletId = o.id;
       feed.circuitId = o.circuitId && circuitById.has(o.circuitId) ? o.circuitId : null;
-      addLoad(loads, o, feed.watts);
-      const r = route(o, feed.start);
-      feed.cordPath = r.path.map((p) => p.slice());
-      if (r.lengthFt === null) {
+      feed.source = c.kind === 'home' ? { kind: 'outlet', outletId: o.id } : { kind: 'feed', feedId: node.parent.out.id, port: c.port };
+      feed.parentFeedId = node.parent ? node.parent.out.id : null;
+      feed.depth = node.depth;
+      feed.supplyW = round(node.supplyW, 2);
+      feed.throughW = round(node.throughW, 2);
+      feed.cordPath = c.route.path.map((p) => [p[0], p[1]]);
+      feed.crossesWalkway = !!c.walkway;
+      feed.crossesDoorway = !!c.door;
+      feed._doorLabel = c.door;
+      if (node.parent) node.parent.out.childFeedIds.push(feed.id);
+      const ks = node.children.filter((x) => x.port === 'start').length, ke = node.children.filter((x) => x.port === 'end').length;
+      feed.taps = Math.ceil(ks / (tapOutlets - 1)) + (ke <= 1 ? 0 : Math.ceil((ke - 1) / (tapOutlets - 1)));
+      if (c.plug) {
+        feed.plugIn = true;
+      } else if (c.lengthFt === null) {
         feed.cordUnknown = true;
         let reason = `${space.planeName(feed.start.planeId)} is not calibrated`;
         if (!isPt(o.point)) reason = `${o.label || 'the outlet'} has no position on the photo`;
         else if (feed.start.imageId && o.imageId && o.imageId !== feed.start.imageId) reason = `${o.label || 'the outlet'} is on a different photo`;
         warn('warn', 'cord-unknown', `The cord length to the ${feed.start.label} is unknown because ${reason}. Calibrate it to size the cord.`,
-          { featureId: runFeature(feed), outletId: o.id });
+          { featureId: feed._feature, outletId: o.id });
       } else {
-        feed.cord = sizeCord(r.lengthFt, feed.watts, cfg, outletVoltage(o));
+        feed.cord = sizeCord(c.lengthFt, node.supplyW, cfg, outletVoltage(o));
+        feed.cord.kind = c.kind;
+        feed.cord.route = c.route.segs.map((s) => ({ kind: s.kind, lengthFt: round(s.lengthFt, 2), planeId: s.planeId || null, from: [s.from[0], s.from[1]], to: [s.to[0], s.to[1]] }));
+        feed.cord.routeText = routeText(c.route.segs);
       }
     }
-
-    // ---- walkway crossings: does the cord path cross a walkway traced on the same photo?
-    const walkways = features.filter((f) => f.type === 'walkway' && Array.isArray(f.points) && f.points.filter(isPt).length >= 2);
-    for (const feed of feedsOut) {
-      if (feed.cordPath.length < 2) continue;
-      const own = new Set(feed.runIds.map((id) => (allRuns.find((r) => r.id === id) || {}).featureId));
-      feed.crossesWalkway = walkways.some((w) => {
-        if (own.has(w.id) || (w.imageId && feed.start.imageId && w.imageId !== feed.start.imageId)) return false;
-        const wp = w.points.filter(isPt);
-        const segs = [];
-        for (let i = 1; i < wp.length; i++) segs.push([wp[i - 1], wp[i]]);
-        if (w.closed && wp.length > 2) segs.push([wp[wp.length - 1], wp[0]]);
-        for (let i = 1; i < feed.cordPath.length; i++) {
-          for (const s of segs) if (geometry.segmentsIntersect(feed.cordPath[i - 1], feed.cordPath[i], s[0], s[1])) return true;
+    // Voltage drop adds up along the cords of a path. Where a path loses more than the limit, the cord on it that
+    // loses the most is bought one gauge thicker, until the path is within the limit or every cord is 12 AWG.
+    const maxDrop = pos(cfg.maxVoltageDropPct) || 3;
+    const gauges = catalog.CORD_GAUGES.slice().sort((a, b) => b.awg - a.awg); // 16, 14, 12
+    const thicker = (awg) => { const i = gauges.findIndex((x) => x.awg === awg); return i >= 0 && i + 1 < gauges.length ? gauges[i + 1] : null; };
+    const pathDrops = () => { for (const node of nodes) node.pathDrop = (node.parent ? node.parent.pathDrop : 0) + (node.out.cord ? node.out.cord.voltageDropPct : 0); };
+    pathDrops();
+    for (let guard = 0; guard < 2 * nodes.length + 2; guard++) {
+      let worst = null, fix = null;
+      for (const node of nodes) {
+        if (!(node.pathDrop > maxDrop + 1e-9) || (worst && node.pathDrop <= worst.pathDrop + 1e-9)) continue;
+        let cand = null;
+        for (let n = node; n; n = n.parent) {
+          const c = n.out.cord;
+          if (c && thicker(c.awg) && (!cand || c.voltageDropPct > cand.out.cord.voltageDropPct + 1e-9)) cand = n;
         }
-        return false;
-      });
-    }
-    // ---- same-wall routes: the cord runs across the wall at outlet height, so it passes in front of any
-    // traced door on that wall and across any walkway that meets the wall within its span.
-    const doors = features.filter((f) => f.type === 'door' && Array.isArray(f.points) && f.points.filter(isPt).length >= 2);
-    const overlaps = (a0, a1, b0, b1) => a1 > b0 + SPAN_TOL_FT && a0 < b1 - SPAN_TOL_FT;
-    for (const feed of feedsOut) {
-      feed.crossesDoorway = false;
-      const o = feed.outletId ? outletById.get(feed.outletId) : null;
-      if (!o || !isPt(o.point)) continue;
-      const leg = space.wallLeg(o, feed.start);
-      if (!leg || leg.uMax - leg.uMin < 2 * SPAN_TOL_FT) continue;
-      const own = new Set(feed.runIds.map((id) => (allRuns.find((r) => r.id === id) || {}).featureId));
-      for (const d of doors) {
-        if (own.has(d.id) || d.planeId !== leg.planeId) continue;
-        const pts = d.points.filter(isPt).map((p) => space.toPlane(space.sol(d.planeId), p));
-        if (pts.some((x) => !x)) continue;
-        const us = pts.map((x) => x[0]), vs = pts.map((x) => x[1]);
-        const top = Math.max.apply(null, vs), bottom = Math.min.apply(null, vs);
-        if (leg.v < top && leg.v > bottom - 1 && overlaps(leg.uMin, leg.uMax, Math.min.apply(null, us), Math.max.apply(null, us))) {
-          feed.crossesDoorway = true;
-          feed._doorLabel = d.label || 'the door';
-          break;
-        }
+        if (cand) { worst = node; fix = cand; }
       }
-      if (!feed.crossesWalkway) {
-        feed.crossesWalkway = walkways.some((w) => {
-          if (own.has(w.id) || (w.imageId && feed.start.imageId && w.imageId !== feed.start.imageId)) return false;
-          const span = space.walkwaySpanAtWall(leg.planeId, w, WALKWAY_NEAR_WALL_FT);
-          return !!span && overlaps(leg.uMin, leg.uMax, span[0], span[1]);
-        });
-      }
+      if (!fix) break;
+      const c = fix.out.cord, gauge = thicker(c.awg), volts = outletVoltage(fix.outlet);
+      const amps = fix.supplyW / volts;
+      c.awg = gauge.awg;
+      c.voltageDropPct = round(voltageDropPct(c.boughtFt, amps, gauge.ohmsPer1000ft, volts), 2);
+      c.ampacityOk = Math.min(gauge.ampacity, plugAmps) >= amps;
+      c.dropOk = c.voltageDropPct <= maxDrop + 1e-9;
+      c.ok = c.ampacityOk && c.dropOk;
+      pathDrops();
     }
-    function runFeature(feed) {
-      const r = allRuns.find((x) => x.id === feed.runIds[0]);
-      return r ? r.featureId : undefined;
-    }
+    for (const node of nodes) node.out.pathDropPct = round(node.pathDrop, 2);
+    const feedOutById = new Map(feedsOut.map((f) => [f.id, f]));
 
-    // ---- run info: outlet/circuit of each run's first feed
+    // ---- run info: outlet/circuit of each run's first feed, and the feed that powers it
     for (const id of Object.keys(runInfo)) {
       const info = runInfo[id];
-      const f = info.feedIds.length ? feedsOut.find((x) => x.id === info.feedIds[0]) : null;
-      if (f) { info.outletId = f.outletId; info.circuitId = f.circuitId; }
+      const f = info.feedIds.length ? feedOutById.get(info.feedIds[0]) : null;
+      if (f) { info.outletId = f.outletId; info.circuitId = f.circuitId; info.sourceFeedId = f.parentFeedId; }
     }
 
-    // ---- outlets, circuits, counts
+    // ---- outlets, supply trees, circuits, counts
     const outletsOut = outlets.map((o) => {
       const fs = feedsOut.filter((f) => f.outletId === o.id);
-      const n = fs.length;
+      const direct = fs.filter((f) => f.source && f.source.kind === 'outlet');
+      // Power stakes split the timer socket between the cords that come back to the outlet (home runs only).
+      const n = direct.length;
       const w = round(fs.reduce((s, f) => s + f.watts, 0), 2);
       const lim = outletLimit(o);
       return {
         id: o.id, label: o.label || 'Outlet', circuitId: o.circuitId && circuitById.has(o.circuitId) ? o.circuitId : null,
-        feedIds: fs.map((f) => f.id), watts: w,
+        feedIds: fs.map((f) => f.id), directFeedIds: direct.map((f) => f.id), watts: w,
         needsSplitter: n > 1, splitters: stakesFor(n),
-        timer: n > 0 && cfg.timerPerOutlet !== false,
+        timer: fs.length > 0 && cfg.timerPerOutlet !== false,
         limitW: lim, overloaded: w > lim + 1e-9,
         incandescentW: round(fs.filter((f) => f._incandescent).reduce((s, f) => s + f.watts, 0), 2),
       };
     });
+    const groups = [];
+    for (const o of outletsOut) {
+      for (const rootId of o.directFeedIds) {
+        const ids = [];
+        let jumperFt = 0;
+        const walk = (f) => {
+          ids.push(f.id);
+          if (f.id !== rootId && f.cord) jumperFt += f.cord.boughtFt;
+          for (const cid of f.childFeedIds) walk(feedOutById.get(cid));
+        };
+        const root = feedOutById.get(rootId);
+        walk(root);
+        groups.push({ id: 'tree_' + rootId.replace(/^feed_/, ''), outletId: o.id, rootFeedId: rootId, feedIds: ids, watts: root.supplyW,
+          homeRunFt: root.cord ? root.cord.boughtFt : 0, jumperFt });
+      }
+    }
     const circuitsOut = circuits.map((c) => {
       const limit = limits.get(c.id);
       const load = loads.get(c.id) || 0;
@@ -5436,11 +6020,15 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     });
     const usedOutlets = outlets.filter((o) => feedsOut.some((f) => f.outletId === o.id));
     const hasGfci = (o) => o.gfci === true || (o.gfci == null && o.type === 'exteriorGfci');
+    const jumperCords = feedsOut.filter((f) => f.source && f.source.kind === 'feed' && f.cord).length;
     const counts = {
       timers: outletsOut.filter((o) => o.timer).length,
       splitters: outletsOut.reduce((s, o) => s + o.splitters, 0),
       cordCovers: feedsOut.filter((f) => f.crossesWalkway || f.crossesDoorway).length,
       gfciAdapters: usedOutlets.filter((o) => !hasGfci(o)).length,
+      taps: feedsOut.reduce((s, f) => s + f.taps, 0),
+      homeRuns: feedsOut.filter((f) => f.source && f.source.kind === 'outlet').length,
+      jumpers: jumperCords,
     };
     const cordMap = new Map();
     for (const f of feedsOut) {
@@ -5492,9 +6080,9 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
           `${o.label} would feed ${fmtInt(o.watts)} W through one ${gear}, over the ${fmtInt(o.limitW)} W safe limit for ${fmtInt(plugAmps)} A plug-in gear ` +
           `(${fmtInt(factor * 100)}%). Move a cord to another outlet${o.incandescentW > 0 ? ' or switch to LED' : ''}.`, { outletId: o.id });
       }
-      if (o.feedIds.length > MANY_CORDS) {
+      if (o.directFeedIds.length > MANY_CORDS) {
         warn('warn', 'many-cords',
-          `${o.label} feeds ${o.feedIds.length} cords through ${o.splitters} chained power stakes. Spread the cords over more outlets if you can, ` +
+          `${o.label} feeds ${o.directFeedIds.length} cords through ${o.splitters} chained power stakes. Spread the cords over more outlets if you can, ` +
           'and keep every stake and joint off the ground.', { outletId: o.id });
       }
       if (o.timer && o.incandescentW > tungstenW + 1e-9) {
@@ -5532,25 +6120,41 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       warn('warn', 'incandescent', `${labels} ${e.items.length === 1 ? 'uses' : 'use'} incandescent lights (${name}): ${fmtInt(q)} ${unitWord(first.run.unit, q)} draw ${fmtInt(w)} W.${ledText}`,
         e.items.length === 1 ? { featureId: first.feature.id } : undefined);
     }
-    // Feeds: cords and walkways.
+    // Feeds: cords, walkways, doorways and what passes through the strings.
+    const nodeOf = new Map(nodes.map((node) => [node.out.id, node]));
     for (const f of feedsOut) {
-      const fid = runFeature(f);
+      const node = nodeOf.get(f.id);
+      if (!node) continue;
+      const fid = f._feature;
+      const cordName = f.source.kind === 'feed' ? 'jumper cord' : 'cord';
       if (f.crossesWalkway) {
-        warn('warn', 'cord-walkway', `The cord to the ${f.start.label} crosses a walkway. Put a cord cover over it so nobody trips.`, { featureId: fid, outletId: f.outletId });
+        warn('warn', 'cord-walkway', `The ${cordName} to the ${f.start.label} crosses a walkway. Put a cord cover over it so nobody trips.`, { featureId: fid, outletId: f.outletId });
       }
       if (f.crossesDoorway) {
-        warn('warn', 'cord-doorway', `The cord to the ${f.start.label} passes ${f._doorLabel}. Run it along the bottom of the wall under a cord cover, ` +
+        warn('warn', 'cord-doorway', `The ${cordName} to the ${f.start.label} passes ${f._doorLabel}. Run it along the bottom of the wall under a cord cover, ` +
           'never across the doorway, or use an outlet on the other side.', { featureId: fid, outletId: f.outletId });
       }
-      if (!f.cord) continue;
-      if (!f.cord.ampacityOk) {
-        warn('danger', 'cord-ampacity', `The feed at the ${f.start.label} draws ${fmt1(f.watts / outletVoltage(outletById.get(f.outletId)))} A, more than a plug-in extension cord can carry (${fmtInt(plugAmps)} A plug). Split it into more feeds.`, { featureId: fid, outletId: f.outletId });
-      } else if (!f.cord.dropOk) {
-        const need = f.cord.boughtFt > f.cord.lengthFt + 0.5 ? ` (about ${fmtInt(f.cord.lengthFt)} ft needed)` : '';
-        warn('warn', 'voltage-drop', `The ${fmtInt(f.cord.boughtFt)} ft cord to the ${f.start.label}${need} would lose ${fmt1(f.cord.voltageDropPct)}% of its voltage even with 12 AWG cord (limit ${fmt1(cfg.maxVoltageDropPct)}%). Use a closer outlet or split the run.`, { featureId: fid, outletId: f.outletId });
+      if (node.feed.watts + node.throughW > node.feed.maxConnW + 1e-6) {
+        warn('warn', 'pass-through', `The lights starting at the ${f.start.label} would carry ${fmtInt(node.feed.watts + node.throughW)} W through their own wiring, more than the ` +
+          `${fmtInt(node.feed.maxConnW)} W this product allows end to end. Split the run or use a product that allows more.`, { featureId: fid, outletId: f.outletId });
       }
-      if (f.cord.lengthFt > 100) {
-        warn('warn', 'long-cord', `The cord to the ${f.start.label} needs about ${fmtInt(f.cord.lengthFt)} ft (${f.cord.pieces.map((p) => p + ' ft').join(' + ')}). Look for a closer outlet.`, { featureId: fid, outletId: f.outletId });
+      if (f.cord) {
+        const volts = outletVoltage(node.outlet);
+        if (!f.cord.ampacityOk) {
+          warn('danger', 'cord-ampacity', `The feed at the ${f.start.label} draws ${fmt1(node.supplyW / volts)} A, more than a plug-in extension cord can carry (${fmtInt(plugAmps)} A plug). Split it into more feeds.`, { featureId: fid, outletId: f.outletId });
+        } else if (!f.cord.dropOk) {
+          const need = f.cord.boughtFt > f.cord.lengthFt + 0.5 ? ` (about ${fmtInt(f.cord.lengthFt)} ft needed)` : '';
+          warn('warn', 'voltage-drop', `The ${fmtInt(f.cord.boughtFt)} ft ${cordName} to the ${f.start.label}${need} would lose ${fmt1(f.cord.voltageDropPct)}% of its voltage even with 12 AWG cord (limit ${fmt1(maxDrop)}%). Use a closer outlet or split the run.`, { featureId: fid, outletId: f.outletId });
+        }
+        if (f.cord.lengthFt > 100) {
+          warn('warn', 'long-cord', `The cord to the ${f.start.label} needs about ${fmtInt(f.cord.lengthFt)} ft (${f.cord.pieces.map((p) => p + ' ft').join(' + ')}). Look for a closer outlet.`, { featureId: fid, outletId: f.outletId });
+        }
+      }
+      // A path of cords that each pass on their own but add up to more than the limit: flagged where it first goes over.
+      const ownOver = !!f.cord && (!f.cord.dropOk || !f.cord.ampacityOk);
+      if (node.parent && !ownOver && node.pathDrop > maxDrop + 1e-9 && !(node.parent.pathDrop > maxDrop + 1e-9)) {
+        warn('warn', 'voltage-drop', `The lights at the ${f.start.label} are fed through ${node.depth + 1} cords in a row that lose ${fmt1(node.pathDrop)}% of the voltage in total ` +
+          `(limit ${fmt1(maxDrop)}%). Give this run its own cord from the outlet, or use a closer outlet.`, { featureId: fid, outletId: f.outletId });
       }
     }
     // Outlets: GFCI and indoor outlets.
@@ -5568,8 +6172,17 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         const names = orphan.slice(0, 3).map((f) => 'the ' + f.start.label);
         if (orphan.length > 3) names.push(`${orphan.length - 3} more`);
         warn('warn', 'unassigned', `No outlet is marked on the same photo as the feed${orphan.length === 1 ? '' : 's'} at ${listText(names)}. ` +
-          'Mark an outlet on that photo to plan the cord.', { featureId: runFeature(orphan[0]) });
+          'Mark an outlet on that photo to plan the cord.', { featureId: orphan[0]._feature });
       }
+    }
+    // Daisy chains: how many cords the jumpers save at the outlets.
+    const linked = feedsOut.filter((f) => f.source && (f.parentFeedId || f.childFeedIds.length));
+    if (counts.jumpers > 0) {
+      const runCount = new Set([].concat(...linked.map((f) => f.runIds))).size;
+      const homes = counts.homeRuns;
+      const back = usedOutlets.length === 1 ? (usedOutlets[0].label || 'the outlet') : 'the outlets';
+      warn('info', 'daisy-chain', `${fmtInt(runCount)} runs are linked with ${fmtInt(counts.jumpers)} jumper ${counts.jumpers === 1 ? 'cord' : 'cords'}; ` +
+        `${fmtInt(homes)} ${homes === 1 ? 'cord goes' : 'cords go'} back to ${back}.`);
     }
     warn('info', 'disclaimer', DISCLAIMER);
     warnings.sort((x, y) => LEVEL_ORDER[x.level] - LEVEL_ORDER[y.level]); // stable: keeps insertion order within a level
@@ -5577,7 +6190,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     // Strip internal fields.
     for (const f of feedsOut) {
       if (f.crossesDoorway) f.doorway = f._doorLabel;
-      delete f._forced; delete f._incandescent; delete f._doorLabel;
+      delete f._incandescent; delete f._doorLabel; delete f._feature;
     }
 
     return {
@@ -5585,6 +6198,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       feeds: feedsOut,
       outlets: outletsOut,
       circuits: circuitsOut,
+      groups,
       runInfo,
       cords,
       counts,
@@ -5789,10 +6403,11 @@ LP.define('bom', ['catalog'], function (catalog) {
     for (const f of arr(pw.feeds)) {
       if (!isObj(f) || !isObj(f.cord) || !Number.isFinite(f.cord.awg)) continue;
       const where = isObj(f.start) && f.start.label ? 'the ' + f.start.label : 'a feed';
+      const list = f.cord.kind === 'jumper' ? 'jumpers' : 'homes';
       for (const L of arr(f.cord.pieces)) {
         const k = f.cord.awg + '|' + L;
-        if (!cordUses.has(k)) cordUses.set(k, []);
-        if (!cordUses.get(k).includes(where)) cordUses.get(k).push(where);
+        if (!cordUses.has(k)) cordUses.set(k, { homes: [], jumpers: [] });
+        if (!cordUses.get(k)[list].includes(where)) cordUses.get(k)[list].push(where);
       }
     }
     for (const c of arr(pw.cords)) {
@@ -5801,8 +6416,12 @@ LP.define('bom', ['catalog'], function (catalog) {
       const acc = accessory(sku);
       const table = catalog.CORD_PRICES[c.awg];
       const price = acc ? acc.price : (table && Number.isFinite(table[c.lengthFt]) ? table[c.lengthFt] : null);
-      const uses = cordUses.get(c.awg + '|' + c.lengthFt) || [];
-      const note = (uses.length ? 'For the cord' + (uses.length > 1 ? 's' : '') + ' to ' + listText(shortList(uses, 3)) + '.' : '') +
+      // Cords from an outlet and jumper cords between runs are the same product; the note says which is which.
+      const uses = cordUses.get(c.awg + '|' + c.lengthFt) || { homes: [], jumpers: [] };
+      const parts = [];
+      if (uses.homes.length) parts.push('the cord' + (uses.homes.length > 1 ? 's' : '') + ' to ' + listText(shortList(uses.homes, 3)));
+      if (uses.jumpers.length) parts.push('the jumper' + (uses.jumpers.length > 1 ? 's' : '') + ' to ' + listText(shortList(uses.jumpers, 3)));
+      const note = (parts.length ? 'For ' + parts.join('; ') + '.' : '') +
         (Number.isFinite(price) ? '' : ' No price in the product library.');
       addLine('cords', sku, (acc && acc.name) || `Outdoor extension cord, ${c.awg} AWG, ${c.lengthFt} ft`, Math.round(c.count),
         (acc && acc.unit) || 'each', price, note.trim());
@@ -5824,6 +6443,9 @@ LP.define('bom', ['catalog'], function (catalog) {
     accLine('power', 'timer-outdoor', counts.timers, timerOutlets.length ? 'One for each outlet used: ' + listText(shortList(timerOutlets, 4)) + '.' : '');
     const splitOutlets = pwOutlets.filter((o) => o.splitters > 0).map(outletLabel);
     accLine('power', 'splitter-3', counts.splitters, splitOutlets.length ? 'For outlets that feed more than one cord: ' + listText(shortList(splitOutlets, 4)) + '.' : '');
+    // 3-way taps where jumper cords branch off a run (SPEC §8.2).
+    const tapAt = arr(pw.feeds).filter((f) => isObj(f) && fin(f.taps, 0) > 0).map((f) => (isObj(f.start) && f.start.label ? 'the ' + f.start.label : 'a run'));
+    accLine('power', 'tap-3way', counts.taps, tapAt.length ? 'Where jumper cords branch off: ' + listText(shortList(tapAt, 4)) + '.' : '');
     const noGfci = used.map((o) => projOutlets.find((p) => p.id === o.id)).filter((o) => o && !hasGfci(o)).map(outletLabel);
     accLine('power', 'gfci-adapter', counts.gfciAdapters, noGfci.length ? 'For outlets without GFCI protection: ' + listText(shortList(noGfci, 4)) + '.' : '');
 
@@ -5936,10 +6558,11 @@ LP.define('bom', ['catalog'], function (catalog) {
 
   // ================================================================ buildChecklist
   /**
-   * Install checklist: one group per outlet (project order), each in feed order: GFCI adapter → timer →
-   * power stake → for each cord: run the cord → clips/stakes → hang from the start end → continue into
-   * the next chained run → test. Then feeds with no outlet, runs not in the plan, and a final safety
-   * and test group. Returns [{outletId|null, title, steps: [string]}].
+   * Install checklist: one group per outlet (project order): GFCI adapter → timer → power stake → then each
+   * supply tree depth-first (SPEC §8.2): run the cord from the outlet (with its route) → 3-way tap → clips/stakes →
+   * hang from the start end → continue into the next chained run → test → each run jumpered from it, the same
+   * way. Then feeds with no outlet, runs not in the plan, and a final safety and test group.
+   * Returns [{outletId|null, title, steps: [string]}].
    */
   function buildChecklist(project, runs, power, measured) { // eslint-disable-line no-unused-vars
     // `measured` is part of the SPEC signature; every number the checklist needs is already on the runs.
@@ -5976,12 +6599,52 @@ LP.define('bom', ['catalog'], function (catalog) {
       return (f && f.closed === true) || (t && t.geometry === 'area') ? 'around' : 'along';
     };
 
-    /** Steps for one feed: cord, then each run portion (clips, stakes, hang), then a test. */
+    const feedById = new Map(feeds.map((f) => [f.id, f]));
+    /** Feeds jumpered from `feed`, in the order they were planned. */
+    const childrenOf = (feed) => {
+      const ids = arr(feed.childFeedIds).filter((id) => feedById.has(id));
+      const kids = ids.map((id) => feedById.get(id));
+      for (const f of feeds) if (f.parentFeedId === feed.id && !ids.includes(f.id)) kids.push(f);
+      return kids;
+    };
+    const portOf = (f) => (isObj(f.source) && f.source.port === 'start' ? 'start' : 'end');
+    const tapPer = Math.max(1, Math.round(pos(isObj(config.power) ? config.power.tapOutlets : null) || 3) - 1);
+    /** "the last string of Front eave": the plug at the end of a feed, for the run that hangs off it. */
+    const endOf = (feed) => {
+      const list = portions.get(feed.id) || [];
+      const hung = list.filter((p) => p.units > EPS);
+      const run = (hung.length ? hung[hung.length - 1] : list[list.length - 1] || {}).run;
+      if (!run) return 'the last string of the run before';
+      const noun = run.unit === 'foot' ? 'section' : unitWord(run.unit, 1);
+      return `the last ${noun} of ${run.label || 'the run before'}`;
+    };
+    const startOf = (feed) => (isObj(feed.start) && feed.start.label ? 'the ' + feed.start.label : 'the start of the run');
+    const tapWords = (n) => (n === 1 ? 'a 3-way tap' : `${n} 3-way taps (each plugged into the one before)`);
+    const hangOn = (kids) => {
+      const cords = kids.every((k) => isObj(k.cord));
+      return kids.length === 1 ? (cords ? '1 jumper cord' : '1 more run') : `${kids.length} ${cords ? 'jumper cords' : 'more runs'}`;
+    };
+
+    /**
+     * Steps for one feed: its cord (from the outlet, or a jumper from the run that feeds it), a tap when other runs
+     * branch off where the cord arrives, then each run portion (clips, stakes, hang), a tap on the end plug when
+     * more than one jumper leaves it, and a test.
+     */
     function feedSteps(feed, cordText, timer, prefix) {
       const steps = [prefix + cordText];
+      const jumper = isObj(feed.source) && feed.source.kind === 'feed';
+      const cordName = feed.plugIn ? 'plug' : jumper ? 'jumper cord' : 'cord';
       if (feed.crossesDoorway) {
-        steps.push(`Keep the cord along the bottom of the wall where it passes ${feed.doorway || 'the door'} and lay a cord cover over it there${feed.crossesWalkway ? ' and across the walkway' : ''}.`);
-      } else if (feed.crossesWalkway) steps.push('Lay a cord cover over the cord where it crosses the walkway.');
+        steps.push(`Keep the ${cordName} along the bottom of the wall where it passes ${feed.doorway || 'the door'} and lay a cord cover over it there${feed.crossesWalkway ? ' and across the walkway' : ''}.`);
+      } else if (feed.crossesWalkway) steps.push(`Lay a cord cover over the ${cordName} where it crosses the walkway.`);
+      const kids = childrenOf(feed);
+      const atStart = kids.filter((k) => portOf(k) === 'start'), atEnd = kids.filter((k) => portOf(k) === 'end');
+      if (atStart.length) {
+        const n = Math.ceil(atStart.length / tapPer);
+        const where = feed.plugIn ? `at ${startOf(feed)}` : `into the end of that ${cordName} at ${startOf(feed)}`;
+        steps.push(`Plug ${tapWords(n)} ${where}: the lights and ${hangOn(atStart)} plug into ${n === 1 ? 'it' : 'them'}.`);
+      }
+      const plugInto = atStart.length ? 'the tap' : `the ${cordName}`;
       const list = portions.get(feed.id) || [];
       let stringRun = null; // the run whose last string is the one in hand (a carried-on run starts none)
       list.forEach((p, j) => {
@@ -5996,7 +6659,9 @@ LP.define('bom', ['catalog'], function (catalog) {
         if (j === 0) {
           const start = feed.start && feed.start.label ? feed.start.label : sideOf(run);
           const toward = feed.start && typeof feed.start.toward === 'string' && feed.start.toward ? `, working toward the ${feed.start.toward}` : '';
-          steps.push(`${verbPhrase(run, what, label, prepOf(run))}, starting at the ${start}${toward}. Plug the first ${noun} into the cord.`);
+          // A run that plugs straight into another one (no jumper cord) was plugged in by the step before.
+          const plugStep = feed.plugIn && !atStart.length ? '' : ` Plug the first ${noun} into ${plugInto}.`;
+          steps.push(`${verbPhrase(run, what, label, prepOf(run))}, starting at the ${start}${toward}.${plugStep}`);
         } else if (!(p.units > EPS) && run.unit !== 'foot') {
           // Strings counted along the chain: the last string of the previous run carries on along this one.
           const prev = stringRun || list[j - 1].run;
@@ -6017,9 +6682,14 @@ LP.define('bom', ['catalog'], function (catalog) {
         const noun = first && first.unit === 'foot' ? 'ft' : unitWord(first ? first.unit : 'string', n);
         steps.push(`Keep the ${fmtNum(n, 2)} spare ${noun} (bought for waste) to replace a dead one later.`);
       }
+      if (atEnd.length > 1) {
+        const n = Math.ceil((atEnd.length - 1) / tapPer);
+        steps.push(`Plug ${tapWords(n)} into the end of ${endOf(feed)}: ${hangOn(atEnd)} plug into ${n === 1 ? 'it' : 'them'}.`);
+      }
       const strings = list.length && list.every((p) => p.run.unit === 'string') ? list.reduce((s, p) => s + p.units, 0) : null;
-      const lights = strings === null ? 'every light on this cord works'
-        : Math.abs(strings - 1) < EPS ? 'the string on this cord lights' : `all ${fmtNum(strings, 2)} strings on this cord light`;
+      const on = feed.plugIn ? 'run' : 'cord';
+      const lights = strings === null ? `every light on this ${on} works`
+        : Math.abs(strings - 1) < EPS ? `the string on this ${on} lights` : `all ${fmtNum(strings, 2)} strings on this ${on} light`;
       steps.push(timer
         ? `Test: switch the timer on and check that ${lights}. Fix dead bulbs or blown fuses, then switch it off.`
         : `Test: plug the cord in and check that ${lights}. Fix dead bulbs or blown fuses, then unplug it.`);
@@ -6043,21 +6713,33 @@ LP.define('bom', ['catalog'], function (catalog) {
       const adapter = projOutlets.some((x) => x.id === oid) && !hasGfci(o);
       if (adapter) steps.push(`Plug a portable outdoor GFCI adapter into ${label}.`);
       if (timer) steps.push(`Plug an outdoor timer or smart plug into ${adapter ? 'the GFCI adapter' : label} and leave it switched off while you work.`);
+      // Cords that come back to the outlet (home runs); every other feed hangs off one of them by a jumper.
+      const here = new Set(fs.map((f) => f.id));
+      const homes = fs.filter((f) => !(f.parentFeedId && here.has(f.parentFeedId)));
       const splitters = Math.max(0, Math.round(fin(info.splitters, 0)));
       const per = Math.max(2, Math.round(pos(isObj(config.power) ? config.power.splitterOutlets : null) || 3));
       const into = timer ? 'timer' : 'outlet';
       if (splitters === 1) {
-        steps.push(`Plug an outdoor power stake (${per} outlets each) into the ${into} so it can feed ${fs.length} cords.`);
+        steps.push(`Plug an outdoor power stake (${per} outlets each) into the ${into} so it can feed ${homes.length} cords.`);
       } else if (splitters > 1) {
         // Stakes are chained: the first goes into the timer, each other one into a free socket of the stake before it.
         const sockets = splitters * (per - 1) + 1;
         steps.push(`Plug an outdoor power stake (${per} outlets) into the ${into}, then plug each of the other ${splitters - 1} stakes into a free socket ` +
-          `of the stake before it. The ${splitters} stakes give ${sockets} sockets for the ${fs.length} cords.`);
+          `of the stake before it. The ${splitters} stakes give ${sockets} sockets for the ${homes.length} cords.`);
       }
-      fs.forEach((f, i) => {
-        const prefix = fs.length > 1 ? `Cord ${i + 1} of ${fs.length}: ` : '';
-        steps.push(...feedSteps(f, cordStep(f, label), timer, prefix));
-      });
+      // Depth-first through each supply tree: the cord from the outlet, its lights, then every run jumpered from it.
+      const done = new Set();
+      const visit = (f, text, prefix) => {
+        if (done.has(f.id)) return;
+        done.add(f.id);
+        steps.push(...feedSteps(f, text, timer, prefix));
+        for (const k of childrenOf(f)) {
+          if (!here.has(k.id)) continue;
+          const from = portOf(k) === 'start' ? `the 3-way tap at ${startOf(f)}` : `the end of ${endOf(f)}`;
+          visit(k, jumperStep(k, from, portions.get(k.id) || []), '');
+        }
+      };
+      homes.forEach((f, i) => visit(f, cordStep(f, label), homes.length > 1 ? `Cord ${i + 1} of ${homes.length}: ` : ''));
       if (timer) steps.push(`Set the timer on ${label} to switch the lights on at dusk and off at bedtime.`);
       groups.push({ outletId: oid, title, steps });
     }
@@ -6152,13 +6834,35 @@ LP.define('bom', ['catalog'], function (catalog) {
     if (isObj(c) && Number.isFinite(c.awg) && arr(c.pieces).length) {
       const pieces = c.pieces.filter((p) => p > 0);
       const need = Number.isFinite(c.lengthFt) ? ` (about ${fmtNum(Math.ceil(c.lengthFt), 0)} ft needed)` : '';
-      if (pieces.length === 1) return `Run a ${fmtNum(pieces[0], 0)} ft, ${c.awg} AWG outdoor extension cord from ${outletLabel} to ${dest}${need}.`;
+      // The way the cord runs (power.js): "down 1.5 ft, 18 ft along the ground, up 8.5 ft beside Window left".
+      const route = typeof c.routeText === 'string' && c.routeText ? `: ${c.routeText}` : '';
+      if (pieces.length === 1) return `Run a ${fmtNum(pieces[0], 0)} ft, ${c.awg} AWG outdoor extension cord from ${outletLabel} to ${dest}${need}${route}.`;
       const sum = pieces.reduce((s, p) => s + p, 0);
       return `Run ${fmtNum(sum, 0)} ft of ${c.awg} AWG outdoor extension cord (${pieces.map((p) => fmtNum(p, 0) + ' ft').join(' + ')}, joined end to end) ` +
-        `from ${outletLabel} to ${dest}${need}. Keep the joints off the ground.`;
+        `from ${outletLabel} to ${dest}${need}${route}. Keep the joints off the ground.`;
     }
     if (feed.cordUnknown) return `Run an outdoor extension cord from ${outletLabel} to ${dest}. Measure that distance on site, because the photo cannot size this cord.`;
     return `Run an outdoor extension cord from ${outletLabel} to ${dest}.`;
+  }
+
+  /** The step that brings power to a feed from the run that feeds it: a jumper cord, or a plug straight into it. */
+  function jumperStep(feed, from, list) {
+    const dest = isObj(feed.start) && feed.start.label ? 'the ' + feed.start.label : 'the start of the run';
+    const c = feed.cord;
+    if (isObj(c) && Number.isFinite(c.awg) && arr(c.pieces).length) {
+      const pieces = c.pieces.filter((p) => p > 0);
+      const need = Number.isFinite(c.lengthFt) ? ` (about ${fmtNum(Math.ceil(c.lengthFt), 0)} ft needed)` : '';
+      const route = typeof c.routeText === 'string' && c.routeText ? `: ${c.routeText}` : '';
+      if (pieces.length === 1) return `From ${from}, run a ${fmtNum(pieces[0], 0)} ft, ${c.awg} AWG jumper cord to ${dest}${need}${route}.`;
+      const sum = pieces.reduce((s, p) => s + p, 0);
+      return `From ${from}, run ${fmtNum(sum, 0)} ft of ${c.awg} AWG jumper cord (${pieces.map((p) => fmtNum(p, 0) + ' ft').join(' + ')}, joined end to end) ` +
+        `to ${dest}${need}${route}. Keep the joints off the ground.`;
+    }
+    const first = list.length ? list[0].run : null;
+    const noun = first && first.unit === 'foot' ? 'section' : unitWord(first ? first.unit : 'string', 1);
+    const what = `the first ${noun} of ${(first && first.label) || 'the next run'}`;
+    if (feed.plugIn) return `Plug ${what} straight into ${from}: no jumper cord is needed.`;
+    return `From ${from}, run a jumper cord to ${dest}. Measure that distance on site, because the photo cannot size this cord.`;
   }
 
   function clipStep(run, label, spacing, prep) {
@@ -6208,7 +6912,7 @@ LP.define('bom', ['catalog'], function (catalog) {
   function startSideLabel(run, feature) {
     const label = run.label || 'the run';
     const type = catalog.FEATURE_TYPES[run.featureType];
-    if (type && type.geometry === 'vertical') return 'base of ' + label;
+    if (type && (type.geometry === 'vertical' || type.geometry === 'area')) return 'base of ' + label;
     const isPt = (p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]);
     const start = isPt(run.start) ? run.start : null;
     if (!start) return 'start of ' + label;
@@ -6562,6 +7266,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
           wrapMode: { anyOf: [{ enum: ENUMS.wrapMode.slice() }, { type: 'null' }], description: 'Trees: trunk (spiral wrap) or canopy (planned by light count).' },
           outletId: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Force this run to be powered from this outlet.' },
           reverse: { type: 'boolean', description: 'Start the run at its last point instead of letting the planner choose.' },
+          ownCord: { type: 'boolean', description: 'Give this run its own cord from the outlet: no jumper to or from another run. Optional; missing means false.' },
           overrideWidthFt: { anyOf: [{ type: 'number', exclusiveMinimum: 0 }, { type: 'null' }], description: 'Bushes: tape-measured width in feet.' },
           overrideHeightFt: { anyOf: [{ type: 'number', exclusiveMinimum: 0 }, { type: 'null' }], description: 'Bushes: tape-measured height in feet.' },
         },
@@ -6948,7 +7653,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
     return keepExtras(out, pl, PLANE_KEYS);
   }
 
-  const PARAM_KEYS = ['mount', 'diameterIn', 'spiralSpacingIn', 'wrapMode', 'outletId', 'reverse', 'overrideWidthFt', 'overrideHeightFt'];
+  const PARAM_KEYS = ['mount', 'diameterIn', 'spiralSpacingIn', 'wrapMode', 'outletId', 'reverse', 'ownCord', 'overrideWidthFt', 'overrideHeightFt'];
   function normParams(raw) {
     const p = isObj(raw) ? raw : {};
     const out = {
@@ -6961,6 +7666,8 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
       overrideWidthFt: posOrNull(p.overrideWidthFt),
       overrideHeightFt: posOrNull(p.overrideHeightFt),
     };
+    // Phase 1.1: optional, so projects saved before it are still normalized as they are. Missing means false.
+    if (typeof p.ownCord === 'boolean') out.ownCord = p.ownCord;
     return keepExtras(out, p, PARAM_KEYS);
   }
   function normFeatureColor(raw) {
@@ -7380,6 +8087,7 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
       if (pr.wrapMode !== null && !ENUMS.wrapMode.includes(pr.wrapMode)) err(who + ': the wrap mode must be trunk, canopy or empty.');
       if (!refOk(pr.outletId, outletIds)) err(who + ' is assigned to an outlet that does not exist.');
       if (typeof pr.reverse !== 'boolean') err(who + ': "reverse" must be true or false.');
+      if (pr.ownCord !== undefined && typeof pr.ownCord !== 'boolean') err(who + ': "ownCord" must be true or false.');
     });
     dupCheck(lists.features, 'features');
 
@@ -7534,6 +8242,8 @@ LP.define('schema', ['geometry', 'catalog'], function (geometry, catalog) {
  *    as its own assumed circuit); summary.quoteTotal is null when installer mode is off.
  *  - mergeRunInfo also copies power's per-run string count (quantity, hung, live watts and amps, bulbs and a
  *    detail note), because strings are counted along each chain, not rounded up run by run.
+ *  - Phase 1.1 (SPEC §8.2): mergeRunInfo also copies sourceFeedId (the feed a run is jumpered from), and the
+ *    summary carries homeRuns, jumpers and taps next to cords (which counts every cord piece bought).
  *  - Extra exports: mergeRunInfo, collectWarnings, summarize, emptyMeasured, emptyPower.
  */
 LP.define('plan', ['catalog', 'bom'], function (catalog, bom) {
@@ -7575,8 +8285,8 @@ LP.define('plan', ['catalog', 'bom'], function (catalog, bom) {
   }
   function emptyPower() {
     return {
-      chains: [], feeds: [], outlets: [], circuits: [], runInfo: {}, cords: [],
-      counts: { timers: 0, splitters: 0, cordCovers: 0, gfciAdapters: 0 }, totals: { watts: 0, amps: 0 }, warnings: [],
+      chains: [], feeds: [], outlets: [], circuits: [], groups: [], runInfo: {}, cords: [],
+      counts: { timers: 0, splitters: 0, cordCovers: 0, gfciAdapters: 0, taps: 0, homeRuns: 0, jumpers: 0 }, totals: { watts: 0, amps: 0 }, warnings: [],
     };
   }
   function emptyQuote() {
@@ -7598,7 +8308,7 @@ LP.define('plan', ['catalog', 'bom'], function (catalog, bom) {
   function completePower(p) {
     const base = emptyPower();
     const out = Object.assign({}, base, p);
-    for (const k of ['chains', 'feeds', 'outlets', 'circuits', 'cords', 'warnings']) if (!Array.isArray(out[k])) out[k] = [];
+    for (const k of ['chains', 'feeds', 'outlets', 'circuits', 'groups', 'cords', 'warnings']) if (!Array.isArray(out[k])) out[k] = [];
     for (const k of ['runInfo', 'counts', 'totals']) if (!isObj(out[k])) out[k] = base[k];
     return out;
   }
@@ -7623,6 +8333,8 @@ LP.define('plan', ['catalog', 'bom'], function (catalog, bom) {
       out.feedIds = arr(ri.feedIds).slice();
       out.outletId = ri.outletId == null ? null : ri.outletId;
       out.circuitId = ri.circuitId == null ? null : ri.circuitId;
+      // The feed this run is plugged into with a jumper (null: its cord comes straight from the outlet).
+      if (ri.sourceFeedId !== undefined) out.sourceFeedId = ri.sourceFeedId == null ? null : ri.sourceFeedId;
       // Strings counted along the chain (power.js): the run's share of what is bought, what is hung, and the
       // live load (hung strings only).
       if (Number.isFinite(ri.quantity) && ri.quantity >= 0 && fin(run.quantity, 0) > 0) {
@@ -7719,6 +8431,11 @@ LP.define('plan', ['catalog', 'bom'], function (catalog, bom) {
       clips: Math.round(clips),
       cords: Math.round(cords),
       timers: Math.round(fin(isObj(pw.counts) ? pw.counts.timers : 0, 0)),
+      // Cords that go back to an outlet, jumper cords between runs, and 3-way taps (SPEC §8.2). Without those
+      // counts (an older power plan) every powered feed is a home run.
+      homeRuns: Math.round(fin(isObj(pw.counts) ? pw.counts.homeRuns : NaN, feeds.length)),
+      jumpers: Math.round(fin(isObj(pw.counts) ? pw.counts.jumpers : 0, 0)),
+      taps: Math.round(fin(isObj(pw.counts) ? pw.counts.taps : 0, 0)),
       watts: round(watts, 2),
       amps: round(amps, 3),
       circuits: circuitKeys.size,
