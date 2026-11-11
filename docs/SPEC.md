@@ -1004,3 +1004,111 @@ dependencies), exports `start, hintFor`, and adds the hint-bar surface picker (`
 - `node tests/e2e/smoke.mjs` (after `node build.js`; Playwright Chromium): passes phone 41, desktop 41, dark 41,
   blocked-storage 4, inputs 11, measure 8, review 35, landscape 4 — 185 checks. `LP_SECTIONS=<regex>` with
   `--only=<pass>` runs a subset; screenshots go to `tests/e2e/out/` (gitignored).
+
+---------------------------------------------------------------------------------------------
+
+## 8. Phase 1.1 changes (owner feedback, Nov 2026)
+
+Three changes requested after the first hands-on look. Where this section disagrees with §5.7 or §7, this section wins.
+
+### 8.1 Cords run along the ground, then up (never across a wall face)
+
+**Problem.** Home-run cords were routed "across the wall at outlet height, then up or down", so they were drawn (and
+measured) straight across windows and doors.
+
+**Rule.** A cord from an outlet goes **down to the ground, along the ground, then straight up** to where it plugs in.
+No cord segment may cross the inside of a traced window or door on its wall.
+
+Definitions (all in wall-plane feet unless noted):
+- `groundV(wall)`: the wall's ground level. In order: (1) a ground plane derived from this wall → mean v of its base
+  line; (2) the lowest of: the wall rectangle's bottom corners, every feature point on the wall, and each outlet on the
+  wall minus `config.power.outletHeightFt` (default 1.5).
+- **Openings** of a wall: the plane-space bounding box of every traced `window` and `door` feature on it, grown by
+  `config.power.openingMarginFt` (default 0.5). A door's box extends down to `groundV`.
+- **Riser**: the vertical segment that takes a cord from the ground up to height `v` at position `u`. If the riser at
+  the target's own `u` would pass through an opening, move it sideways to the nearest clear `u` (prefer the side that
+  makes the whole route shorter), then **hop** horizontally at the target's height to the target. A target that sits on
+  an opening's outline (lights around a window) is reached by a riser beside that opening.
+
+Routes (segments are summed, then `× routingFactor + slack`; slack = `cordSlackFt` for home runs, `jumperSlackFt`
+(default 1.5) for jumpers):
+- **Home run, target on a wall**: drop (outlet → ground) + ground (along the wall base to the riser; between two
+  different walls, the 3D ground distance between the two foot points, or the scaled image distance when no pose) +
+  rise + hop. A target within 1 ft of the ground needs no riser.
+- **Home run, target on a roof plane**: as above up the parent wall to the eave point nearest the target, then up the
+  slope (|Δb|, plus |Δa| along the eave if needed).
+- **Home run, target on a ground plane** (walkway, stakes, trees and bushes traced on the ground): drop + straight
+  along the ground to the target's base point.
+- **Area and vertical items** (bush, tree, column) are fed at their **base** (lowest point), wherever they are traced.
+- **Jumper** (run to run, §8.2): the shortest valid of
+  (a) *direct*: straight, only when the two points are within `config.power.jumperDirectFt` (default 6) and, on one
+      wall, the segment misses every opening (corner hops: eave → rake, eave → garage gutter);
+  (b) *along the wall* (same wall): an L-shaped path, vertical-first or horizontal-first, that misses every opening;
+  (c) *via the ground*: down (with riser rules), along the ground, up (with riser rules).
+- No calibrated plane at either end: the old scaled-image fallback, flagged `cordUnknown` when there is no scale.
+
+Outputs per feed (existing fields keep their meaning):
+- `cordPath`: image-space polyline through every corner of the route (outlet → ground → along → up → hop → start), so
+  the photo shows the cord on the ground and up beside openings. Straight plane segments need only their end points.
+- `cord.kind`: `'home' | 'jumper'`; `cord.route`: `[{kind:'drop'|'ground'|'rise'|'hop'|'roof'|'wall'|'direct', lengthFt}]`;
+  `cord.routeText`: plain words, e.g. `"down 1.5 ft, 18 ft along the ground, up 8.5 ft beside Window left"`.
+- Crossings are tested on the real route: `crossesDoorway` when the ground segment passes a traced door's span on that
+  wall; `crossesWalkway` when it crosses a walkway feature (image-space or near-wall test as before). Each crossing
+  adds `config.power.crossingPenaltyFt` (default 12) to a candidate's cost when the planner compares options (never to
+  the cord length bought).
+
+### 8.2 Runs are linked with jumper cords (daisy chains), not one cord each
+
+**Problem.** Every chain got its own extension cord back to an outlet (the sample: 12 cords and 6 power stakes on
+2 outlets). Installers link nearby runs and bring only a few cords back to the outlets.
+
+**Model.** Each outlet powers one or more **supply trees**. A feed is supplied either by a **home run** from an outlet
+or by a **jumper** from an already-powered feed:
+- from that feed's **end** (the last string's end plug): the jumper's load then passes *through* that feed's strings;
+- from that feed's **start** junction (a 3-way tap where its own cord meets the lights): the load passes through its
+  supply cord only.
+
+Planner (deterministic, Prim-style): start with the outlets as sources; repeatedly take the cheapest feasible
+`(unpowered feed, orientation, source)` by routed cord length (+ crossing penalties); ties prefer a jumper, then the
+shorter cord, then ids. Stop when every feed is powered or nothing feasible remains (then `unassigned`, as before).
+A jumper is only considered when `config.power.daisyChain` (default true) is on, the feed's features do not set
+`params.ownCord: true`, and its routed length ≤ `config.power.jumperMaxFt` (default 30).
+
+Feasibility of attaching feed `f` to a source:
+- **Through-string limit**: for every ancestor whose strings the load passes through,
+  `own watts + watts passing through ≤ maxConnectedW(product)`, where `maxConnectedW = product.maxConnectedW ??
+  product.maxEndToEnd × product.wattsPerUnit`. Products with `endConnector === false` (default false only for
+  `unit:'foot'`) cannot be a source at their end.
+- **Cord limit**: every cord on the path back to the outlet carries its whole subtree and must stay within the plug
+  limit (`plugAmps × voltage × continuous factor`).
+- **Outlet and circuit limits**: as before, counting the whole tree on the root outlet.
+- `params.outletId` forces a home run from that outlet; `params.reverse` still forces direction.
+
+After the trees are built, every cord is sized for the watts it carries (its subtree) on the length bought. The
+voltage drop of a feed is the **sum** over the cords on its path; above `maxVoltageDropPct` → `voltage-drop` warning.
+
+Taps: a start junction with `k` jumpers needs `ceil(k / (tapOutlets − 1))` 3-way taps; an end with `k` jumpers needs
+`k ≤ 1 ? 0 : ceil((k − 1) / (tapOutlets − 1))` (`config.power.tapOutlets`, default 3). Accessory `tap-3way`.
+Power stakes at an outlet are counted from its **home-run** cords only.
+
+Output additions (PowerPlan):
+```
+feeds[]:  source: {kind:'outlet', outletId} | {kind:'feed', feedId, port:'end'|'start'},
+          parentFeedId|null, childFeedIds[], depth, supplyW /*carried by its supply cord*/, throughW /*passing through its strings*/,
+          pathDropPct /*summed voltage drop*/; outletId/circuitId = the ROOT outlet of its tree (loads unchanged)
+outlets[]: feedIds = every feed in its trees; directFeedIds = its home runs
+groups[]: {id, outletId, rootFeedId, feedIds /*pre-order*/, watts, homeRunFt, jumperFt}
+counts:   + taps, homeRuns, jumpers
+warnings: + 'daisy-chain' (info: "11 runs are linked with 8 jumper cords; 4 cords go back to outlets"),
+          'pass-through' (warn, only when a forced choice exceeds a string's limit)
+runInfo[runId]: + sourceFeedId
+```
+BOM: jumpers are bought as the smallest standard outdoor cord that fits (same sizing as home runs) and `tap-3way`
+lines are added. Checklist: per outlet, depth-first through each tree — home run (with `routeText`), clips, strings,
+then "From the end of X, plug in a 6 ft jumper to Y…".
+
+New config keys (`config.power`): `daisyChain: true, jumperMaxFt: 30, jumperDirectFt: 6, jumperSlackFt: 1.5,
+outletHeightFt: 1.5, openingMarginFt: 0.5, crossingPenaltyFt: 12, tapOutlets: 3`.
+New feature param: `params.ownCord: boolean` (default false) — "give this run its own cord from the outlet".
+
+### 8.3 Suppliers (written after the supplier research; see below when present)
