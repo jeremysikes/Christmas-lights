@@ -247,7 +247,7 @@ CAMERA_PRESETS = [
   {id:'phone2x',   label:'Phone 2× zoom',          f35:52},
   {id:'phone3x',   label:'Phone 3× telephoto',     f35:77},
   {id:'phone05x',  label:'Phone 0.5× ultra-wide',  f35:13},
-  {id:'streetview',label:'Street View screenshot', hfovDeg:90},
+  {id:'streetview',label:'Screenshot (wide view)', hfovDeg:90},   // id kept so saved projects load; label per §8.4
   {id:'camera50',  label:'Camera 50 mm',           f35:50}
 ]
 focalFromF35(f35, width, height) → f   // f35 * hypot(w,h) / 43.2666
@@ -355,7 +355,7 @@ Required default products (typical values, editable):
                   door:'mini-led-100', column:'treewrap-led', railing:'mini-led-100', walkway:'path-stakes',
                   bush:'mini-led-100', tree:'treewrap-led', stakes:'c9-led' },
   clipSpacingIn: 12, clipPackSize: null,          // null = each clip accessory's packSize; a number overrides
-  bush: { lightsPerUnit: 100, heightUnitFt: 1.5, widthUnitFt: 1, netCoverFactor: 1.5 },
+  bush: { lightsPerUnit: 100, heightUnitFt: 1.5, widthUnitFt: 3, netCoverFactor: 1.5 },   // 100 lights per 1.5 ft of height per 3 ft of width
   tree: { defaultDiameterIn: 10, spiralSpacingIn: 4, canopyLightsPerFtHeight: 100 },
   column: { defaultDiameterIn: 8, spiralSpacingIn: 6 },
   stakes: { spacingIn: 12, packSize: null },      // null = the light-stakes accessory packSize (25)
@@ -379,6 +379,9 @@ REF_PRESETS: [
   {id:'garage-single',  label:'Single garage door (9 × 7 ft)', kind:'rect', widthIn:108, heightIn:84, quality:'high'},
   {id:'garage-double',  label:'Double garage door (16 × 7 ft)',kind:'rect', widthIn:192, heightIn:84, quality:'high'},
   {id:'garage-height',  label:'Garage door height (7 ft)', kind:'line', lengthIn:84, quality:'high'},
+  {id:'garage-width-16',label:'Garage door width (16 ft)', kind:'line', lengthIn:192, quality:'high'},   // §8.4
+  {id:'garage-width-9', label:'Garage door width (9 ft)',  kind:'line', lengthIn:108, quality:'high'},
+  {id:'garage-width-8', label:'Garage door width (8 ft)',  kind:'line', lengthIn:96,  quality:'high'},
   {id:'siding-4',       label:'Vinyl siding, 4 in courses', kind:'courses', courseIn:4, quality:'medium'},
   {id:'siding-5',       label:'Vinyl siding, 5 in courses', kind:'courses', courseIn:5, quality:'medium'},
   {id:'brick',          label:'Brick courses (3 ≈ 8 in)', kind:'courses', courseIn:8/3, quality:'medium'},
@@ -857,7 +860,7 @@ Subject: a lighting installer's planning tool, used outdoors on a phone and at n
 
 ---------------------------------------------------------------------------------------------
 
-## 7. Implementation notes (shipped Phase 1 vs. this contract)
+## 7. Implementation notes (shipped Phase 1 and 1.1 vs. this contract)
 
 The code is the source of truth. Every documented signature above still works; the items below are where the
 shipped modules add to or refine the contract. Each file's header comment carries the same list in more detail.
@@ -999,11 +1002,101 @@ dependencies), exports `start, hintFor`, and adds the hint-bar surface picker (`
 
 ### 7.3 Tests and verification at hand-off
 
-- `node --test`: 304 unit tests, all passing (incl. `measure-honesty.test.js`, a seeded 250-house simulation: 98%
-  of High results within ±3%, 99% of Medium within ±6%).
-- `node tests/e2e/smoke.mjs` (after `node build.js`; Playwright Chromium): passes phone 41, desktop 41, dark 41,
-  blocked-storage 4, inputs 11, measure 8, review 35, landscape 4 — 185 checks. `LP_SECTIONS=<regex>` with
-  `--only=<pass>` runs a subset; screenshots go to `tests/e2e/out/` (gitignored).
+- `node --test`: 459 unit tests, all passing (incl. `measure-honesty.test.js`, a seeded simulation of random
+  houses with careful taps and with finger taps at fit zoom: at least 95% of High results within ±3% and at
+  least 95% of Medium within ±6%; `review-fixes.test.js` and `review-fixes-ui.test.js`, the tests for the
+  confirmed Phase 1.1 review findings, named by finding; findings that only show on screen are checked in the
+  smoke test's `fixes` pass).
+- `node tests/e2e/smoke.mjs` (after `node build.js`; Playwright Chromium): thirteen passes: phone 47, desktop 45,
+  dark 45, blocked-storage 5, inputs 11, measure 8, review 35, landscape 4, v11-phone 136, v11-desktop 112,
+  sup-phone 99, sup-desktop 99, fixes 50 — 696 checks.
+  `LP_SECTIONS=<regex>` with `--only=<pass>` runs a subset; screenshots go to `tests/e2e/out/` (gitignored).
+  `node tests/e2e/final-shots.mjs` writes `final-<step>-<width>.png` for steps 4 to 6 of the sample at 1280 and
+  390 px with a supplier chosen.
+
+### 7.4 Phase 1.1: where the shipped code differs from §8
+
+§8 is the contract for Phase 1.1. The points below are where the shipped modules refine it, mostly after three
+independent reviews of the first Phase 1.1 build. Every one is pinned by a unit test or a smoke check.
+
+**§8.1 cords**
+- A riser may also stand in the middle of a gap between two openings that is narrower than twice
+  `openingMarginFt` (the cord runs up the trim between two windows). When every level hop to the target would
+  cross an opening (a row of windows that touch), the cord goes up beside the row to above the openings in the
+  way, across there and down to the target: such a route has a second `drop` piece after its `hop`.
+- The margin beside an opening applies to risers that are being placed, not to the outlet: a cord from an
+  outlet drops straight down at the outlet's own `u` unless the opening itself is under it.
+- `crossesWalkway`: two walkway edges that meet a wall within 12 ft of each other are the two sides of one
+  walkway, and a cord along that wall crosses it only when it lies across more than 1.5 ft of its width (a cord
+  that stops at a door jamb just inside the edge needs no cover). An edge with no partner counts as in §8.1. A
+  walkway that cannot be placed against the wall (uncalibrated ground) is judged on the photo. The image-space
+  test is applied to the pieces that lie on the ground away from a wall, and to straight hops.
+- The `cord-doorway` warning reads "... runs along the ground in front of <door>. Keep it tight against the
+  doorstep under a cord cover ...", which is what the drawn route does.
+
+**§8.2 supply trees**
+- A run with `params.ownCord` is still offered the "fed from its middle" walk: its one cord comes from the outlet
+  and its other half plugs into the 3-way tap where that cord arrives. Nothing else hangs off it and it hangs
+  off nothing.
+- Outlets carry `timerMaxW` (the watt rating of the chosen supplier's timer, or null). An outlet that carries
+  more gets the warn-level warning `timer-rating`, and the BOM orders a generic heavy-duty timer for it instead
+  of the supplier's.
+
+**§8.3 suppliers**
+- **Colour.** The automatic choice only takes a supplier product that is sold in the run's colour mode
+  (`product.colors`); otherwise the generic product stays, with a `findUrl`. `design.resolveProduct(feature,
+  library, {colorMode})` takes the colour. A supplier product picked by hand in a colour it is not sold in keeps
+  its supplier but loses `supplierSku` and `url`, is named "... (the part on file is warm white only: choose the
+  colour at the supplier)", gets a `findUrl` and `priceStatus: 'observed'`. So does the stand-in line for a bulb
+  colour that is not on file. Custom colours are named by colour family ("Red and green"), not by code.
+- **Wire.** "The cheapest mix" is compared the way a buyer would (`bom.MIX_RULE`): $5 per piece, a listed-only
+  price counted 10% dearer, at most four ready-made lengths per product. The same wire is ordered under both
+  cost bases (the first build ordered a whole spool under `'used'`). 50 ft lengths were added to all four bulk
+  products from the live check. A spool line has unit `spool`.
+- **Hung length.** In the power plan a bulk run hangs `ceil(lengthFt)` feet (`run.hung`, feed `strings`, watts);
+  `quantity` (feet with waste) is what is bought. Mid-run feed starts and the "fed from the middle" walk work on
+  true feet. The checklist cuts the hung length.
+- **Plugs.** Not "one male and one female per feed" when the wire bought comes with plugs: `bom.plugNeeds`
+  shares the cut lengths out over the pieces bought and counts a slide-on plug only for a cut end or joint that
+  has no plug of its own. One line per plug part for the whole job (C7 and C9 wire share plugs); no line when
+  none is needed. Bare wire off a spool still gets one of each per cut length.
+- **Watts.** `maxConnectedW = maxBulbsPerRun ×` the highest `wattsEach` of any colour on file. A run's watts
+  follow its colours (`suppliers.bulkWatts`): a colour's own figure when it is higher than the family's, never
+  lower.
+- **Cost basis.** `'used'` applies only in installer mode (`quote.enabled`); otherwise every line is totalled as
+  ordered. The BOM result carries `costBasis` (the basis applied) and `orderTotal`. `bomToCsv` adds Used Qty
+  and Order Total columns, a "To order" row and a note when line totals are shares.
+- **Accessories.** Gutter runs are counted with the supplier's all-in-one clip when it has no gutter clip.
+- **Price sentence.** For a list that mixes supplier and any-store lines `priceNote` says "Supplier prices were
+  last checked on <date>; the other prices are typical store prices. Confirm at checkout. Account (wholesale)
+  prices differ: edit any price."; a list of supplier lines only keeps the §8.3 sentence.
+- `priceStatus: 'observed'` means: seen on the supplier's own category list only (its product page was not
+  opened), a kit's worked-out per-foot price, or a line nobody read a price for (see Colour). It does not mean
+  "seen in a search result".
+- `schema.importProject` also returns `saved: {cost, quoteTotal} | null`, read from the file's
+  `derived.summary`; the app shows a note when a file's saved totals differ from the fresh plan.
+
+**§8.4 confidence**
+- Plane solutions carry `tapsRecorded` (every calibration tap of the plane, and of its parent wall, has a valid
+  `tapErr`). `scoreConfidence` takes `tapsFine` and `ownTapPx`: when every tap is known to be at the 2.5 px
+  floor the advice is "use a larger rectangle" (not "zoom in"); when the item's own points are coarser than
+  2.5 px and that is not already the reason given, a second "Tapped zoomed out ... re-tap the points of this
+  item too" reason is added. The reason texts say "from how exactly the points could be tapped".
+
+**§8.5 UI**
+- While the hint bar is up the viewport fits the photo into the room under it and above the view buttons
+  (`viewport.setInsets`); the tracing hint shows its point count from the start, so the bar keeps its height.
+- Messages (toasts) live in a region over the whole workspace: stacked under the hint bar, the sample note or
+  a notice, on top of a raised sheet on a phone, and at the bottom of the photo while a tool is in use. A
+  message that was showing when a tool is picked is cleared.
+- Review: a bush stays in "Measurements to double-check" until both its width and height are typed. Unit
+  prices are text fields that read "$12", "12,50" and "1,234.50" and show two decimals. Your own prices for
+  items that are not on the list right now are listed under the subtotal with a Reset. A tape value 3 or more
+  times away from the photo's measurement asks before it is used.
+- Design: each run card writes its product out in full under the picker; Clips and Outlet are full-width rows;
+  what "sold as parts" means is said once, under "C7 and C9 as".
+- Calibrate: the intro says to tap the wall's four corners and then one thing of known size, which is what the
+  pinned "Mark the 4 corners" starts. The step labels stay whole at 360 px.
 
 ---------------------------------------------------------------------------------------------
 

@@ -2,30 +2,41 @@
 
 Measure a house from one photo, design a Christmas-light layout, and get a bill of materials, a power and circuit plan, a quote and an install checklist.
 
-**Phase 1** is a single self-contained HTML file: [`dist/lightplan.html`](dist/lightplan.html). Open it in any modern browser (desktop or phone). It works offline; fonts load from Google Fonts when online and fall back to system fonts otherwise.
+**Phase 1** (with the Phase 1.1 changes: ground-first cords, linked runs, suppliers, honest finger-tap confidence) is a single self-contained HTML file: [`dist/lightplan.html`](dist/lightplan.html). Open it in any modern browser (desktop or phone). It works offline; fonts load from Google Fonts when online and fall back to system fonts otherwise.
 
 ## How it works
 
-1. **Upload** a photo of the house front (file, drag-and-drop, or the phone camera), or start from the built-in sample house.
-2. **Calibrate.** Tap the four corners of a rectangle on the wall (a garage door, the front door, or the wall itself). LightPlan computes a perspective transform (homography) so measurements come out as if you stood straight in front of the wall. Add references of known size (door height, garage door, siding or brick courses, any tape-measured length); when two references disagree, you get an accuracy warning, and every measurement's confidence reflects how far tap error could move it. Add more planes for walls that are set back, a roof slope (for receding rakes, ridges and hips, corrected for pitch), and the ground (for walkways).
-3. **Trace** rooflines, rakes, gutters, ridges, windows, doors, columns, railings, walkways, bushes, trees and ground stakes. Each measurement shows a High / Medium / Low confidence with the reasons, and any length can be overridden with a tape-measured value.
-4. **Design.** An auto-plan picks a product for every run, counts strings, clips and stakes, and renders glowing bulbs on the photo with a day/night toggle and twinkle.
-5. **Power.** Place outlets and assign circuits. Runs are chained end to end within each product's limit (a string carries on around a corner; spare strings are bought but not counted as load), fed from the nearest outlet with capacity (or from the middle of a long run when that saves cord), and kept at or below 80% of the breaker rating. Each outlet's cords share one receptacle, timer and power stake, so an outlet carries at most 1,440 W. Cords are sized by load and the length actually bought (15 A plug limit, 3% voltage drop). Warnings cover incandescent loads, overloaded circuits and outlets, too many cords at one outlet, cords across walkways or doorways, long cords and missing GFCI protection.
-6. **Review & export.** Summary, editable BOM, installer quote (labor, markup, takedown and storage fees), install checklist, and exports: PDF report, customer quote PDF, CSV BOM, and a reloadable JSON project file.
+1. **Upload** a photo of the house front (file, drag-and-drop, or the phone camera), or start from the built-in sample house. Step 2 opens by itself once the photo is in. One button pinned under the panel always says what to do next.
+2. **Calibrate.** Tap the four corners of a rectangle on the wall (the wall itself, a garage door or the front door). LightPlan computes a perspective transform (homography) so measurements come out as if you stood straight in front of the wall. Add references of known size (door height, garage door width, siding or brick courses, any tape-measured length); when two references disagree, you get an accuracy warning. Add more surfaces for walls that are set back, a roof slope (for receding rakes, ridges and hips, corrected for pitch), and the ground (for walkways).
+3. **Trace** rooflines, rakes, gutters, ridges, windows, doors, columns, railings, walkways, bushes, trees and ground stakes. While a tool is in use the photo sits under the hint bar, and after each trace the bar offers what to trace next. Each measurement shows a High / Medium / Low confidence with the reasons, and any length can be replaced by a tape-measured value.
+4. **Design.** Say who you buy from: **Any store** (typical retail products, no part numbers), **Christmas Lights Etc** or **1000Bulbs**. An auto-plan picks a product for every run from that supplier's catalog, with its part number, a price "as of" the day it was checked and a link to its page. C7 and C9 can be bought the way installers buy them, as **cut-to-length socket wire, bulbs by the box and slide-on plugs**, or as ready-made strings. A run in a colour the supplier's ready-made item is not sold in keeps the any-store product, so no part number of another colour is ever ordered. The lights are drawn on the photo with a day/night toggle and twinkle.
+5. **Power.** Place outlets and assign circuits. The step opens with a plain verdict ("Good to go: 146 W, 10% of one outlet's safe limit", or what to fix first).
+   - **Cords run along the ground.** A cord goes from the outlet down to the ground, along the ground and straight up to where it plugs in, never across a wall face and never through a traced window or door (it goes up beside the opening, or between or over windows that nearly touch).
+   - **Runs are linked.** Nearby runs are joined with short jumper cords and 3-way taps, so only a few cords go back to the outlets (the sample: 2 cords to outlets, 10 jumpers, 4 taps). Every string run, cord, outlet and circuit stays within its limit, and voltage drop is added up along each path. One switch turns linking off; each run has a "Give this run its own cord" switch.
+   - Loads are kept at or below 80% of the breaker rating, and an outlet carries at most 1,440 W through its one timer and power stakes. Cords are sized by load on the length actually bought (15 A plug limit, 3% voltage drop). Warnings cover incandescent loads, overloaded circuits and outlets, a load above the supplier timer's rating, cords in front of doors or across walkways, long cords and missing GFCI protection.
+6. **Review & export.** Rough measurements come first, each with a tape-measure field. Then the summary, the shopping list (supplier, part number, how fresh the price is, an editable unit price, a link), an **order sheet per supplier** to copy as text or save as CSV, the installer quote (labor, markup, takedown and storage fees; "charge only what is used" for installers who keep leftovers), the install checklist, and exports: PDF report, customer quote PDF, CSV shopping list, and a reloadable JSON project file.
+
+### Phase 1.1 at a glance
+
+- **Confidence that is honest about finger taps.** Every tapped point records how precisely it could be placed at the zoom it was tapped with. A point tapped zoomed out on a phone can be off by 15 photo pixels or more, so the rating drops and says "Tapped zoomed out: zoom in and re-tap".
+- **Supplier prices are dated, not live.** Prices and part numbers were read from each supplier's own pages on the date shown. Nothing is fetched; the app never contacts a supplier. "Checked" means read on the item's own page; "check the price" means seen on a category list only, or a colour nobody read a price for. Type your account price over any line.
+- **Cut-to-length C7/C9.** At most 250 ft of wire or 250 bulbs on one cord. The feet with waste are bought; the true length is cut, hung and lit. Wire is bought as the cheapest sensible mix of spools and ready-made lengths, and slide-on plugs are counted only for the ends that have none.
 
 ## Repository layout
 
 ```
 dist/lightplan.html            the Phase 1 deliverable (standalone document)
 dist/lightplan.artifact.html   same app as an Artifact fragment
-src/core/                      pure calculation modules (no DOM): geometry, camera, exif, measure,
-                               catalog, design, power, bom, schema, plan, sample
+src/core/                      pure calculation modules (no DOM): geometry, camera, exif, suppliers,
+                               catalog, measure, design, power, bom, schema, plan, sample
+                               (suppliers.js: the hand-checked supplier catalog, part numbers and links)
 src/ui/                        browser modules: persist, store, imagesource, actions, preview,
                                viewport, export, panels, app
 src/template.html, styles.css  markup and styles
 schema/project.schema.json     JSON Schema for the portable project file
-docs/                          spec, data model, assumptions, field test script, Phase 2 roadmap
-tests/                         node:test unit tests and a Playwright smoke test
+docs/                          spec, data model, assumptions, field test script, the supplier check
+                               (what was read on the suppliers' pages and when), Phase 2 roadmap
+tests/                         node:test unit tests and a Playwright smoke test (tests/e2e/)
 ```
 
 ## Build and test
@@ -34,16 +45,17 @@ Requires Node 18+ (no npm dependencies).
 
 ```sh
 npm run build   # node build.js → dist/lightplan.html and dist/lightplan.artifact.html
-npm test        # node --test → 304 unit tests (core modules, UI logic, sample-house accuracy, confidence simulation)
-npm run e2e     # build + node tests/e2e/smoke.mjs: Playwright/Chromium smoke test, 185 checks
+npm test        # node --test → 459 unit tests (core modules, UI logic, suppliers, sample-house accuracy, confidence simulation)
+npm run e2e     # build + node tests/e2e/smoke.mjs: Playwright/Chromium smoke test, 696 checks
 ```
 
-The smoke test drives the built file through eight passes: phone (390 px), desktop, dark scheme, blocked storage, input validation, measurement callouts, the UI review findings and a landscape phone. `node tests/e2e/smoke.mjs --only=phone` runs one pass; screenshots land in `tests/e2e/out/` (gitignored). Playwright is not an npm dependency: install it yourself (`npm i -D playwright` and `npx playwright install chromium`) where it is not preinstalled.
+The smoke test drives the built file through thirteen passes: phone (390 px), desktop, dark scheme, blocked storage, input validation, measurement callouts, the UI review findings, a landscape phone, the Phase 1.1 power and flow UI on a phone and on a desktop, the supplier UI on both, and the Phase 1.1 review fixes (390, 360 and 1280 px). `node tests/e2e/smoke.mjs --only=phone` runs one pass; screenshots land in `tests/e2e/out/` (gitignored). `node tests/e2e/final-shots.mjs` writes screenshots of steps 4 to 6 of the sample for a last look. Playwright is not an npm dependency: install it yourself (`npm i -D playwright` and `npx playwright install chromium`) where it is not preinstalled.
 
 ## Documents
 
 - [Assumptions](docs/ASSUMPTIONS.md)
 - [Data model](docs/DATA_MODEL.md) and [JSON Schema](schema/project.schema.json)
+- [Supplier check](docs/SUPPLIER_CHECK.md): what was read on the suppliers' pages, and when
 - [Field test against a tape measure](docs/TEST_SCRIPT.md)
 - [Phase 2 roadmap](docs/PHASE2_ROADMAP.md)
 - [Internal build contract](docs/SPEC.md)
@@ -51,7 +63,7 @@ The smoke test drives the built file through eight passes: phone (390 px), deskt
 ## Accuracy notes
 
 - Lengths on a wall with a perspective rectangle are exact up to tap precision. On the sample house, whose taps are exact projections of a 3D model, lines match the ground truth within 0.4% (bushes traced on the wall come out 6–11% wide, and are flagged). The sample's front wall is calibrated the way an installer would do it (wall length and height taped at the foundation, door and window references as cross-checks, roof pitch entered), so its wall items rate High or Medium while roof, ground, tree and bush items rate Low: ratings assume a person's taps, not exact ones (see below).
-- Confidence is honest about tap precision: every calibration tap and every traced point is assumed to be off by about 2.5 px, and the resulting expected error decides the level (High within ±3%, Medium within ±6%; checked by a seeded simulation of random houses in `tests/measure-honesty.test.js`). High needs a large known-size rectangle, zoomed taps and a cross-check.
+- Confidence is honest about tap precision: every calibration tap and every traced point is taken to be off by at least 2.5 px, and by more when it was tapped zoomed out (the app records the precision of each tap from the zoom at that moment). The resulting expected error decides the level (High within ±3%, Medium within ±6%; checked by a seeded simulation of random houses, including finger taps at fit zoom, in `tests/measure-honesty.test.js`). High needs a large known-size rectangle, zoomed taps and a cross-check.
 - Roof-slope and ground-plane lengths use the camera pose recovered from the wall rectangle and the focal length (from EXIF, the rectangle, or a phone-camera preset). They are very sensitive to tap error and are usually rated Low; a tape-measured reference on the ground plane re-fits it, and roof items need the pitch entered. A lens setting that disagrees with the photo's rectangles is flagged.
 - Trees, posts and bushes traced on a wall stand in front of it, so their sizes come out too large and are flagged; on a ground plane they are measured in 3D.
 - The power plan is a planning estimate, not an electrical inspection.

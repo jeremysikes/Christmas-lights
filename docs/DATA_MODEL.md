@@ -140,7 +140,11 @@ is expected to be (one standard deviation), in pixels of the stored photo. The e
 is placed or dragged, from the zoom at that moment: a tap made zoomed out is worth many photo pixels.
 `normalizeProject` keeps the array only when it is finite numbers of 0 or more with exactly one entry per
 point; anything else is dropped without a message, and it is never added. Missing means "no information":
-the 2.5 px of Phase 1 is assumed (the sample house has none).
+the 2.5 px of Phase 1 is assumed (the sample house has none). When every tap behind a rating has a recorded
+precision and none is coarser than 2.5 px (`measured.planes[id].tapsRecorded` and the item's own `tapErr`),
+the advice under a rating no longer says "zoom in": only a larger rectangle helps. An item whose own points
+were tapped zoomed out always gets the reason "Tapped zoomed out (about ±N px on the photo): zoom in and
+re-tap the points of this item", even when the surface's scale is the larger part of its expected error.
 
 ### Feature (traced feature)
 
@@ -194,10 +198,14 @@ supplier offers a public feed or cart link, so nothing is fetched: every address
 check is written up in `docs/SUPPLIER_CHECK.md`. Every entry has `priceAsOf: '2026-11-11'` and a
 `priceStatus`:
 
-- `verified` (59 of the 63 things that can be ordered): the price, part number, pack size and electrical
+- `verified` (61 of the 68 things that can be ordered): the price, part number, pack size and electrical
   figures were read on the item's own product page that day. The app says "as of Nov 11, 2026".
-- `observed` (4 items, all 1000Bulbs): the item was seen on the supplier's category list only, its own page
-  was not opened. The app adds "check the price", and the line's note says why.
+- `observed` (7 items, all 1000Bulbs: a 500 ft spool and a 100 ft length of C7 wire, three 50 ft lengths of
+  wire and the two blue bulbs): the item was seen on the supplier's category list only, its own page was not
+  opened. The app adds "check the price", and the line's note says why.
+- A shopping-list line is also `observed` when nobody read a price for exactly that thing: a bulb colour the
+  supplier has no item for on file (priced like its default colour), and a supplier item picked by hand in a
+  colour it is not sold in. Such a line has no part number and no product page, only a link to look.
 - Nothing else is entered. A price is still a snapshot: every export says "confirm at checkout".
 - A cut-to-length (bulk) product as a whole is a kit with no part number, and its per-foot `price` is
   worked out from its parts, not read from a page. It always carries `observed`; its parts carry their own
@@ -212,7 +220,7 @@ Wholesale (account) prices are not public; the user types their own price over a
 |---|---|---|
 | `library.supplierId` | string \| null, optional | Who the project buys from: `generic` ("Any store", the Phase 1 behaviour), `cle` (Christmas Lights Etc) or `1000bulbs`. Missing, null or an unknown id = any store. Never added when missing. |
 | `library.config.buying.style` | `bulk` \| `strings` | How C7/C9 from the chosen supplier is bought when a run has no product of its own. `bulk` (default): socket wire cut to length, bulbs by the box, slide-on plugs. `strings`: ready-made strings. |
-| `library.config.buying.costBasis` | `bought` \| `used` | `bought` (default): the plan costs everything that is ordered. `used`: bulk wire, bulbs and plugs are costed only for the share this job uses, for installers who carry leftovers to the next job. A value that is not one of these words is dropped (the default applies). |
+| `library.config.buying.costBasis` | `bought` \| `used` | `bought` (default): the plan costs everything that is ordered. `used`: bulk wire, bulbs and plugs are costed only for the share this job uses, for installers who carry leftovers to the next job. It applies in installer mode only (`quote.enabled`); with installer mode off the list is priced as everything ordered. It never changes what is ordered. A value that is not one of these words is dropped (the default applies). |
 
 ### Supplier (`suppliers.SUPPLIERS`, also `plan.library.suppliers`)
 
@@ -233,7 +241,9 @@ searchUrlWorks, searchNote, categoryUrls: {role: url}, priceAsOf, notes }`
 - `categoryUrls` roles: `c9Bulbs c7Bulbs spools stringers plugs clips miniLights icicle net rope treeWrap
   stakes timers extensionCords`. A supplier lists only the roles it has a page for; every address loaded on
   the day of the check. Christmas Lights Etc has no page for plugs alone, so its `plugs` role is its
-  electrical accessories page; it has no page for tree wraps, so that role is left out (the search is used).
+  electrical accessories page; its `clips` role is its parent clips page ("Christmas Light Clips & Hangers"),
+  which leads to the C7/C9, all-in-one and mini-light clips, so the link also fits adhesive mini-light clips
+  and zip ties; it has no page for tree wraps, so that role is left out (the search is used).
 - `suppliers.findUrl(id, role, query)`: the category page for the role, else the supplier's search for the
   query, else null. `suppliers.allLinks()` lists every link in the map (`{supplierId, kind: 'site' |
   'wholesale' | 'search' | 'category' | 'product', sku, name, url}`) so they can be checked against the live
@@ -256,12 +266,12 @@ the id and stays the key for `pricing.overrides`.
 | `url` | https address \| null | The product page. |
 | `priceAsOf` | `YYYY-MM-DD` | The day the price was seen. |
 | `priceStatus` | `verified` \| `observed` | `verified`: read on the item's own product page that day. `observed`: seen on the supplier's category list only (or, for a bulk product, worked out from its parts): say "check the price". |
-| `equiv` | product id | The generic product whose job it does (`c9-led`, `c7-led`, `mini-led-100`, `icicle-led-300`, `net-led-4x6`). The planner swaps it in when the project buys from this supplier. When a supplier has two ready-made products for one job, the first in the list is the automatic choice. |
+| `equiv` | product id | The generic product whose job it does (`c9-led`, `c7-led`, `mini-led-100`, `icicle-led-300`, `net-led-4x6`). The planner swaps it in when the project buys from this supplier **and the product is sold in the run's colour** (`colors`; every ready-made supplier item on file is warm white only, so a run in another colour keeps the any-store product, with a link to look for it at the supplier). When a supplier has two ready-made products for one job, the first in the list is the automatic choice, and the shopping-list line says when a lower-priced one is on file. |
 | `kind` | `bulk` or missing | `bulk`: bought as wire, bulbs and plugs (below). Missing: a ready-made product. |
 | `components` | object | Bulk only: the parts (below). |
 | `maxRunFt`, `maxBulbsPerRun` | number | Bulk only: the limits of one run, 250 and 250 ("250 bulbs or 250 ft of line, whichever comes first"), whatever larger rating a page prints for the wire. |
 | `tiers` | `[{qty, each, pctOffList}]` | Quantity prices as the supplier's page prints them (below). Data only. |
-| `orderNote` | string | A short caution printed on the BOM line (which size to pick on a page that lists two, "Quantity price from 100 sets: see the supplier's page.", or that the page said stock was limited). |
+| `orderNote` | string | A short caution printed on the BOM line (which size to pick on a page that offers more than one, "Quantity price from 100 sets: see the supplier's page.", or that the page said stock was limited). |
 
 **Offer** (a bulk component or a supplier accessory): `{ sku, supplierSku, name, url, price, packQty,
 priceAsOf, priceStatus, notes?, tiers? }`. `sku` is `<supplierId>:<supplierSku>`, the key for
@@ -279,10 +289,16 @@ not tested in a cart. 1000Bulbs pages showed none.
 **Bulk C7/C9** is how wholesale C7/C9 is bought. It is a per-foot product (`unit: 'foot'`,
 `stringLengthFt: 1`, `leadFt: 0`) so measuring, chaining and power feeds work unchanged:
 `bulbsPerUnit = 12 / bulbSpacingIn`, `wattsPerUnit = wattsEach × bulbsPerUnit`, `maxEndToEnd` = the feet one
-run may be (250), `maxConnectedW` = the watts one run may carry (`maxBulbsPerRun × wattsEach`, and never more
-than 80% of the lowest amp rating printed for any length of the wire, at 120 V), `endConnector: true`,
-`clipEligible: true`. `price` is a per-foot equivalent of the 1,000 ft spool and the default bulbs, for
-display only: the BOM prices the parts.
+run may be (250), `maxConnectedW` = the watts one run may carry (`maxBulbsPerRun ×` the highest `wattsEach` of
+any bulb colour on file, so a full run of the hungriest colour still fits, and never more than 80% of the
+lowest amp rating printed for any length of the wire, at 120 V), `endConnector: true`, `clipEligible: true`.
+`price` is a per-foot equivalent of the 1,000 ft spool and the default bulbs, for display only: the BOM
+prices the parts.
+
+In the power plan a cut-to-length run is **hung over its true length**: `ceil(lengthFt)` feet are cut, hung
+and lit (`run.hung`, feed `strings`, watts), while `run.quantity` (the feet with waste) is what is bought. The
+waste allowance stays on the spool. A run of up to 250 ft is therefore one feed whatever the waste setting,
+and a longer run can be fed from its middle like strings.
 
 ```
 components: {
@@ -297,10 +313,13 @@ components: {
 
 - `variants` keys are colours the supplier sells: `warmWhite coolWhite multi red green blue` on all four
   bulk products (also `orange yellow purple pink teal` when on file). A variant carries its own `wattsEach`
-  only when it differs from the family's (the 1000Bulbs blue bulbs are another bulb line); the plan still
-  counts the family figure, and the offer's note says so.
+  only when it differs from the family's (the 1000Bulbs blue bulbs are another bulb line). A run's watts
+  follow its colours (`suppliers.bulkWatts`): a colour counts at its own figure when that is higher than the
+  family's (1000Bulbs blue C7: 0.54 W against 0.48 W), and never below the family's (1000Bulbs blue C9 is
+  listed at 0.5 W; the plan keeps 0.74 W). The offer's note says so.
 - `sizes` are other lengths of **the same wire** that can be bought instead of a whole spool: a 500 ft
-  spool, and ready-made 100 ft and 25 ft lengths, longest first. A size is entered only when its wire type
+  spool, and ready-made 100 ft, 50 ft and 25 ft lengths, longest first (1000Bulbs C7 has two 50 ft lengths:
+  one with a male plug only, one with a plug on each end). A size is entered only when its wire type
   and gauge match the spool's (the tests check it); a 20-gauge length is never a size of 18-gauge wire.
   `plugsIncluded` is `false` (bare), `'both'` (a plug on each end) or `'male'` (a male plug only), and the
   offer's name says the same in words.
@@ -310,9 +329,12 @@ components: {
 **Supplier accessories** (`suppliers.SUPPLIER_ACCESSORIES[supplierId][accessorySku]` → Offer) map a
 supplier's own item onto a generic accessory sku from `catalog.ACCESSORIES`: `clip-allinone`,
 `clip-shingle`, `clip-ridge`, `light-stakes`, `timer-outdoor` (both suppliers have all five). Extension
-cords, taps, power stakes, cord covers, gutter hooks, adhesive clips and GFCI adapters stay generic. Two
-generic accessories exist for bulk wire: `plug-spt1-male` and `plug-spt1-female` (used only when a bulk
-product has no plug of its own on file).
+cords, taps, power stakes, cord covers, adhesive clips and GFCI adapters stay generic. Neither supplier has
+a gutter-only clip on file, but both all-in-one clips are made for gutters and shingles, so gutter runs are
+counted with the supplier's all-in-one clips (one pack, one place to buy). A timer offer may carry `maxWatts`
+(the 1000Bulbs timer: 1,000 W): it is ordered only for outlets within that, see §4. Two generic accessories
+exist for bulk wire: `plug-spt1-male` and `plug-spt1-female` (used only when a bulk product has no plug of
+its own on file).
 
 ### What is in the catalog (as of 2026-11-11)
 
@@ -322,8 +344,8 @@ Part number, price and pack for everything entered. All `verified` unless marked
 
 | What | Part number, price |
 |---|---|
-| C9 socket wire, SPT-1, 18 gauge, socket every 12 in, green | 1,000 ft spool 15085 $409.99 · 500 ft spool 81832 $219.99 · 100 ft with plugs 15098 $49.99 · 25 ft with plugs 15100 $15.99 |
-| C7 socket wire, same | 1,000 ft spool 15054 $369.99 · 500 ft spool 72912 $199.99 · 100 ft with plugs 15067 $44.99 · 25 ft with plugs 15071 $11.99 |
+| C9 socket wire, SPT-1, 18 gauge, socket every 12 in, green | 1,000 ft spool 15085 $409.99 · 500 ft spool 81832 $219.99 · 100 ft with plugs 15098 $49.99 · 50 ft with plugs 15106 $27.99 · 25 ft with plugs 15100 $15.99 |
+| C7 socket wire, same | 1,000 ft spool 15054 $369.99 · 500 ft spool 72912 $199.99 · 100 ft with plugs 15067 $44.99 · 50 ft with plugs 15077 $22.99 · 25 ft with plugs 15071 $11.99 |
 | C9 OptiCore bulbs, 0.8 W, box of 25, $29.99 | warm white 72636 · cool white 72639 · multicolor 72642 · red 72645 · green 72654 · blue 72648 (quantity prices from 20 boxes) |
 | C7 OptiCore bulbs, 0.8 W, box of 25, $24.99 | warm white 72609 · cool white 72606 · multicolor 72612 · red 72615 · green 72624 · blue 72618 (quantity prices from 10 boxes) |
 | SPT-1 slide-on plugs, pack of 10, $12.40 | male 88283 · female 88287 |
@@ -335,8 +357,8 @@ Part number, price and pack for everything entered. All `verified` unless marked
 
 | What | Part number, price |
 |---|---|
-| C9 socket wire, SPT-1, 18 gauge, socket every 12 in, green | 1,000 ft spool CMS-10105 $391.13 · 500 ft spool CMS-10110 $224.40 · 100 ft with a male plug CMS-10124 $39.43 |
-| C7 socket wire, same | 1,000 ft spool CMS-10095 $481.47 · 500 ft spool CMS-10093 $229.77 *listed only* · 100 ft with plugs CMS-10323 $57.64 *listed only* |
+| C9 socket wire, SPT-1, 18 gauge, socket every 12 in, green | 1,000 ft spool CMS-10105 $391.13 · 500 ft spool CMS-10110 $224.40 · 100 ft with a male plug CMS-10124 $39.43 · 50 ft with plugs CMS-10319 $26.98 *listed only* |
+| C7 socket wire, same | 1,000 ft spool CMS-10095 $481.47 · 500 ft spool CMS-10093 $229.77 *listed only* · 100 ft with plugs CMS-10323 $57.64 *listed only* · 50 ft with a male plug CMS-10122 $18.85 *listed only* · 50 ft with plugs CMS-10318 $30.44 *listed only* |
 | C9 VividCore Premium bulbs, 0.74 W, pack of 25 | warm white CMS-10294 $25.42 · cool white CMS-10293 $26.15 · multicolor CMS-10298 $25.52 · red CMS-10288 $25.03 · green CMS-10291 $26.07 · blue (standard line, 0.5 W) CMS-C9BLU $22.33 *listed only* |
 | C7 VividCore Premium bulbs, 0.48 W, pack of 25 | warm white deluxe CMS-10285 $18.62 · cool white CMS-10281 $19.31 · multicolor CMS-10286 $19.03 · red CMS-10276 $19.69 · green CMS-10279 $19.72 · blue (standard line, 0.54 W) CMS-C7BLU $17.29 *listed only* |
 | SPT-1 slide-on plugs, pack of 10, $6.73 | male PLUG-10001 · female PLUG-10002 |
@@ -347,14 +369,17 @@ Part number, price and pack for everything entered. All `verified` unless marked
 **Decisions where a page was not clear-cut**
 
 - **Two figures on one page: the lower is used.** Christmas Lights Etc wire: 7 A in the table against 8 A
-  in the text (5 A in the table for the 25 ft C9 length). 1000Bulbs mini string: 45 sets in the table, 90
-  in the text. 1000Bulbs ridge clip: 25 to a pack in the title and price, 50 in the table.
+  in the text (5 A in the table for the 25 ft C9 and the 50 ft C7 length). 1000Bulbs mini string: 45 sets in
+  the table, 90 in the text. 1000Bulbs ridge clip: 25 to a pack in the title and price, 50 in the table.
 - **A page's figure the plan stays below.** The 1000Bulbs net page says 25 nets end to end (240 W); the
   plan uses 22 (216 W). The 1000Bulbs 25 ft stringer pages say 1,800 W on 20-gauge wire: not used at all.
-- **No figure on the page.** The Christmas Lights Etc 25-bulb, 25 ft OptiCore strings give no connect
-  limit: the plan uses 10 sets (250 bulbs), the trade rule for the wire. 1000Bulbs spool pages give no amp
-  rating: none is entered. Lit lengths the pages do not state (the 5 mm set and the sealed C9 set at
-  Christmas Lights Etc) are worked out from bulb count and spacing, and the description says so.
+- **The trade rule, whatever the page prints.** For the Christmas Lights Etc 25-bulb, 25 ft OptiCore
+  strings the plan uses 10 sets on one run (250 ft, 250 bulbs, 200 W), the trade rule for the wire, whatever
+  larger figure the page prints for sets joined end to end. Their pages offer more than one size: the
+  shopping-list line says to pick the 25-light, 25 ft set and gives its item number.
+- **No figure on the page.** 1000Bulbs spool pages give no amp rating: none is entered. Lit lengths the
+  pages do not state (the 5 mm set and the sealed C9 set at Christmas Lights Etc) are worked out from bulb
+  count and spacing, and the description says so.
 - **A stand-in.** The 1000Bulbs plain warm white C7 pack (CMS-10284, 0.54 W) was "temporarily unavailable",
   so the warm white deluxe pack (CMS-10285, 0.48 W), which could be ordered, is the warm white; its note
   says so. No VividCore Premium blue was seen at 1000Bulbs, so blue is its standard bulb (other watts,
@@ -374,7 +399,7 @@ Part number, price and pack for everything entered. All `verified` unless marked
   needs power cords and end caps that are not on file). Case packs that are a second pack size of an item
   already entered (C9 bulbs by 500 82958, mini sets by 24 84222 and CMS-50WW6B).
 - **No rating on the page:** Christmas Lights Etc photocell 85135.
-- **Outside the starter set:** SPT-2 wire and plugs, 15 in spacing, blank wire, 50 ft ready-made lengths,
+- **Outside the starter set:** SPT-2 wire and plugs, 15 in spacing, blank wire,
   magnetic, "plus" and C9-only clips, a second all-in-one clip and shingle tab at 1000Bulbs (listed only), bulb
   colours with no slot (warm white deluxe and pure white C9), the standard-line warm white C7 bulb
   CMS-C7SWW, and the 1000Bulbs 100 ft C9 length with two plugs CMS-10324 (the male-plug-only CMS-10124 is
@@ -394,11 +419,11 @@ Plan = { library, measured, runs, power, bom, quote, checklist, warnings, summar
 | `runs[]` (LightRun) | `{id, featureId, productId, productName, unit, colorMode, colors, lengthFt, withWasteFt, quantity, hung?, bulbs, watts, amps, clips: {type, count}, lightStakes, method, detail, warnings, start, end, reversed, chainId, feedIds, outletId, circuitId, sourceFeedId, supplierId?, productKind?}` | One per feature. **Product choice:** the run's own `productId` always wins (it may be any supplier's product); otherwise the type default, replaced by the chosen supplier's product whose `equiv` names it (buying style `bulk`: its cut-to-length product, else its ready-made one; `strings`: only a ready-made one, never cut-to-length wire); otherwise the generic product stays. Another supplier's catalog is never chosen automatically. `supplierId` is set on runs of supplier products and `productKind: 'bulk'` on cut-to-length runs (then `unit` is `foot`, `quantity` is feet of socket wire, `bulbs` is sockets, and clips are one per socket). `quantity` is strings, nets, sets or feet to buy; strings are counted along each chain, so a run the previous run's last string carries on along can buy 0. `hung` is the strings hung on it; `watts`/`amps` are the live load (spares from waste rounding are not plugged in). `start`/`end` are image points of where the run begins and ends after power planning. `sourceFeedId` is the feed the run's first feed is jumpered from (null: its cord comes from the outlet). |
 | `power.feeds[]` | `{id, chainId, runIds, strings, watts, amps, start: {point, label, toward?}, outletId, circuitId, source, parentFeedId, childFeedIds, depth, supplyW, throughW, pathDropPct, taps, plugIn, cord: {kind, lengthFt, boughtFt, awg, pieces, voltageDropPct, route: [{kind, lengthFt, planeId, from, to}], routeText}, cordPath, cordUnknown, crossesWalkway, crossesDoorway, doorway?, portions: [{runId, units, total, startsRun, endsRun}]}` | A feed is the part of a chain on one cord, limited by the product's max end-to-end. `strings` counts hung strings. `source` is `{kind: 'outlet', outletId}` (a **home run**: its cord comes from the outlet) or `{kind: 'feed', feedId, port}` (a **jumper** from a powered feed: `port` `'end'` = the end plug of its last string, so the load passes through its strings; `'start'` = a 3-way tap where its own cord arrives). `outletId`/`circuitId` are the outlet at the root of its supply tree. `supplyW` is what its cord carries (itself and everything hanging off it), `throughW` what passes through its strings, `pathDropPct` the voltage drop summed over the cords back to the outlet, `taps` the 3-way taps it needs. `cord.kind` is `'home'` or `'jumper'`; `cord.route` lists the pieces of the route in order (`drop`, `ground`, `rise`, `hop`, `roof`, `wall`, `direct`; lengths in feet before the routing factor and slack; `from`/`to` are image points) and `cord.routeText` says it in words ("down 1.5 ft, 18 ft along the ground, up 8.5 ft beside Window left"). `cordPath` is the same route as an image polyline. `plugIn: true` (with `cord: null`) means the run plugs straight into its source with no cord. The cord gauge and voltage drop are worked out on the pieces bought (`boughtFt`) for the watts carried (`supplyW`). |
 | `power.chains[]` | `{id, productId, runIds, reversed, strings, spares, watts, feedIds}` | `strings` hung, `spares` bought for waste, `watts` live. |
-| `power.outlets[]` | `{id, label, circuitId, feedIds, directFeedIds, watts, needsSplitter, splitters, timer, limitW, overloaded, incandescentW}` | `feedIds`: every feed in the outlet's supply trees; `directFeedIds`: its home runs. Power stakes (`splitters`) are counted from the home runs only. Everything on one outlet shares its receptacle, timer and chained power stakes (15 A gear, `limitW` = 1,440 W at 80%). |
+| `power.outlets[]` | `{id, label, circuitId, feedIds, directFeedIds, watts, needsSplitter, splitters, timer, limitW, overloaded, timerMaxW, incandescentW}` | `feedIds`: every feed in the outlet's supply trees; `directFeedIds`: its home runs. Power stakes (`splitters`) are counted from the home runs only. Everything on one outlet shares its receptacle, timer and chained power stakes (15 A gear, `limitW` = 1,440 W at 80%). `timerMaxW` is the watt rating of the chosen supplier's timer when it has one (1,000 W at 1000Bulbs), else null: an outlet that carries more gets the warning `timer-rating` and a heavy-duty timer on the shopping list instead of the supplier's. |
 | `power.groups[]` | `{id, outletId, rootFeedId, feedIds, watts, homeRunFt, jumperFt}` | One supply tree per home run: `feedIds` in depth-first order from the root, `watts` on the home-run cord, cord feet bought for the home run and for the jumpers below it. |
 | `power.counts` | `{timers, splitters, cordCovers, gfciAdapters, taps, homeRuns, jumpers}` | `jumpers` counts jumper cords (runs that plug straight in need none). `power.cords[]` (`{awg, lengthFt, count}`) lists every cord piece to buy, home runs and jumpers together. |
 | `power.circuits[]` | `{id, name, breakerAmps, voltage, limitW, loadW, existingLoadW, utilizationPct, outletIds, overloaded}` | Load per circuit against the 80% rule. |
-| `bom` | `{ok, lines: [{sku, category, name, qty, unit, unitPrice, defaultPrice, overridden, lineTotal, notes, supplierId, supplierName, supplierSku, url, findUrl, priceAsOf, priceStatus, usedQty, total, buyTotal}], subtotal, byCategory}` | Categories: lights, clips, cords, power, hardware. See "BOM lines and order sheets" below. |
+| `bom` | `{ok, lines: [{sku, category, name, qty, unit, unitPrice, defaultPrice, overridden, lineTotal, notes, supplierId, supplierName, supplierSku, url, findUrl, priceAsOf, priceStatus, usedQty, total, buyTotal}], subtotal, byCategory, orderTotal, costBasis}` | Categories: lights, clips, cords, power, hardware. `orderTotal` is what everything on the list costs to order (the sum of `buyTotal`); `costBasis` is the basis that was applied (`used` only in installer mode). See "BOM lines and order sheets" below. |
 | `quote` | `{enabled, materialsCost, markupPct, materialsPrice, laborMethod, linearFt, laborHours, laborCost, takedownFee, storageFee, taxPct, tax, total, lines: [{description, amount}], validDays, notes}` | Lines are customer-facing: Materials, Installation labor (X ft, Y h), Takedown, Storage, Tax, Total. |
 | `checklist[]` | `{outletId, title, steps: [string]}` | One group per outlet, then runs with no outlet, runs not in the plan, and a safety/test group. |
 | `warnings[]` | `{level: 'danger'|'warn'|'info', code, message, featureId?, planeId?, outletId?, circuitId?, stage?}` | Deduplicated, danger first. A failed stage adds `code: 'internal-error'`. |
@@ -417,24 +442,46 @@ Every BOM line says where it is bought:
 | `priceAsOf` | The day the supplier price was seen; null for generic prices and for your own prices. |
 | `priceStatus` | `verified` or `observed` (a supplier price), `default` (a typical retail price from the library) or `yours` (`pricing.overrides` has the line's `sku`, or the price of a supplier item was edited in the project's own product list). A supplier price is never shown as current: say "as of <date>" and, for `observed`, "check the price" (`bom.priceStatusText(line)`). |
 | `qty`, `usedQty` | `qty` is what to order. `usedQty` is the share of it this job uses: less than `qty` only for bulk wire (feet used ÷ feet bought), bulbs (bulbs ÷ pack size) and plugs. |
-| `buyTotal`, `total`, `lineTotal` | `buyTotal = qty × unitPrice`. `total` follows `config.buying.costBasis`: `buyTotal`, or `usedQty × unitPrice` for bulk parts when the basis is `used`. `lineTotal` equals `total` (kept for Phase 1 readers). `subtotal` and `byCategory` add up `total`. |
+| `buyTotal`, `total`, `lineTotal` | `buyTotal = qty × unitPrice`. `total` follows `config.buying.costBasis`: `buyTotal`, or `usedQty × unitPrice` for bulk parts when the basis is `used` and installer mode is on. `lineTotal` equals `total` (kept for Phase 1 readers). `subtotal` and `byCategory` add up `total`; `orderTotal` adds up `buyTotal`. |
 
 **Bulk products** are gathered per product across the whole job and bought as parts (all in category
 `lights`):
 
-- **Wire:** feet needed = the sum of the runs' feet (waste included). With cost basis `bought`, the cheapest
-  mix of the sizes on file that covers it (a 139 ft job buys a 100 ft and two 25 ft lengths, not a 1,000 ft
-  spool); with `used`, the size that is cheapest per foot. Each line's note says feet needed, bought and left
-  over. Your own prices (`pricing.overrides`) are used for the comparison.
+- **Wire:** feet needed = the sum of the runs' feet (waste included). The mix of the sizes on file that
+  covers it at the least cost, compared the way a buyer would (`bom.MIX_RULE`): every piece counts as $5 of
+  plugs and work, a price seen on a category list only counts as 10% dearer than it says, and at most four
+  ready-made lengths are bought for one product (more wire than that comes off a spool). A 139 ft job buys a
+  100 ft and a 50 ft length, not a 1,000 ft spool; 900 ft of C7 wire at 1000Bulbs buys the 1,000 ft spool
+  read on its own page, not two listed-only 500 ft spools. Each line's note says feet needed, bought and left
+  over, and whether the length comes with plugs. Your own prices (`pricing.overrides`) are used for the
+  comparison and count as confirmed. The order is the same under both cost bases. A spool line has unit
+  `spool`, a ready-made length `each`.
 - **Bulbs:** one per socket (`ceil(run feet × 12 / bulbSpacingIn)` per run), split by the run's colour
   pattern: warm white, cool white, "multicolor" = the supplier's mixed box, and a custom pattern by the
   family of each colour (red, green → half and half; the first colour gets the odd bulb). A colour the
   supplier has no bulb for is priced like the default colour, has no part number, links to the supplier's
-  bulb page and says "choose the colour at the supplier". Packs = `ceil(bulbs / packQty)`; the note says
-  bulbs needed and spare.
-- **Plugs:** one male and one female for every length of wire that is cut = every power feed of that
-  product (every run when there is no power plan).
+  bulb page, says "choose the colour at the supplier" and is `observed` ("check the price"). Packs =
+  `ceil(bulbs / packQty)`; the note says bulbs needed and spare.
+- **Plugs:** counted from the wire that is bought (`bom.plugNeeds`). Every cut length (one per power feed,
+  one per run when there is no power plan; the feet hung, not the feet with waste) needs a male plug where
+  the cord arrives and a female plug on its far end, and a joint between two pieces needs one of each. A
+  plug a ready-made length comes with is used where that end of the piece is used, so a 20 ft run cut from a
+  25 ft length with a plug on each end needs one female plug and no male plug, and a run that is exactly
+  whole lengths needs none. C7 and C9 wire take the same plugs: there is one line per plug part for the whole
+  job, and no line when no plug is needed.
 - **Clips:** one per socket for clip-mounted runs.
+
+**A supplier item in a colour it is not sold in.** The automatic choice never makes one (the any-store
+product stays). When the user picks such a product by hand, its line keeps the supplier but loses the part
+number and page, is named "... - Multicolor (the part on file is warm white only: choose the colour at the
+supplier)", gets a `findUrl` and is `observed`.
+
+**Colours in names.** A custom palette is named by its colour families ("C9 LED string, 25 bulbs - Red and
+green"), never by colour codes; two palettes of the same families are one line.
+
+**Timers.** One per outlet used. The chosen supplier's timer is ordered for the outlets it can carry; an
+outlet above its `maxWatts` gets a generic "Heavy-duty outdoor plug-in timer, rated 15 A (1,800 W)" line
+instead.
 
 **Accessories.** When the chosen supplier has its own item for a generic accessory (clips by mount type,
 light stakes, timer), the line takes its `sku`, name, pack size, price and link; the library's pack-size
@@ -450,15 +497,27 @@ order), then "Any store":
 ```
 
 A sheet's totals are always what is ordered (`buyTotal`), whatever the cost basis. `bom.orderSheetToCsv(sheet)`
-and `bom.orderSheetToText(sheet)` write one sheet. `bom.priceNote(bom)` is the sentence every export carries
-when the plan uses supplier prices: "Prices were last checked on Nov 11, 2026; confirm at checkout. Account
-(wholesale) prices differ: edit any price." `bom.bomToCsv(bom)` adds the columns Supplier, Part number, Price
-status and Link (and that sentence as a last row) when any line names a supplier or carries a link; a plan
-with no supplier keeps the Phase 1 columns.
+and `bom.orderSheetToText(sheet)` write one sheet (a line's status is printed inside one pair of brackets:
+"(as of Nov 11, 2026, check the price)"). `bom.priceNote(bom)` is the sentence every export carries when the
+plan uses supplier prices. For a list of supplier lines only (an order sheet): "Prices were last checked on
+Nov 11, 2026; confirm at checkout. Account (wholesale) prices differ: edit any price." For a list that also
+holds any-store lines (the whole shopping list): "Supplier prices were last checked on Nov 11, 2026; the
+other prices are typical store prices. Confirm at checkout. Account (wholesale) prices differ: edit any
+price." `bom.bomToCsv(bom)` adds the columns Supplier, Part number, Price status and Link (and that sentence
+as a last row) when any line names a supplier or carries a link; a plan with no supplier keeps the Phase 1
+columns. When line totals are shares (cost basis `used`), it also adds the columns Used Qty and Order Total,
+a "To order" row under the subtotal and a note saying what the difference is.
 
 **Checklist.** A feed of bulk wire starts with "On the ground, cut one length of socket wire for …: N ft
-(N sockets). Slide a male plug onto the end that meets the cord and a female plug onto the far end, then
-screw a warm white bulb into every socket.", then "Hang the wire along …" and "Carry the same wire on along …".
+(N sockets). Slide a male plug onto the end that meets the cord and a female plug onto the far end, unless
+that end already has a plug, then screw a warm white bulb into every socket.", then "Hang the wire along …"
+and "Carry the same wire on along …". N is the length that is hung (the true length); the last feed of a
+chain says how many feet of wire and bulbs the order has to spare.
+
+**Opening a saved file.** `schema.importProject` returns `{project, images, saved}`. `saved` is
+`{cost, quoteTotal}` read from the file's `derived.summary` (null when the file has none). The plan is always
+worked out again; the app only uses `saved` to say so when the totals have moved since the file was written
+(a file from an older LightPlan): "materials were $X, now $Y".
 
 ## 5. Compact example
 
