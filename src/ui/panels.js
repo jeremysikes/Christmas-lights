@@ -1244,9 +1244,10 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const chosenId = lib.supplierId || GENERIC;
       const chips = arr(lib.suppliers).filter((x) => x && x.id).map((x) => {
         const on = x.id === chosenId;
-        return h('button', { type: 'button', class: 'chip buy-chip' + (on ? ' on' : ''), 'aria-pressed': String(on), data: { act: 'supplier', id: x.id } }, h('span', null, x.name));
+        // A short name keeps to one line; on a narrow panel only a long one wraps inside its chip.
+        return h('button', { type: 'button', class: 'chip buy-chip' + (String(x.name).length <= 12 ? ' short' : '') + (on ? ' on' : ''), 'aria-pressed': String(on), data: { act: 'supplier', id: x.id } }, h('span', null, x.name));
       });
-      const kids = [h('div', { class: 'chip-row', role: 'group', 'aria-label': 'Buy from' }, chips)];
+      const kids = [h('div', { class: 'chip-row buy-row', role: 'group', 'aria-label': 'Buy from' }, chips)];
       const facts = words ? words.supplierFacts(lib, chosenId) : null;
       if (!facts) return section('Buy from', kids, { key: 'buy-from' });
       if (facts.generic) {
@@ -1269,7 +1270,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           h('p', { class: 'field-label' }, 'Business or wholesale account'),
           w.name ? h('p', { class: 'sup-account-name' }, w.name) : null,
           dl([w.phone ? ['Phone', w.phone, 'num'] : null, w.email ? ['Email', w.email] : null]),
-          w.url ? linkRow(ctx, w.url, 'Open wholesale page', 'whole-' + facts.id, { aria: facts.name + ' wholesale page', kind: 'wholesale' }) : null,
+          w.url ? linkRow(ctx, w.url, 'Wholesale page', 'whole-' + facts.id, { aria: facts.name + ' wholesale page', kind: 'wholesale' }) : null,
           w.note ? h('p', { class: 'hint' }, w.note) : null) : null));
       const style = lib.config.buying && lib.config.buying.style === 'strings' ? 'strings' : 'bulk';
       kids.push(h('div', { 'data-key': 'buy-style' }, choiceList('C7 and C9 as', 'buy-style-label', [
@@ -1324,14 +1325,16 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           h('p', { class: 'prod-prices' }, bulk.statuses.map((st) => priceBadge(st))),
           h('details', { class: 'disclosure parts', 'data-key': 'parts-' + run.id },
             h('summary', null, h('span', null, 'Parts and part numbers (' + bulk.parts.length + ')'), icon('chevronDown', 'chev')),
-            h('div', { class: 'disclosure-body' }, h('ul', { class: 'part-list' }, rows))));
+            h('div', { class: 'disclosure-body' },
+              h('p', { class: 'hint small' }, 'Every size and colour on file. The shopping list in step 6 picks the ones this plan needs.'),
+              h('ul', { class: 'part-list' }, rows))));
       }
       const priced = words.pricedAs(p, overrides);
       const status = words.priceStatusLabel(priced);
       return h('div', { class: 'prod-info', 'data-key': 'pi-' + run.id, 'data-supplier': p.supplierId, 'data-status': status.kind },
-        h('p', { class: 'prod-from' }, h('strong', null, supName),
-          p.supplierSku ? h('span', null, ' · part number ', h('span', { class: 'num' }, String(p.supplierSku))) : h('span', null, ' · no part number on file'),
-          isNum(priced.price) ? h('span', { class: 'num' }, ' · ' + money(priced.price)) : null, ' ', priceBadge(status)),
+        h('p', { class: 'prod-from line' }, h('strong', null, supName),
+          p.supplierSku ? h('span', null, 'part number ', h('span', { class: 'num' }, String(p.supplierSku))) : h('span', null, 'no part number on file'),
+          isNum(priced.price) ? h('span', { class: 'num' }, money(priced.price)) : null, priceBadge(status)),
         p.orderNote ? h('p', { class: 'hint small' }, p.orderNote) : null,
         linkRow(ctx, p.url, 'Open at ' + supName, key, { aria: p.name + ' at ' + supName, kind: 'product' }));
     }
@@ -1796,6 +1799,12 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       ], { key: 'rough', cls: 'rough-sec' });
     }
 
+    /** Under the shopping list: how far to trust the prices, and that any of them can be typed over (said once). */
+    function bomHint(sentence) {
+      const tail = 'Type what you pay over any unit price: the totals follow.';
+      if (!sentence) return tail;
+      return /edit any price/.test(sentence) ? sentence.replace('edit any price.', 'type what you pay over any unit price.') : sentence + ' ' + tail;
+    }
     /** "6 packs", "38 ft", "1 spool", "4" (things sold singly have no unit word). */
     function qtyWords(qty, unit, name) {
       // A pack the supplier calls a box ("box of 25") is counted in boxes, as on its page.
@@ -1853,12 +1862,15 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         ]),
         byShare ? null : h('p', { class: 'hint' }, 'Nothing in this plan is bought by the spool or box, so both give the same total.')) : null;
       const differs = Math.abs(toOrder - bom.subtotal) > 0.004;
+      const from = arr(lib.suppliers).find((x) => x && x.id === (lib.supplierId || GENERIC));
       return section('Shopping list', [
+        rows.length ? h('p', { class: 'bom-buying', 'data-key': 'bom-buying' }, h('span', null, 'Buying from ', h('strong', null, from ? from.name : 'Any store'), '.'),
+          button('Change', { act: 'go-step', data: { step: 4 }, cls: 'small ghost', aria: 'Change who you buy from, in step 4' })) : null,
         rows.length ? h('ul', { class: 'bom-list' }, rows) : h('p', { class: 'hint' }, 'Trace something to see what to buy.'),
         basis,
         rows.length ? h('p', { class: 'bom-subtotal' }, h('span', null, differs ? 'Subtotal for this job' : 'Subtotal'), h('strong', { class: 'num' }, money(bom.subtotal))) : null,
         rows.length && differs ? h('p', { class: 'bom-subtotal order', 'data-key': 'to-order' }, h('span', null, 'To order'), h('strong', { class: 'num' }, money(toOrder))) : null,
-        rows.length ? h('p', { class: 'hint', 'data-key': 'bom-hint' }, (words ? words.priceSentence(bom.lines) + ' ' : '') + 'Type what you pay over any unit price: the totals follow.') : null,
+        rows.length ? h('p', { class: 'hint', 'data-key': 'bom-hint' }, bomHint(words ? words.priceSentence(bom.lines) : '')) : null,
       ], { key: 'bom' });
     }
 
@@ -2080,7 +2092,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         const finish = (ok) => {
           if (destroyed) return;
           local.copy = { key, text, ok: !!ok, multiline: text.indexOf('\n') >= 0, select: !ok };
+          // A refusal replaces any earlier "copied" message, so the two never disagree.
           if (ok) actions.toast(what + ' copied.', 'ok');
+          else actions.toast('Copying is blocked in this view. It is selected below so you can copy it by hand.', 'info');
           schedule();
           if (copyTimer) clearTimeout(copyTimer);
           // "Copied" goes back to "Copy" after a moment; the read-only field stays until Done.

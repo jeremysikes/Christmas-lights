@@ -18,6 +18,9 @@
  *  - Extra actions: undo, undoLabel, canUndo (a draft point first), hasUserWork, setActiveVertex, setActivePlane, setView, setCalib, setSheet, startPlaneRect, startReference, startTrace,
  *    startOutlet, redrawPlaneLine, changeFeatureType, resetAutoPlan, setProjectName, dismissBanner,
  *    dismissToast, confirmReplace, hydrateImages, removePlaneRect, setOwnCord(featureIds, on), finishTracing.
+ *  - Suppliers (SPEC §8.3): setSupplier(id) sets or clears project.library.supplierId ("Buy from"), and
+ *    setBuying({style, costBasis}) edits library.config.buying, storing only what differs from the defaults. Each
+ *    is one undo step and returns true when it changed the project.
  *  - Finishing a trace puts the tool down (mode 'select', the new item picked) and sets ui.afterTrace
  *    {featureId, type}: the hint bar then shows the item's length and offers what to trace next. It is cleared by
  *    starting any tool, picking something else, changing step, or finishTracing().

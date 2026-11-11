@@ -1983,6 +1983,7 @@ async function runSuppliers(browser, name) {
       id, name: s.name, url: s.url, wholesale: s.wholesale, date: S.formatDate(s.priceAsOf), hosts: S.linkHosts(),
       equivs: mine.map((p) => p.equiv), observed: Array.from(bySku.values()).filter((o) => o.priceStatus === 'observed').length, items: bySku.size,
       bulk: mine.filter((p) => p.kind === 'bulk').map((p) => ({ id: p.id, parts: S.componentOffers(p).map((c) => ({ part: String(c.offer.supplierSku), status: c.offer.priceStatus })), maxRunFt: p.maxRunFt, maxBulbs: p.maxBulbsPerRun, packQty: p.components.bulb.packQty })),
+      made: mine.filter((p) => p.kind !== 'bulk').map((p) => ({ id: p.id, part: String(p.supplierSku), price: '$' + p.price.toFixed(2), url: p.url })),
     };
   }, sid);
   const bomRows = () => page.evaluate(() => Array.from(document.querySelectorAll('.bom-row')).map((li) => ({
@@ -1991,7 +1992,7 @@ async function runSuppliers(browser, name) {
     use: (li.querySelector('.bom-use') || {}).textContent || '', total: (li.querySelector('.bom-total') || {}).textContent || '',
     links: Array.from(li.querySelectorAll('a')).map((a) => ({ href: a.getAttribute('href'), target: a.getAttribute('target'), rel: a.getAttribute('rel'), text: a.textContent.trim(), kind: a.getAttribute('data-link') })),
     copy: li.querySelectorAll('[data-act="copy-link"]').length, price: (li.querySelector('[data-act="price"]') || {}).value,
-    tall: Array.from(li.querySelectorAll('a, button')).every((el) => el.getBoundingClientRect().height >= 40),
+    tall: Array.from(li.querySelectorAll('a, button')).every((el) => el.getBoundingClientRect().height >= 44),
   })));
   const runCards = () => page.evaluate(() => Array.from(document.querySelectorAll('.run-card')).map((li) => {
     const sel = li.querySelector('select[data-act="run-product"]');
@@ -2095,8 +2096,10 @@ async function runSuppliers(browser, name) {
     t.ok(bulkCard.info.badges.some((b) => b.kind === 'checked' && b.text.includes('as of ' + sup.date)) && bulkCard.info.badges.some((b) => b.kind === 'check') === (listed > 0) && !/check the price/i.test(bulkCard.info.head),
       sid + ': the kit is never marked "check price" itself; its labels count the parts (' + bulkCard.info.badges.map((b) => b.text).join(' / ') + ')');
     const plain = cards.find((c) => c.info && c.info.supplier === sid && c.info.kind !== 'bulk');
-    t.ok(!!plain && /part number \S+/.test(plain.info.head) && /\$\d+\.\d\d/.test(plain.info.head) && plain.info.links.length === 1 && plain.info.links[0].text === 'Open at ' + sup.name && linkOk(plain.info.links[0]) && sup.hosts.includes(hostOf(plain.info.links[0].href)),
-      sid + ': a ready-made product shows its part number, price and "Open at ' + sup.name + '" (' + (plain && plain.info.head.slice(0, 70)) + ')');
+    const made = plain ? sup.made.find((m) => m.id === st.runs.find((r) => r.featureId === plain.featureId).productId) : null;
+    t.ok(!!made && plain.info.head.includes('part number ' + made.part) && plain.info.head.includes(made.price) && plain.info.badges.length === 1 && plain.info.badges[0].text === 'as of ' + sup.date + ' · checked' &&
+      plain.info.links.length === 1 && plain.info.links[0].text === 'Open at ' + sup.name && plain.info.links[0].href === made.url && linkOk(plain.info.links[0]) && sup.hosts.includes(hostOf(plain.info.links[0].href)),
+      sid + ': a ready-made product shows its part number, price, price status and "Open at ' + sup.name + '" (part number ' + (made && made.part) + ', ' + (made && made.price) + ')');
     const stay = cards.find((c) => c.info && c.info.supplier === 'generic');
     t.ok(!!stay && /No part number on file at /.test(stay.info.head) && stay.info.links[0].text === 'Find at ' + sup.name && sup.hosts.includes(hostOf(stay.info.links[0].href)), sid + ': a run with nothing on file there says so and offers "Find at ' + sup.name + '"');
     await scrollTo('.run-card');
@@ -2121,7 +2124,7 @@ async function runSuppliers(browser, name) {
       const want = l.priceStatus === 'verified' ? 'as of ' + sup.date + ' · checked' : l.priceStatus === 'observed' ? 'as of ' + sup.date + ' · check price' : l.priceStatus === 'yours' ? 'your price' : 'typical price';
       if (r.badge !== want) bad.push(l.name + ': status "' + r.badge + '"');
       if ((l.usedQty < l.qty) !== !!r.use) bad.push(l.name + ': used and left over');
-      if (!r.tall) bad.push(l.name + ': a small tap target');
+      if (!r.tall) bad.push(l.name + ': a tap target under 44 px');
     });
     t.ok(bad.length === 0, sid + ': every row shows supplier, part number, price status and its link on the supplier\'s site' + (bad.length ? ' (' + bad.slice(0, 4).join('; ') + ')' : ''));
     t.ok(st.lines.some((l) => l.supplierSku) && st.lines.some((l) => l.url) && st.lines.some((l) => !l.url && l.findUrl), sid + ': the list has part numbers, product links and "Find at" links to check');
@@ -2213,10 +2216,11 @@ async function runSuppliers(browser, name) {
     cp = await page.evaluate((sel) => {
       const f = document.querySelector(sel + ' [data-copy-field]');
       return f ? { value: f.value, readOnly: f.readOnly, focused: document.activeElement === f, start: f.selectionStart, end: f.selectionEnd, fields: document.querySelectorAll('[data-copy-field]').length, writes: window.__clip.writes.length,
-        hint: f.closest('.copy-fallback').textContent, inView: f.getBoundingClientRect().right <= window.innerWidth } : null;
+        hint: f.closest('.copy-fallback').textContent, inView: f.getBoundingClientRect().right <= window.innerWidth, toast: (window.LightPlanApp.store.ui().toast || {}).message || '' } : null;
     }, rowSel);
     t.ok(cp && cp.value === firstLink.url && cp.readOnly && cp.focused && cp.start === 0 && cp.end === firstLink.url.length && cp.fields === 1 && cp.writes === 0 && /Copying is blocked/.test(cp.hint) && cp.inView,
       'with the clipboard blocked, the address is shown selected in a read-only field to copy by hand');
+    t.ok(cp && /^Copying is blocked/.test(cp.toast) && !/copied/i.test(cp.toast), 'and the message says copying is blocked, not "copied" (' + (cp && cp.toast) + ')');
     await shot('copy-blocked');
     // The order list falls back the same way, as several lines.
     await tap('.order-card[data-supplier="cle"] [data-act="copy-order"]');
@@ -2225,6 +2229,19 @@ async function runSuppliers(browser, name) {
     await tap('[data-act="copy-close"]');
     t.ok(await page.locator('[data-copy-field]').count() === 0, 'Done puts the read-only box away');
     await page.evaluate(() => { window.__clip.mode = 'ok'; });
+
+    // A person's tap on a link does open it, in a new tab. (The request is stopped by the route above, so the test
+    // never reaches a supplier; this one request is the only one allowed, and it is cleared afterwards.)
+    t.ok(fetched.length === 0, 'nothing was fetched from a supplier before a link was tapped');
+    const openLink = page.locator(rowSel + ' a[data-link="product"]');
+    await openLink.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    await sleep(150);
+    const [popup] = await Promise.all([context.waitForEvent('page', { timeout: 8000 }), openLink.click()]);
+    for (let i = 0; i < 40 && !fetched.length; i += 1) await sleep(100);
+    const stayed = await page.evaluate(() => ({ here: location.protocol === 'file:', step: window.LightPlanApp.store.ui().step, opened: window.__opened }));
+    t.ok(fetched.length === 1 && fetched[0] === firstLink.url && stayed.here && stayed.step === 6 && stayed.opened === 0, 'tapping Open follows the link in a new tab and leaves the plan where it was (' + (fetched[0] || 'no request') + ')');
+    await popup.close().catch(() => {});
+    fetched.length = 0;
 
     // --- Exports with a supplier chosen: the shopping-list CSV and the PDF report.
     const bomCsvFile = await clickAndDownload(page, '[data-act="export"][data-kind="csv"]');
@@ -2319,7 +2336,8 @@ async function runSuppliers(browser, name) {
     const stringCard = stringCards.find((c) => c.featureId === roofRun.featureId);
     t.ok(strings.buying.style === 'strings' && strings.undoLabel === 'Change how C7 and C9 are bought' && !strings.runs.some((r) => r.kind === 'bulk') && strings.runs.find((r) => r.featureId === roofRun.featureId).supplierId === '1000bulbs' &&
       strings.lines.every((l) => l.usedQty === l.qty), '"Ready-made strings" swaps every cut-to-length run for a ready-made string from the same supplier, with nothing bought by the spool');
-    t.ok(stringCard.info && stringCard.info.kind !== 'bulk' && /part number \S+/.test(stringCard.info.head) && stringCard.info.links[0].text === 'Open at 1000Bulbs' && hostOf(stringCard.info.links[0].href) === 'www.1000bulbs.com' &&
+    const stringMade = tb.sup.made.find((m) => m.id === strings.runs.find((r) => r.featureId === roofRun.featureId).productId);
+    t.ok(stringCard.info && stringCard.info.kind !== 'bulk' && !!stringMade && stringCard.info.head.includes('part number ' + stringMade.part) && stringCard.info.links[0].text === 'Open at 1000Bulbs' && stringCard.info.links[0].href === stringMade.url && hostOf(stringCard.info.links[0].href) === 'www.1000bulbs.com' &&
       await page.locator('[data-act="buy-style"][data-style="strings"]').getAttribute('aria-pressed') === 'true', 'the run\'s card now shows the string\'s part number and "Open at 1000Bulbs"');
     await scrollTo('.run-card');
     await shot('step4-1000bulbs-strings');
