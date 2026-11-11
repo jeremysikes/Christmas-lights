@@ -41,7 +41,7 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --sheet-min: 148px;
   --sheet-half: 52%;   /* the pinned action bar takes 60 px of the sheet, so half is a little taller than it was */
-  --sheet-full: calc(100% - 56px);
+  --sheet-full: calc(100% - 68px);   /* leaves room for one row of the sample note above the raised sheet */
   color-scheme: light;
 }
 
@@ -426,6 +426,8 @@ body {
 .empty-icon { display: inline-flex; color: var(--accent); }
 .empty-icon .ic { width: 40px; height: 40px; }
 
+/* Messages. The region sits over the whole workspace (above the sheet on a phone); app.js puts it just under the
+   hint bar or the sample note, so a message never covers them, or at the bottom of the photo while a tool is in use. */
 .toast-region {
   position: absolute;
   z-index: 40;
@@ -837,7 +839,7 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
 .prod-from.line { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; }
 .prod-card .prod-from { margin: 0; color: var(--muted); font-size: 13px; }
 .prod-what, .prod-prices { font-size: 13px; color: var(--muted); }
-.prod-info .disclosure > summary { min-height: 40px; font-size: 14px; }
+.prod-info .disclosure > summary { min-height: var(--tap); font-size: 14px; }
 .part-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .part-group { margin-top: 4px; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .part-row { display: flex; flex-direction: column; gap: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
@@ -897,7 +899,7 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
 .feed-note { margin: 0; font-size: 13px; color: var(--accent-ink); }
 .feed-w { margin-left: auto; font-size: 13px; color: var(--muted); white-space: nowrap; }
 .feed-title strong { min-width: 0; overflow-wrap: anywhere; }
-.switch.slim { min-height: 40px; font-size: 14px; }
+.switch.slim { min-height: var(--tap); font-size: 14px; }
 .switch.slim .switch-track { width: 38px; height: 22px; border-radius: 11px; }
 .switch.slim .switch-track::after { width: 16px; height: 16px; }
 .switch.slim input:checked + .switch-track::after { transform: translateX(16px); }
@@ -1024,6 +1026,12 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
 @media (max-width: 479px) {
   .brand-name { display: none; }
 }
+@media (max-width: 374px) {
+  /* Six steps share 360 px: no side padding and a slightly smaller label keep "Calibrate" whole. */
+  .stepbar { padding-left: max(2px, env(safe-area-inset-left, 0px)); padding-right: max(2px, env(safe-area-inset-right, 0px)); }
+  .step { padding-left: 0; padding-right: 0; }
+  .step-label { font-size: 11px; letter-spacing: 0; }
+}
 @media (max-width: 389px) {
   .row-2 { grid-template-columns: minmax(0, 1fr); }
   .chip-grid { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); }
@@ -1061,6 +1069,8 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
   .stepbar ol { max-width: 760px; margin: 0 auto; }
   .stage-top { right: calc(var(--gutter-r) + 56px); max-width: 720px; }
   .zoom-controls { top: 8px; bottom: auto; }
+  /* Messages stay over the photo, not over the panel beside it. */
+  .toast-region { right: calc(380px + var(--gutter-r) + 56px); }
 }
 /* ---------------------------------------------------------------- hint bar surface picker, notices */
 .hint-plane { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; color: #cfd8e2; }
@@ -1077,11 +1087,6 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
 }
 .hint-plane select option { color: #15302b; background: #fff; }
 .notice .banner-icon { color: #ffbf5a; }
-/* While a tool is active the hint bar holds the instructions: toasts move to the bottom of the photo. */
-.lp-app[data-mode="rect"] .toast-region,
-.lp-app[data-mode="line"] .toast-region,
-.lp-app[data-mode="trace"] .toast-region,
-.lp-app[data-mode="outlet"] .toast-region { top: auto; bottom: 68px; }
 /* An upright phone shows the tracing buttons once, in the hint bar on the photo: the panel's own bar is for the
    layouts where the panel sits beside the photo (desktop, a phone held sideways). */
 @media (max-width: 899px) {
@@ -1092,7 +1097,7 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
   .lp-app[data-sheet="min"] .panel-head .panel-sub { display: none; }
 }
 @media (max-width: 899px) {
-  /* Below 900 px the zoom buttons sit at the bottom right of the photo: keep the toast clear of them. */
+  /* Below 900 px the zoom buttons sit at the bottom right of the photo: a message shown there keeps clear of them. */
   .lp-app[data-mode="rect"] .toast-region,
   .lp-app[data-mode="line"] .toast-region,
   .lp-app[data-mode="trace"] .toast-region,
@@ -1154,6 +1159,19 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
 @media (prefers-reduced-motion: reduce) {
   .lp-app *, .lp-app *::before, .lp-app *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------------------------------------------------------------- review fixes */
+/* Design step: the product in use, written out under its picker (a picker cuts a long name short). */
+.run-product { margin: -4px 0 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+/* Clips and Outlet: one full-width row each, so the choice can be read without opening the picker. */
+.run-picks { display: flex; flex-direction: column; gap: 10px; }
+/* Shopping list: your own prices for items that are not on the list right now. */
+.bom-stray { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 12px; }
+.stray-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.stray-list li { display: flex; align-items: center; gap: 10px; min-height: var(--tap); }
+.stray-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+/* The hint bar keeps its height while points are added: the count never wraps away from its text. */
+.hint-count { display: inline-block; }
 
 </style>
 <div id="lp-app" class="lp-app" data-sheet="half" data-step="1" data-mode="select">
@@ -1258,12 +1276,14 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
         <button id="ctl-snap" class="ctl" type="button" aria-pressed="true" aria-label="Snap to points"><span data-icon="magnet"></span></button>
       </div>
 
-      <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
       <div id="busy" class="busy" role="status" hidden><span class="spinner" aria-hidden="true"></span><span id="busy-text">Working…</span></div>
       <div id="drop-overlay" class="drop-overlay" hidden>
         <div class="drop-card"><span data-icon="image"></span><p>Drop the photo (or a saved project) to open it</p></div>
       </div>
     </main>
+
+    <!-- Messages float over the photo and, on a phone with the sheet raised, over the top of the sheet. -->
+    <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
 
     <aside id="panel" class="panel" aria-label="Step details">
       <button id="sheet-handle" class="sheet-handle" type="button" aria-label="Change the panel size"><span class="grip" aria-hidden="true"></span></button>
@@ -2275,7 +2295,8 @@ LP.define('exif', [], function () {
  *  - priceStatus 'verified': the price, part number, pack size and electrical figures were read on the
  *    item's own product page that day.
  *  - priceStatus 'observed': the item was seen on the supplier's category list only (its own page was not
- *    opened), so the app says "check the price". Four 1000Bulbs items are like this.
+ *    opened), so the app says "check the price". Seven 1000Bulbs items are like this (two spools or lengths of
+ *    C7 wire, three 50 ft lengths of wire and the two blue bulbs).
  *  - A cut-to-length product as a whole (kind 'bulk') has no part number and its per-foot price is worked
  *    out from its parts, not read from a page, so it is never 'verified': its parts carry their own status.
  *  - Nothing else is entered. Items that could not be ordered that day, items with no watts on their page,
@@ -2338,7 +2359,9 @@ LP.define('suppliers', [], function () {
         stringers: CLE + 'c7-c9-christmas-light-strings-spools-8015.htm',
         // There is no page for plugs alone: they are on the electrical accessories page (filter "Electrical Plugs").
         plugs: CLE + 'christmas-light-adapters-and-electrical-accessories--106.htm',
-        clips: CLE + 'c7-c9-light-clips-and-hangers--753.htm',
+        // The parent clips page ("Christmas Light Clips & Hangers"): it leads to the C7/C9 clips, the all-in-one clips
+        // and the mini-light clips, so the find link fits adhesive mini-light clips and zip ties as well.
+        clips: CLE + 'christmas-light-clips-and-hangers--102.htm',
         miniLights: CLE + 'Wide-Angle-Lens-LED-Lights--864.htm',
         icicle: CLE + 'Icicle-Lights.htm',
         net: CLE + 'led-net-lights--819.htm',
@@ -2425,8 +2448,9 @@ LP.define('suppliers', [], function () {
    * measuring, chaining and power feeds work unchanged (SPEC §8.3). Derived figures:
    * bulbsPerUnit = 12 / spacing, wattsPerUnit = wattsEach × bulbsPerUnit, maxEndToEnd = the feet one run may
    * be (maxRunFt, and never more sockets than maxBulbsPerRun), maxConnectedW = the watts one run may carry
-   * (maxBulbsPerRun × wattsEach, and never more than 80% of the lowest amp rating printed for any length of
-   * the wire, at 120 V), and `price` = a per-foot equivalent of the spool + default bulbs (display and
+   * (maxBulbsPerRun × the highest wattsEach of any bulb colour on file, so a full run of the hungriest colour
+   * still fits, and never more than 80% of the lowest amp rating printed for any length of the wire, at
+   * 120 V), and `price` = a per-foot equivalent of the spool + default bulbs (display and
    * fallback only; the BOM prices the components). The product itself has no part number and its price is
    * worked out, not read from a page, so its priceStatus is 'observed' whatever its parts are.
    */
@@ -2439,12 +2463,13 @@ LP.define('suppliers', [], function () {
     const def = c.bulb.variants[c.bulb.defaultVariant];
     const amps = [c.wire].concat(Array.isArray(c.wire.sizes) ? c.wire.sizes : []).map((w) => w && w.maxAmps).filter((a) => a > 0);
     const wireW = amps.length ? Math.min.apply(null, amps) * 120 * 0.8 : Infinity;
+    const topW = Math.max.apply(null, [c.bulb.wattsEach].concat(Object.keys(c.bulb.variants).map((v) => c.bulb.variants[v].wattsEach).filter((w) => w > 0)));
     return {
       id: spec.id, sku: spec.id, supplierId: spec.supplierId, supplierSku: null, equiv: spec.equiv, kind: 'bulk',
       name: spec.name, category: spec.category, tech: 'LED', unit: 'foot',
       bulbSpacingIn: spacing, stringLengthFt: 1, leadFt: 0, bulbsPerUnit: round(perFt, 4), wattsPerUnit: round(c.bulb.wattsEach * perFt, 4),
       maxEndToEnd: Math.floor(Math.min(maxRunFt, maxBulbs / perFt)), maxRunFt, maxBulbsPerRun: maxBulbs,
-      maxConnectedW: round(Math.min(maxBulbs * c.bulb.wattsEach, wireW), 2), endConnector: true,
+      maxConnectedW: round(Math.min(maxBulbs * topW, wireW), 2), endConnector: true,
       price: round(c.wire.price / c.wire.spoolFt + perFt * def.price / c.bulb.packQty, 2),
       colors: ALL_COLORS.slice(), clipEligible: true, enabled: true, suitableFor: LINE_TYPES.slice(),
       url: c.wire.url, priceAsOf: PRICE_AS_OF, priceStatus: 'observed', notes: spec.notes, components: c,
@@ -2508,6 +2533,9 @@ LP.define('suppliers', [], function () {
             cleWire('15098', 'C9 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
               'C9-Christmas-Lights-String-100-ft-Length-12-inch-Spacing-7-Amp-Green-Wire--15098.htm', 49.99,
               { lengthFt: 100, maxAmps: 7, plugsIncluded: 'both', notes: PLUGS_BOTH }),
+            cleWire('15106', 'C9 socket wire, 50 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
+              'C9-Christmas-Lights-String-50-ft-Length-12-inch-Spacing-5-Amp-Green-Wire--15106.htm', 27.99,
+              { lengthFt: 50, maxAmps: 7, plugsIncluded: 'both', notes: PLUGS_BOTH }),
             cleWire('15100', 'C9 socket wire, 25 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
               'C9-Christmas-Lights-String-25-ft-Length-12-inch-Spacing-Green-Wire--15100.htm', 15.99,
               { lengthFt: 25, maxAmps: 5, plugsIncluded: 'both', notes: PLUGS_BOTH }),
@@ -2532,7 +2560,8 @@ LP.define('suppliers', [], function () {
   const CLE_C7_BULK = bulkProduct({
     id: 'cle:c7-bulk-12', supplierId: 'cle', equiv: 'c7-led', category: 'c7', bulbSpacingIn: 12,
     name: 'C7 LED on socket wire, a bulb every 12 in (cut to length)',
-    notes: 'Bought as socket wire, boxes of 25 screw-in bulbs and slide-on plugs. 0.8 W per bulb as the supplier lists it. ' + RUN_RULE + ' ' + CLE_AMPS,
+    notes: 'Bought as socket wire, boxes of 25 screw-in bulbs and slide-on plugs. 0.8 W per bulb as the supplier lists it. ' + RUN_RULE + ' ' + CLE_AMPS +
+      ' (The table for the 50 ft length says 5 A.)',
     components: {
       wire: cleWire('15054', 'C7 socket wire, 1,000 ft spool, a socket every 12 in, green SPT-1 (no plugs)',
         'C7-Christmas-Lights-Spool-1000-ft-Length-12-inch-Spacing-7-Amp-Green-Wire--15054.htm', 369.99, {
@@ -2543,6 +2572,9 @@ LP.define('suppliers', [], function () {
             cleWire('15067', 'C7 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
               'C7-Christmas-Lights-String-100-ft-Length-12-inch-Spacing-5-Amp-Green-Wire--15067.htm', 44.99,
               { lengthFt: 100, maxAmps: 7, plugsIncluded: 'both', notes: PLUGS_BOTH }),
+            cleWire('15077', 'C7 socket wire, 50 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
+              'C7-Christmas-Lights-String-50-ft-Length-12-inch-Spacing-Green-Wire--15077.htm', 22.99,
+              { lengthFt: 50, maxAmps: 5, plugsIncluded: 'both', notes: PLUGS_BOTH }),
             cleWire('15071', 'C7 socket wire, 25 ft ready-made length, a socket every 12 in, green SPT-1 (plugs on both ends)',
               'C7-Christmas-Lights-String-25-ft-Length-12-inch-Spacing-Green-Wire--15071.htm', 11.99,
               { lengthFt: 25, maxAmps: 8, plugsIncluded: 'both', notes: PLUGS_BOTH }),
@@ -2564,8 +2596,10 @@ LP.define('suppliers', [], function () {
     },
   });
 
-  const SET_RULE = 'The supplier\'s page gives no limit for sets joined end to end: LightPlan plans at most 10 sets (250 ft, 250 bulbs) on one run, ' +
-    'the trade rule for this wire.';
+  const SET_RULE = 'LightPlan plans at most 10 sets (250 ft, 250 bulbs, 200 W) on one run, the trade rule for this wire, ' +
+    'whatever larger figure the supplier\'s page prints for sets joined end to end.';
+  /** These pages offer the same string in more than one size: the line says which one the part number is. */
+  const sizeNote = (item) => `The page offers more than one size: pick the 25-light, 25 ft set (item ${item}).`;
   const CLE_PRODUCTS = [
     CLE_C9_BULK,
     CLE_C7_BULK,
@@ -2574,6 +2608,7 @@ LP.define('suppliers', [], function () {
       bulbSpacingIn: 12, stringLengthFt: 25, leadFt: 0.5, bulbsPerUnit: 25, wattsPerUnit: 20, maxEndToEnd: 10, price: 49.99,
       colors: ['warmWhite'], clipEligible: true, suitableFor: LINE_TYPES.slice(),
       url: CLE + 'p/C9-Warm-White-Opticore-Commercial-LED-Christmas-String-Lights-14953.htm',
+      orderNote: sizeNote('77667'),
       notes: 'Ready-made: screw-in bulbs already in, on 18-gauge SPT-1 wire with a fused plug. 20 W per set (0.8 W per bulb). ' + SET_RULE,
     }),
     product('cle', 'c9-string-17', '84095', {
@@ -2590,6 +2625,7 @@ LP.define('suppliers', [], function () {
       bulbSpacingIn: 12, stringLengthFt: 25, leadFt: 0.5, bulbsPerUnit: 25, wattsPerUnit: 20, maxEndToEnd: 10, price: 39.99,
       colors: ['warmWhite'], clipEligible: true, suitableFor: LINE_TYPES.slice(),
       url: CLE + 'p/C7-Warm-White-Opticore-Commercial-LED-Christmas-String-Lights-14949.htm',
+      orderNote: sizeNote('77653'),
       notes: 'Ready-made: screw-in bulbs already in, on 18-gauge SPT-1 wire with a fused plug. 20 W per set (0.8 W per bulb). ' + SET_RULE,
     }),
     product('cle', 'mini-5mm-70', '83768', {
@@ -2623,7 +2659,10 @@ LP.define('suppliers', [], function () {
   const tbUrl = (id, sku) => TB + 'product/' + id + '/' + sku + '.html';
   const tbBulb = (sku, id, base, colour, price, extra) => offer('1000bulbs', sku,
     `${base} VividCore Premium LED bulbs, ${colour}, faceted, pack of 25`, tbUrl(id, sku), price, 25, extra);
-  /** Socket wire at 1000Bulbs: 18-gauge SPT-1, a socket every 12 in, green. Its 25 ft lengths are 20-gauge, so they are not offered as a size of it. */
+  /**
+   * Socket wire at 1000Bulbs: 18-gauge SPT-1, a socket every 12 in, green. Its 25 ft lengths are 20-gauge, so they
+   * are not offered as a size of it; its 50 ft lengths are 18-gauge and were seen on its category list.
+   */
   const tbWire = (sku, id, name, price, extra) => offer('1000bulbs', sku, name, tbUrl(id, sku), price, 1,
     Object.assign({ wireType: 'SPT-1', wireGauge: 18 }, extra));
   const TB_AMPS = 'This supplier\'s spool pages give no amp rating for the wire; the page for its 100 ft length of C9 socket wire, the same ' +
@@ -2647,6 +2686,9 @@ LP.define('suppliers', [], function () {
             { lengthFt: 500, plugsIncluded: false }),
           tbWire('CMS-10124', 221897, 'C9 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1, 18 gauge (male plug only)', 39.43,
             { lengthFt: 100, maxAmps: 5, plugsIncluded: 'male', notes: PLUG_MALE_ONLY }),
+          // Seen on the supplier's category list only (its own page was not opened).
+          tbWire('CMS-10319', 231931, 'C9 socket wire, 50 ft ready-made length, a socket every 12 in, green SPT-1, 18 gauge (plugs on both ends)', 26.98,
+            { lengthFt: 50, plugsIncluded: 'both', listedOnly: true, notes: PLUGS_BOTH }),
         ],
       }),
       bulb: {
@@ -2660,7 +2702,7 @@ LP.define('suppliers', [], function () {
           // No VividCore Premium blue was seen: this is the supplier's standard blue bulb, from its category list.
           blue: offer('1000bulbs', 'CMS-C9BLU', 'C9 LED bulbs, blue, faceted, pack of 25 (standard line)', tbUrl(204203, 'CMS-C9BLU'), 22.33, 25, {
             listedOnly: true, wattsEach: 0.5,
-            notes: 'A different bulb line from the other colours (standard, not VividCore Premium): 0.5 W per bulb as listed; the plan counts 0.74 W.',
+            notes: 'A different bulb line from the other colours (standard, not VividCore Premium): 0.5 W per bulb as listed; the plan counts 0.74 W, like the other colours, to stay on the safe side.',
           }),
         },
       },
@@ -2681,6 +2723,11 @@ LP.define('suppliers', [], function () {
             { lengthFt: 500, plugsIncluded: false, listedOnly: true }),
           tbWire('CMS-10323', 233211, 'C7 socket wire, 100 ft ready-made length, a socket every 12 in, green SPT-1, 18 gauge (plugs on both ends)', 57.64,
             { lengthFt: 100, plugsIncluded: 'both', listedOnly: true, notes: PLUGS_BOTH }),
+          // Two 50 ft lengths are on the category list: one with a male plug only, one with a plug on each end.
+          tbWire('CMS-10122', 221895, 'C7 socket wire, 50 ft ready-made length, a socket every 12 in, green SPT-1, 18 gauge (male plug only)', 18.85,
+            { lengthFt: 50, plugsIncluded: 'male', listedOnly: true, notes: PLUG_MALE_ONLY }),
+          tbWire('CMS-10318', 231930, 'C7 socket wire, 50 ft ready-made length, a socket every 12 in, green SPT-1, 18 gauge (plugs on both ends)', 30.44,
+            { lengthFt: 50, plugsIncluded: 'both', listedOnly: true, notes: PLUGS_BOTH }),
         ],
       }),
       bulb: {
@@ -2697,7 +2744,7 @@ LP.define('suppliers', [], function () {
           // No VividCore Premium blue was seen: this is the supplier's standard blue bulb, from its category list.
           blue: offer('1000bulbs', 'CMS-C7BLU', 'C7 LED bulbs, blue, faceted, pack of 25 (standard line)', tbUrl(204195, 'CMS-C7BLU'), 17.29, 25, {
             listedOnly: true, wattsEach: 0.54,
-            notes: 'A different bulb line from the other colours (standard, not VividCore Premium): 0.54 W per bulb as listed, a little more than the 0.48 W the plan counts.',
+            notes: 'A different bulb line from the other colours (standard, not VividCore Premium): 0.54 W per bulb as listed, a little more than the 0.48 W of the other colours, so the plan counts 0.54 W for each blue bulb.',
           }),
         },
       },
@@ -2849,6 +2896,75 @@ LP.define('suppliers', [], function () {
     for (const sid of Object.keys(SUPPLIER_ACCESSORIES)) for (const k of Object.keys(SUPPLIER_ACCESSORIES[sid])) m[SUPPLIER_ACCESSORIES[sid][k].sku] = SUPPLIER_ACCESSORIES[sid][k].price;
     return m;
   })();
+  /**
+   * Colour family of a hex colour, as bulbs are sold: warmWhite, coolWhite, red, orange, yellow, green, teal,
+   * blue, purple or pink. Pale or grey colours are a white (warm when it leans red, else cool).
+   */
+  function colourFamily(hex) {
+    let h = String(hex || '').trim().replace(/^#/, '');
+    if (/^[0-9a-f]{3,4}$/i.test(h)) h = h.slice(0, 3).split('').map((ch) => ch + ch).join('');
+    if (!/^[0-9a-f]{6}([0-9a-f]{2})?$/i.test(h)) return 'warmWhite';
+    const r = parseInt(h.slice(0, 2), 16) / 255, g = parseInt(h.slice(2, 4), 16) / 255, b = parseInt(h.slice(4, 6), 16) / 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min, l = (max + min) / 2;
+    const sat = d < 1e-9 ? 0 : d / (1 - Math.abs(2 * l - 1) + 1e-9);
+    if (sat < 0.18 || l > 0.9 || l < 0.08) return r - b > 0.04 ? 'warmWhite' : 'coolWhite';
+    let hue;
+    if (max === r) hue = ((g - b) / d) % 6; else if (max === g) hue = (b - r) / d + 2; else hue = (r - g) / d + 4;
+    hue = (hue * 60 + 360) % 360;
+    if (hue < 15 || hue >= 345) return 'red';
+    if (hue < 40) return l >= 0.68 ? 'warmWhite' : 'orange';
+    if (hue < 65) return l >= 0.8 ? 'warmWhite' : 'yellow';
+    if (hue < 165) return 'green';
+    if (hue < 190) return 'teal';
+    if (hue < 255) return 'blue';
+    if (hue < 290) return 'purple';
+    return 'pink';
+  }
+  /**
+   * The bulb colours along a run ({colorMode, colors}), one entry per position of its repeating pattern: warm
+   * white and cool white are one colour, "multicolor" is the supplier's mixed box ('multi'), and a custom
+   * pattern lists the family of each of its colours (red, green → half red, half green).
+   */
+  function bulbPattern(run) {
+    const mode = isObj(run) && typeof run.colorMode === 'string' ? run.colorMode : 'warmWhite';
+    if (mode === 'coolWhite') return ['coolWhite'];
+    if (mode === 'multicolor') return ['multi'];
+    if (mode === 'custom') {
+      const list = (Array.isArray(run.colors) ? run.colors : []).filter((c) => typeof c === 'string' && /^#[0-9a-f]{3,8}$/i.test(c)).map(colourFamily);
+      if (list.length) return list;
+    }
+    return ['warmWhite'];
+  }
+  /** Plain names of a list of hex colours, each family once, in order: "red and green". '' when there are none. */
+  function colourNames(colors) {
+    const names = [];
+    for (const c of Array.isArray(colors) ? colors : []) {
+      if (typeof c !== 'string' || !/^#[0-9a-f]{3,8}$/i.test(c)) continue;
+      const n = (VARIANT_LABELS[colourFamily(c)] || '').toLowerCase();
+      if (n && !names.includes(n)) names.push(n);
+    }
+    if (names.length <= 1) return names.join('');
+    return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+  }
+  /**
+   * Watts of the bulbs along `sockets` sockets of a bulk product in the run's colours: each colour's own
+   * wattsEach when the supplier lists one that is higher than the family figure, never less than the family
+   * figure (so the load is not under-counted when a colour is a hungrier bulb line).
+   */
+  function bulkWatts(product, run, sockets) {
+    const bulb = isObj(product) && isObj(product.components) && isObj(product.components.bulb) ? product.components.bulb : null;
+    const n = Number.isFinite(sockets) && sockets > 0 ? sockets : 0;
+    if (!bulb || !(bulb.wattsEach >= 0)) return null;
+    const pattern = bulbPattern(run);
+    let watts = 0;
+    pattern.forEach((family, i) => {
+      const count = Math.floor(n / pattern.length) + (i < n % pattern.length ? 1 : 0);
+      const v = isObj(bulb.variants) && isObj(bulb.variants[family]) ? bulb.variants[family].wattsEach : null;
+      watts += count * Math.max(bulb.wattsEach, Number.isFinite(v) && v > 0 ? v : 0);
+    });
+    return watts;
+  }
+
   /** The price this catalog holds for a sku, or null when the sku is not from this catalog. */
   function catalogPrice(sku) {
     return Object.prototype.hasOwnProperty.call(CATALOG_PRICES, sku) ? CATALOG_PRICES[sku] : null;
@@ -2907,7 +3023,7 @@ LP.define('suppliers', [], function () {
   return {
     SUPPLIERS, SUPPLIER_PRODUCTS, SUPPLIER_ACCESSORIES, GENERIC_ID, ROLES, PRICE_STATUSES, PRICE_AS_OF, VARIANT_ORDER, VARIANT_LABELS,
     getSupplier, knownSupplierId, supplierSearchUrl, findUrl, safeUrl, productsOf, accessoryOffer, componentOffers, catalogPrice,
-    bulkProduct, allLinks, linkHosts, formatDate,
+    bulkProduct, allLinks, linkHosts, formatDate, colourFamily, bulbPattern, colourNames, bulkWatts,
   };
 });
 
@@ -3456,6 +3572,23 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     const n = refs.filter(coarse).length;
     if (n) parts.push(n > 1 ? 'refs' : 'ref');
     return { sigma, what: parts.join('+') };
+  }
+
+  /**
+   * Was the precision of every calibration tap of this plane recorded (a valid tapErr beside its rectangle, each
+   * reference and its eave or base line)? Only then does "2.5 px" mean "tapped zoomed in" and not "unknown".
+   */
+  function planeTapsRecorded(plane) {
+    if (!isObj(plane)) return false;
+    let lists = 0;
+    if (isObj(plane.rect)) { if (!(tapErrMax(plane.rect.tapErr, plane.rect.corners) > 0)) return false; lists += 1; }
+    for (const r of arr(plane.refs)) {
+      if (!isObj(r)) continue;
+      if (!(tapErrMax(r.tapErr, r.points) > 0)) return false;
+      lists += 1;
+    }
+    if (isObj(plane.derived) && Array.isArray(plane.derived.line)) { if (!(tapErrMax(plane.derived.tapErr, plane.derived.line) > 0)) return false; lists += 1; }
+    return lists > 0;
   }
 
   /** Tap precision (1σ, px) of a plane's calibration taps (SPEC §8.4). */
@@ -4606,6 +4739,10 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       uncertaintyBasePct: tapDetail.basePct,
       tapPx: tapDetail.tapPx,
       tapWhat: tapDetail.tapWhat,
+      // The item's own points, when they were tapped zoomed out; and whether every tap behind this number is
+      // known to have been placed zoomed in (then "zoom in" is no advice).
+      ownTapPx: featureTapSigma(f),
+      tapsFine: !!(sol && sol.tapsRecorded) && tapErrMax(f.tapErr, f.points) > 0 && !(tapDetail.tapPx > SIGMA_TAP_PX),
       extraReasons,
       thresholds,
     });
@@ -4638,8 +4775,11 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
    *           viewAngleDeg, focalSource, focalRelStd, focalMismatchPct, poseConsistencyPct, poseTolerancePct,
    *           pitchSource, pitchOnEave, pitchSpread, rectProblem, refsBothDirections, anisotropic, scaleFrom,
    *           offPlane (type id or bool), offPlaneBiasPct, assumedDiameterIn, extrapolation, pixelLength,
-   *           uncertaintyPct, uncertaintyBasePct, tapPx, tapWhat, extraReasons, thresholds: {highMin, mediumMin},
-   *           reason}
+   *           uncertaintyPct, uncertaintyBasePct, tapPx, tapWhat, ownTapPx, tapsFine, extraReasons,
+   *           thresholds: {highMin, mediumMin}, reason}
+   * ownTapPx: precision of the item's own points; when they were tapped zoomed out and that is not already the
+   * reason given, a "Tapped zoomed out ... re-tap the points of this item too" reason is added. tapsFine: every tap
+   * behind the number is known to have been placed zoomed in, so the advice is "use a larger rectangle" only.
    * Coarse taps (SPEC §8.4): when taps placed zoomed out (tapPx above 2.5 px) are what pushes the expected error
    * over a level limit, or are the larger part of it, the reason names them ("Tapped zoomed out (about ±N px on the
    * photo): zoom in and re-tap …") instead of the surface-specific advice. The level follows uncertaintyPct either way.
@@ -4705,7 +4845,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     }
     const usesLens = mode === 'rect-refs' || threeD;
     if (fx.focalSource === 'default' && usesLens) {
-      take(10, 'The camera focal length is assumed (phone main camera). Choose the camera that took the photo.');
+      take(10, 'How wide the camera sees (its focal length) is assumed: a phone main camera. Choose the camera that took the photo.');
       if (threeD) cap('low', 'Roof and ground lengths need the real focal length, and it is only assumed here. Choose the camera that took the photo.');
       else if (!fx.anisotropic) cap('medium', 'The wall\'s proportions come from an assumed focal length. Add a horizontal and a vertical reference, or choose the camera that took the photo.');
     }
@@ -4765,14 +4905,21 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
         ? 'from street level the ground is seen almost edge-on. Add a tape-measured reference on this ground surface, or take the photo from closer or higher.'
         : (mode === 'roof-3d' || mode === 'roof-ortho')
           ? 'roof lengths depend on the camera angle worked out from the wall. Type a tape-measured length if you can, or rely on the 10% waste.'
-          : 'zoom in or use a larger rectangle.';
+          : fx.tapsFine === true ? 'use a larger rectangle (the points were already tapped zoomed in, so zooming in further will not help).'
+            : 'zoom in or use a larger rectangle.';
       const about = 'Expected error about ±' + (u < 10 ? u.toFixed(1) : Math.round(u)) + '%';
       // Coarse taps on a small rectangle can give an expected error of several hundred percent; past ±50% the
       // number says nothing a person can use, so it is put in words.
       const asTapped = u > 50 ? 'As tapped, this measurement could be off by more than half.' : about + ' as tapped.';
-      const why = zoomWhy ? zoomWhy + ' ' + asTapped : about + ' from tap precision; ' + fix;
+      const why = zoomWhy ? zoomWhy + ' ' + asTapped : about + ' from how exactly the points could be tapped; ' + fix;
       if (u > U_MEDIUM_PCT) cap('low', why);
       else if (u > U_HIGH_PCT) cap('medium', why);
+    }
+    // The item's own points were tapped zoomed out, but something else is the larger part of the error: still say
+    // so, because re-tapping them zoomed in is the quickest thing the user can do.
+    const named = zoomWhy && typeof fx.tapWhat === 'string' && fx.tapWhat.split('+').includes('item');
+    if (!named && isNum(fx.ownTapPx) && fx.ownTapPx > SIGMA_TAP_PX && (u === Infinity || (isNum(u) && capOf(u)))) {
+      reasons.push('Tapped zoomed out (about ±' + Math.round(fx.ownTapPx) + ' px on the photo): zoom in and re-tap ' + TAP_WHAT.item + ' too.');
     }
     for (const r of arr(fx.extraReasons)) reasons.push(r);
     score = g.clamp(Math.round(score), 0, 100);
@@ -4789,7 +4936,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     score = Math.max(0, score);
     const all = limiting.concat(reasons.filter((r) => limiting.indexOf(r) < 0));
     if (!all.length) all.push('Measured on a known-size rectangle and cross-checked.');
-    if (isNum(u) && u <= U_HIGH_PCT && level === 'high') all.push('Expected error about ±' + u.toFixed(1) + '% from tap precision.');
+    if (isNum(u) && u <= U_HIGH_PCT && level === 'high') all.push('Expected error about ±' + u.toFixed(1) + '% from how exactly the points could be tapped.');
     return { level, score, reasons: all };
   }
 
@@ -4819,6 +4966,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     const td = isObj(tapDetail) ? tapDetail : {};
     return scoreConfidence({
       uncertaintyPct, uncertaintyBasePct: td.basePct, tapPx: td.tapPx, tapWhat: td.tapWhat,
+      tapsFine: sol.tapsRecorded === true && !(td.tapPx > SIGMA_TAP_PX),
       mode: sol.mode, kind: sol.kind, checks: sol.checks, disagreementPct: sol.disagreementPct, disagreementZ: sol.disagreementZ,
       onlyMediumLowRefs: !!(sol.calib && sol.calib.onlyMediumLowRefs), minCourses: sol.calib ? sol.calib.minCourses : null,
       viewAngleDeg: sol.viewAngleDeg, focalSource: sol.K ? sol.K.source : null, focalRelStd: sol.K ? sol.K.relStd : null,
@@ -4898,8 +5046,14 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     if (needed.size) {
       try { perturb = perturbedSolutions(proj, cfg, cameras, solvedAll, needed); } catch (e) { perturb = {}; }
     }
+    const planeObj = {};
+    for (const pl of arr(proj.planes)) if (isObj(pl) && pl.id != null) planeObj[pl.id] = pl;
     for (const pid of Object.keys(solved.planes)) {
       const sol = solved.planes[pid];
+      // Every tap behind this surface has a recorded precision: its own, and its parent wall's for a roof or ground.
+      const own = planeObj[pid];
+      const parentId = own && isObj(own.derived) ? own.derived.parentPlaneId : null;
+      sol.tapsRecorded = planeTapsRecorded(own) && (parentId == null || planeTapsRecorded(planeObj[parentId]));
       let u = null;
       const tapDetail = {};
       if (sol.ok && sol.mode !== 'roof-ortho') {
@@ -5037,12 +5191,14 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
  *    never picked for someone who does not cut wire). No match keeps the generic product. resolveProduct then
  *    returns source 'supplier'. The stand-in search (fallbackProduct) only looks at generic products and the
  *    chosen supplier's, so another supplier's catalog never leaks into a plan; a product picked on the run
- *    itself may be from any supplier.
+ *    itself may be from any supplier. A supplier item that is not sold in the run's colour (its `colors` list)
+ *    is never picked automatically: the any-store product stays, so no part number of another colour is ordered.
  *  - Bulk products (unit 'foot', kind 'bulk') get one clip per socket (their own bulbSpacingIn, not
- *    config.clipSpacingIn) and the detail says how many sockets that is. Runs of supplier products carry
+ *    config.clipSpacingIn) and the detail says how many sockets that is. Their watts follow the run's colours
+ *    (suppliers.bulkWatts): a colour the supplier sells as a hungrier bulb line counts at its own watts. Runs of supplier products carry
  *    `supplierId`, and `productKind: 'bulk'` when cut to length.
  */
-LP.define('design', ['catalog'], function (catalog) {
+LP.define('design', ['catalog', 'suppliers'], function (catalog, suppliers) {
   'use strict';
 
   const { FEATURE_TYPES, LINEAR_TYPES } = catalog;
@@ -5112,14 +5268,21 @@ LP.define('design', ['catalog'], function (catalog) {
     const sup = preferredSupplier(lib);
     return lib.products.filter((p) => isObj(p) && (!catalog.isSupplierProduct(p) || p.supplierId === sup));
   }
+  /** Is the product sold in this colour mode? A product with no colour list, or no mode asked for, always is. */
+  function soldIn(p, colorMode) {
+    if (!colorMode || !Array.isArray(p.colors) || !p.colors.length) return true;
+    return p.colors.includes(colorMode);
+  }
   /**
    * The chosen supplier's usable product that fills the role of generic product `equivId`, or null.
    * Buying style 'bulk': the cut-to-length product first, else a ready-made one. 'strings': ready-made only.
+   * `colorMode` (the run's colour): a supplier item that is not sold in it is never picked, so the any-store
+   * product stays and no part number of another colour reaches the order sheet.
    */
-  function supplierEquivalent(equivId, lib) {
+  function supplierEquivalent(equivId, lib, colorMode) {
     const sup = preferredSupplier(lib);
     if (!sup || !equivId) return null;
-    const list = lib.products.filter((p) => isObj(p) && p.supplierId === sup && p.equiv === equivId && isUsable(p));
+    const list = lib.products.filter((p) => isObj(p) && p.supplierId === sup && p.equiv === equivId && isUsable(p) && soldIn(p, colorMode));
     const strings = list.filter((p) => !isBulk(p));
     const style = lib.config && lib.config.buying && lib.config.buying.style === 'strings' ? 'strings' : 'bulk';
     if (style === 'strings') return strings[0] || null;
@@ -5162,10 +5325,12 @@ LP.define('design', ['catalog'], function (catalog) {
    * (fallbackProduct: LED first, then the same category or unit as the default). A product the user picked
    * explicitly does not have to be "suitable" (nets on a roofline are allowed), it only has to exist and be
    * enabled. Whenever the type default is unavailable and another product stands in, a warning says which.
-   * Returns {product|null, source, warnings}.
+   * opts.colorMode (the run's colour mode) keeps the automatic choice away from supplier items that are not
+   * sold in that colour. Returns {product|null, source, warnings}.
    */
-  function resolveProduct(feature, library) {
+  function resolveProduct(feature, library, opts) {
     const lib = library && Array.isArray(library.products) ? library : catalog.getLibrary(null);
+    const colorMode = opts && typeof opts.colorMode === 'string' && opts.colorMode ? opts.colorMode : null;
     const type = feature && feature.type;
     const label = (feature && feature.label) || (FEATURE_TYPES[type] && FEATURE_TYPES[type].label) || 'This feature';
     const warnings = [];
@@ -5184,7 +5349,7 @@ LP.define('design', ['catalog'], function (catalog) {
     const defProduct = defId ? catalog.getProduct(lib.products, defId) : null;
     // Buying from a supplier: its product for the same job replaces the generic default (SPEC §8.3).
     if (defId && !catalog.isSupplierProduct(defProduct)) {
-      const own = supplierEquivalent(defId, lib);
+      const own = supplierEquivalent(defId, lib, colorMode);
       if (own) return { product: own, source: 'supplier', warnings };
     }
     if (isUsable(defProduct)) return { product: defProduct, source: 'typeDefault', warnings };
@@ -5192,7 +5357,7 @@ LP.define('design', ['catalog'], function (catalog) {
     const ref = defProduct || (defId && catalog.getProduct(catalog.DEFAULT_PRODUCTS, defId)) || wantedProduct ||
       (FEATURE_TYPES[type] && catalog.getProduct(catalog.DEFAULT_PRODUCTS, FEATURE_TYPES[type].defaultProduct)) || null;
     const generic = fallbackProduct(type, lib, ref);
-    const fallback = generic && !catalog.isSupplierProduct(generic) ? (supplierEquivalent(generic.id, lib) || generic) : generic;
+    const fallback = generic && !catalog.isSupplierProduct(generic) ? (supplierEquivalent(generic.id, lib, colorMode) || generic) : generic;
     if (fallback) {
       const what = PLURAL[type] || 'this feature';
       const name = fallback.name || fallback.id;
@@ -5391,8 +5556,8 @@ LP.define('design', ['catalog'], function (catalog) {
       const ftype = FEATURE_TYPES[feature.type];
       const label = (typeof feature.label === 'string' && feature.label.trim()) ? feature.label.trim() : ftype.label;
       const feat = Object.assign({}, feature, { label });
-      const { product, warnings } = resolveProduct(feat, lib);
       const colors = catalog.resolveColors(feature.color, settings);
+      const { product, warnings } = resolveProduct(feat, lib, { colorMode: colors.mode });
       const run = {
         id: 'run_' + feature.id, featureId: feature.id, featureType: feature.type, label,
         planeId: feature.planeId || null, imageId: feature.imageId || null,
@@ -5411,8 +5576,8 @@ LP.define('design', ['catalog'], function (catalog) {
         run.warnings.push(`${run.productName} has no valid price in the product library${shown}, so the shopping list prices it at $0. Fix it in the product library.`);
       }
       if (product && Array.isArray(product.colors) && product.colors.length && !product.colors.includes(colors.mode)) {
-        const modeLabel = (catalog.COLOR_MODES[colors.mode] && catalog.COLOR_MODES[colors.mode].label) || colors.mode;
-        run.warnings.push(`${label}: ${run.productName} is not sold in ${modeLabel.toLowerCase()}. Pick another color or product.`);
+        const modeLabel = colors.mode === 'custom' ? 'custom colors' : ((catalog.COLOR_MODES[colors.mode] && catalog.COLOR_MODES[colors.mode].label) || colors.mode).toLowerCase();
+        run.warnings.push(`${label}: ${run.productName} is not sold in ${modeLabel}. Pick another color or product.`);
       }
 
       const fm = fms[feature.id];
@@ -5444,6 +5609,12 @@ LP.define('design', ['catalog'], function (catalog) {
       if (isBulk(product) && q.method === 'per-foot' && quantity > 0 && pos(product.bulbSpacingIn)) {
         const sockets = Math.ceil((quantity * 12) / product.bulbSpacingIn - 1e-9);
         run.bulbs = sockets;
+        // Watts by the bulbs in this run's colours: a colour sold as a hungrier bulb line counts at its own figure.
+        const byColour = suppliers.bulkWatts(product, { colorMode: colors.mode, colors: colors.colors }, sockets);
+        if (byColour !== null && byColour > run.watts + 1e-9) {
+          run.watts = round(byColour, 2);
+          run.amps = round(run.watts / voltage, 4);
+        }
         run.detail += ` of socket wire = ${num(sockets, 0)} ${sockets === 1 ? 'socket' : 'sockets'} (one every ${short(product.bulbSpacingIn)} in), one bulb each`;
       }
       run.warnings.push(...q.warnings);
@@ -5537,7 +5708,9 @@ LP.define('design', ['catalog'], function (catalog) {
  *  - Crossings are tested on the real route: crossesDoorway when the ground piece passes a traced door's
  *    span within 3 ft of that wall (feed.doorway = the door's label), crossesWalkway when it passes where a
  *    walkway meets the wall, crosses a walkway line on the photo, or joins two different walkway edges. Each
- *    such feed gets a cord cover. A feed's own door or walkway never counts.
+ *    such feed gets a cord cover. A feed's own door or walkway never counts. Two walkway edges that meet a wall
+ *    within 12 ft of each other are the two sides of one walkway: a cord along that wall crosses it only when
+ *    it lies across more than 1.5 ft of its width (stopping at a door jamb just inside the edge does not).
  *  - Strings along measured lengths. For string products laid along a run's length, only the strings that
  *    cover the true length are hung and loaded (feeds, circuit loads, totals); the rest of what is bought
  *    (waste rounding) are spares (chain.spares). Consecutive runs in a chain with the same string and colors
@@ -5570,7 +5743,7 @@ LP.define('design', ['catalog'], function (catalog) {
  *    'continuous-factor' warning.
  *  - Extra exports: limitW, continuousFactorOf, voltageDropPct, chooseCordGauge, cordPieces, sizeCord, DISCLAIMER.
  */
-LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
+LP.define('power', ['geometry', 'catalog', 'suppliers'], function (geometry, catalog, suppliers) {
   'use strict';
 
   const { FEATURE_TYPES } = catalog;
@@ -5581,6 +5754,8 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
   const DEFAULT_TIMER_TUNGSTEN_W = 1250; // typical outdoor timer rating for incandescent (tungsten) loads
   const MANY_CORDS = 6;               // more cords than this at one outlet gets a 'many-cords' warning
   const WALKWAY_NEAR_WALL_FT = 3;     // a walkway edge within this distance of the wall base meets the wall
+  const WALKWAY_MAX_WIDTH_FT = 12;    // two walkway edges that meet a wall this close together are one walkway
+  const WALKWAY_EDGE_FT = 1.5;        // a cord along the wall that lies across less of a walkway than this does not cross it
   const SPAN_TOL_FT = 0.25;           // spans that only touch at their ends do not cross
   const SPLIT_GAIN = 0.9;             // feeding a chain from the middle must save at least 10% of the cord
   const NEAR_GROUND_FT = 1;           // a plug this close to the ground needs no riser
@@ -5910,6 +6085,14 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     if (!clip(-dx, a[0] - x0) || !clip(dx, x1 - a[0]) || !clip(-dy, a[1] - y0) || !clip(dy, y1 - a[1])) return false;
     return (t1 - t0) * Math.hypot(dx, dy) > 1e-6;
   }
+  /** Does the image segment a→b cross the traced line of feature f (its closing side included when it is closed)? */
+  function lineCrosses(a, b, f) {
+    if (!isPt(a) || !isPt(b)) return false;
+    const pts = (Array.isArray(f.points) ? f.points : []).filter(isPt);
+    const n = f.closed && pts.length > 2 ? pts.length : pts.length - 1;
+    for (let i = 0; i < n; i++) if (geometry.segmentsIntersect(a, b, pts[i], pts[(i + 1) % pts.length])) return true;
+    return false;
+  }
   /** "1.5", "18", "0.5": feet to the nearest half foot, for route descriptions. */
   function fmtHalf(v) { return String(Math.max(0.5, Math.round(v * 2) / 2)); }
 
@@ -6014,11 +6197,15 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       return info;
     }
 
-    /** The opening a riser at u between heights va and vb would pass through (within the margin beside it), or null. */
-    function riserBlock(w, u, va, vb) {
+    /**
+     * The opening a riser at u between heights va and vb would pass through (within the margin beside it), or
+     * null. `m` (default: the opening margin) is how far beside an opening still counts; 0 tests the opening itself.
+     */
+    function riserBlock(w, u, va, vb, m) {
       const lo = Math.min(va, vb), hi = Math.max(va, vb);
+      const pad = m === undefined ? margin : m;
       for (const b of w.openings) {
-        if (u <= b.u0 - margin + 1e-9 || u >= b.u1 + margin - 1e-9) continue;
+        if (u <= b.u0 - pad + 1e-9 || u >= b.u1 + pad - 1e-9) continue;
         if (Math.min(hi, b.v1) - Math.max(lo, b.v0) > ROUTE_TOL_FT) return b;
       }
       return null;
@@ -6031,9 +6218,9 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       return null;
     }
 
-    function locate(point, planeId) {
+    function locate(point, planeId, fixed) {
       if (!isPt(point)) return null;
-      const key = point[0] + ',' + point[1] + '|' + (planeId || '');
+      const key = point[0] + ',' + point[1] + '|' + (planeId || '') + (fixed ? '|fixed' : '');
       if (locs.has(key)) return locs.get(key);
       const img = [point[0], point[1]];
       const s = space.sol(planeId);
@@ -6044,7 +6231,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         const parentId = s.parentPlaneId || (plane && isObj(plane.derived) ? plane.derived.parentPlaneId : null);
         if (s.kind === 'wall') {
           const w = wallInfo(planeId);
-          if (w) loc = { kind: 'wall', img, planeId, w, u: uv[0], v: uv[1] };
+          if (w) loc = { kind: 'wall', img, planeId, w, u: uv[0], v: uv[1], fixed: fixed === true };
         } else if (s.kind === 'roof') {
           loc = roofLoc(img, planeId, s, uv, plane, parentId) || loc;
         } else if (s.kind === 'ground') {
@@ -6086,9 +6273,13 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
      * Ways down the wall from (u, v) to the ground: [{segs, foot}] with segs ordered from the point down.
      * Within a foot of the ground no riser is needed. Otherwise the riser stands at the point's own u when
      * that passes no opening; if it would, it stands at the nearest clear u on each side (half a foot beside
-     * the opening) with a level hop at the point's height.
+     * the opening, or in the middle of a narrow gap between two openings) with a level hop at the point's
+     * height. When every level hop would cross an opening (a row of windows that touch), the cord goes up
+     * beside the row to above the openings in the way, across there, and down to the point.
+     * `fixed` (an outlet: it is where it is) drops straight down unless the opening itself is under it; the
+     * margin only applies to risers that are being placed.
      */
-    function wallDescents(w, u, v, img) {
+    function wallDescents(w, u, v, img, fixed) {
       const g = w.groundV, h = Math.abs(v - g);
       const at = (uu, vv, fallback) => { const q = space.toImage(w.s, [uu, vv]); return finite(q) ? q : fallback; };
       const make = (ur, beside) => {
@@ -6100,19 +6291,60 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         if (h > 0.01) segs.push({ kind: 'vert', lengthFt: h, planeId: w.id, from: top, to: foot, beside: beside || null });
         return { segs, foot: { img: foot, planeId: w.id, wallId: w.id, u: ur } };
       };
-      if (h <= NEAR_GROUND_FT + 1e-9 || v < g || !riserBlock(w, u, g, v)) return [make(u, null)];
-      let left = null, right = null;
-      for (const needHop of [true, false]) {
-        for (const b of w.openings) {
-          for (const e of [b.u0 - margin, b.u1 + margin]) {
-            if (riserBlock(w, e, g, v) || (needHop && wallBlock(w, [e, v], [u, v]))) continue;
-            if (e < u && (!left || e > left.e)) left = { e, b };
-            if (e > u && (!right || e < right.e)) right = { e, b };
-          }
+      if (h <= NEAR_GROUND_FT + 1e-9 || v < g || !riserBlock(w, u, g, v, fixed ? 0 : undefined)) return [make(u, null)];
+      // Where a riser may stand: half a foot beside each opening, and the middle of a gap between two openings
+      // that is too narrow for that (the cord runs up the trim between two windows).
+      const spots = [];
+      for (const b of w.openings) {
+        for (const e of [b.u0 - margin, b.u1 + margin]) spots.push({ e, b, pad: undefined });
+        for (const c of w.openings) {
+          const gap = c.u0 - b.u1;
+          if (c !== b && gap > 2 * ROUTE_TOL_FT && gap < 2 * margin - 1e-9) spots.push({ e: b.u1 + gap / 2, b, pad: 0 });
         }
-        if (left || right) break;
+      }
+      let left = null, right = null;
+      for (const sp of spots) {
+        if (riserBlock(w, sp.e, g, v, sp.pad) || wallBlock(w, [sp.e, v], [u, v])) continue;
+        if (sp.e < u && (!left || sp.e > left.e)) left = sp;
+        if (sp.e > u && (!right || sp.e < right.e)) right = sp;
       }
       const out = [];
+      if (left) out.push(make(left.e, left.b.label));
+      if (right) out.push(make(right.e, right.b.label));
+      if (out.length) return out;
+      // No level hop is clear: up beside the row to above what is in the way, across there, and down to the point.
+      const over = (sp) => {
+        let top = v;
+        for (let guard = 0; guard <= w.openings.length; guard++) {
+          const hit = wallBlock(w, [sp.e, top], [u, top]);
+          if (!hit) break;
+          top = hit.v1 + margin;
+        }
+        if (!(top > v + 1e-9) || wallBlock(w, [sp.e, top], [u, top]) || riserBlock(w, sp.e, g, top, sp.pad) || wallBlock(w, [u, top], [u, v])) return null;
+        const corner = at(u, top, img), head = at(sp.e, top, corner), foot = at(sp.e, g, head);
+        return {
+          segs: [
+            { kind: 'vert', back: true, lengthFt: top - v, planeId: w.id, from: img, to: corner },
+            { kind: 'hop', lengthFt: Math.abs(sp.e - u), planeId: w.id, from: corner, to: head },
+            { kind: 'vert', lengthFt: Math.abs(top - g), planeId: w.id, from: head, to: foot, beside: sp.b.label },
+          ],
+          foot: { img: foot, planeId: w.id, wallId: w.id, u: sp.e },
+        };
+      };
+      let overL = null, overR = null;
+      for (const sp of spots) {
+        if (sp.e < u && (!overL || sp.e > overL.e)) { const r = over(sp); if (r) overL = { e: sp.e, r }; }
+        if (sp.e > u && (!overR || sp.e < overR.e)) { const r = over(sp); if (r) overR = { e: sp.e, r }; }
+      }
+      if (overL) out.push(overL.r);
+      if (overR) out.push(overR.r);
+      if (out.length) return out;
+      // Last resort (openings that overlap in a way no route clears): the nearest clear riser, or the point's own u.
+      for (const sp of spots) {
+        if (riserBlock(w, sp.e, g, v, sp.pad)) continue;
+        if (sp.e < u && (!left || sp.e > left.e)) left = sp;
+        if (sp.e > u && (!right || sp.e < right.e)) right = sp;
+      }
       if (left) out.push(make(left.e, left.b.label));
       if (right) out.push(make(right.e, right.b.label));
       return out.length ? out : [make(u, null)];
@@ -6120,7 +6352,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     function descents(loc) {
       if (loc.desc) return loc.desc;
       let out;
-      if (loc.kind === 'wall') out = wallDescents(loc.w, loc.u, loc.v, loc.img);
+      if (loc.kind === 'wall') out = wallDescents(loc.w, loc.u, loc.v, loc.img, loc.fixed === true);
       else if (loc.kind === 'roof') {
         const pre = [];
         if (loc.roof.slope > ROUTE_TOL_FT) pre.push({ kind: 'roof', part: 'slope', lengthFt: loc.roof.slope, planeId: loc.planeId, from: loc.img, to: loc.roof.corner });
@@ -6182,13 +6414,28 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
           if (d) res.door = d.label;
         }
         if (!res.walkway) {
-          res.walkway = opt.walkways.some((wf) => {
-            if (own.has(wf.id) || (wf.imageId && imageId && wf.imageId !== imageId)) return false;
+          // Where walkway edges meet this wall. Two edges that meet it within WALKWAY_MAX_WIDTH_FT of each other are
+          // the two sides of one walkway: the cord crosses it when it lies across more than WALKWAY_EDGE_FT of its
+          // width (a cord that stops at the door jamb a foot inside the edge is not in anyone's way). An edge with
+          // no partner counts as before: the cord passes the spot where it meets the wall.
+          const met = [];
+          for (const wf of opt.walkways) {
+            if (own.has(wf.id) || (wf.imageId && imageId && wf.imageId !== imageId)) continue;
             const k = id + '|' + wf.id;
             if (!spans.has(k)) spans.set(k, space.walkwaySpanAtWall(id, wf, WALKWAY_NEAR_WALL_FT));
-            const span = spans.get(k);
-            return !!span && overlaps(lo, hi, span[0], span[1]);
-          });
+            if (spans.get(k)) met.push(spans.get(k));
+            // A walkway that cannot be placed against this wall (its ground is not calibrated) is judged on the photo.
+            else if (lineCrosses(fa.img, fb.img, wf)) res.walkway = true;
+          }
+          met.sort((a, b) => a[0] - b[0]);
+          for (let i = 0; i < met.length && !res.walkway; i++) {
+            const next = met[i + 1];
+            if (next && next[0] - met[i][1] <= WALKWAY_MAX_WIDTH_FT) {
+              const across = Math.min(hi, next[1]) - Math.max(lo, met[i][0]);
+              res.walkway = across > WALKWAY_EDGE_FT;
+              i += 1;
+            } else res.walkway = overlaps(lo, hi, met[i][0], met[i][1]);
+          }
         }
       }
       return res;
@@ -6217,14 +6464,15 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       }
       if (!best) return null;
       const segs = [];
-      for (const s of best.da.segs) segs.push(Object.assign({}, s, s.kind === 'vert' ? { kind: 'drop' } : { dir: 'down' }));
+      // A 'vert' piece runs from the point toward the ground; one marked `back` runs the other way first (over the top of a row of openings).
+      for (const s of best.da.segs) segs.push(Object.assign({}, s, s.kind === 'vert' ? { kind: s.back ? 'rise' : 'drop' } : { dir: 'down' }));
       if (best.gs.lengthFt > 0.01) {
         segs.push({ kind: 'ground', lengthFt: best.gs.lengthFt, planeId: best.gs.planeId, from: best.da.foot.img, to: best.db.foot.img,
           past: best.cr.door, photo: !!(best.da.foot.none || best.db.foot.none) });
       }
       for (let i = best.db.segs.length - 1; i >= 0; i--) {
         const s = best.db.segs[i];
-        segs.push(Object.assign({}, s, { from: s.to, to: s.from }, s.kind === 'vert' ? { kind: 'rise' } : { dir: 'up' }));
+        segs.push(Object.assign({}, s, { from: s.to, to: s.from }, s.kind === 'vert' ? { kind: s.back ? 'drop' : 'rise' } : { dir: 'up' }));
       }
       return finish(A, B, segs, { door: best.cr.door, walkway: best.cr.walkway, score: best.score });
     }
@@ -6364,13 +6612,15 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       }
       const product = catalog.getProduct(lib.products, run.productId);
       // Strings laid along a measured length: only the strings that cover the length are hung (and loaded);
-      // the rest of what is bought (waste rounding) are spares. Other products (bush counts, nets, path sets,
-      // per-foot track) hang every unit.
+      // the rest of what is bought (waste rounding) are spares. Cut-to-length socket wire (kind 'bulk') is the
+      // same by the foot: the true length is cut, hung and lit, and the waste allowance stays on the spool.
+      // Other products (bush counts, nets, path sets, per-foot track) hang every unit.
       const len = pos(product && product.stringLengthFt);
       const L = Number.isFinite(run.lengthFt) ? run.lengthFt : 0;
       const LW = Number.isFinite(run.withWasteFt) ? run.withWasteFt : L;
-      const lengthBased = run.unit === 'string' && !!len && L > 0 && LW >= L - 1e-9 &&
-        (run.method === 'linear' || run.method === 'spiral') && Math.ceil(LW / len - 1e-9) === run.quantity;
+      const cutWire = !!product && product.kind === 'bulk' && run.unit === 'foot' && run.method === 'per-foot';
+      const lengthBased = !!len && L > 0 && LW >= L - 1e-9 && Math.ceil(LW / len - 1e-9) === run.quantity &&
+        (cutWire || (run.unit === 'string' && (run.method === 'linear' || run.method === 'spiral')));
       items.push({
         idx, run, feature, shape, product,
         planeId: feature.planeId || run.planeId || null,
@@ -6381,6 +6631,8 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         wattsPerUnit: Math.max(0, Number.isFinite(run.watts) ? run.watts : 0) / run.quantity,
         incandescent: (run.tech || (product && product.tech)) === 'incandescent',
         len: lengthBased ? len : null, L, LW,
+        // Cut wire is counted run by run (each run buys its own whole feet), not pooled along the chain like strings.
+        solo: lengthBased && cutWire,
       });
     }
 
@@ -6478,9 +6730,10 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     function poolEnd(out, i) {
       const a = items[out[i].k];
       let j = i + 1;
+      if (a.solo) return j;
       while (j < out.length) {
         const b = items[out[j].k];
-        if (!b.len || b.len !== a.len || colorKey(b.run) !== colorKey(a.run)) break;
+        if (!b.len || b.solo || b.len !== a.len || colorKey(b.run) !== colorKey(a.run)) break;
         j += 1;
       }
       return j;
@@ -6534,7 +6787,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         for (const ps of pl) {
           const it = items[ps.k];
           if (!it.len) continue;
-          const key = it.len + '|' + colorKey(it.run);
+          const key = it.solo ? 'run|' + ps.k : it.len + '|' + colorKey(it.run);
           const g = groups.get(key) || { len: it.len, hung: 0, withWaste: 0, steps: [] };
           const Lp = Math.max(0, ps.to - ps.from);
           g.hung += ps.hung;
@@ -6664,13 +6917,21 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       if (path.length < 2) return false;
       return walkways.some((w) => {
         if (own.has(w.id) || (w.imageId && imageId && w.imageId !== imageId)) return false;
-        const wp = w.points.filter(isPt);
-        const n = w.closed && wp.length > 2 ? wp.length : wp.length - 1;
-        for (let i = 0; i < n; i++) {
-          const a = wp[i], b = wp[(i + 1) % wp.length];
-          for (let j = 1; j < path.length; j++) if (geometry.segmentsIntersect(path[j - 1], path[j], a, b)) return true;
-        }
+        for (let j = 1; j < path.length; j++) if (lineCrosses(path[j - 1], path[j], w)) return true;
         return false;
+      });
+    }
+    /**
+     * Does a routed cord cross a walkway line on the photo? Only the pieces that lie on the ground away from a
+     * wall are tested (and straight hops): a piece along the base of one wall is judged by where walkways meet
+     * that wall (groundCrossings), and a piece up the wall cannot cross a walkway at all.
+     */
+    function routeCrossesWalkway(r, own, imageId) {
+      if (!r.segs.length) return pathCrossesWalkway(r.path, own, imageId);
+      return r.segs.some((sg) => {
+        const onWall = sg.planeId && space.sol(sg.planeId) && space.sol(sg.planeId).kind === 'wall';
+        if (sg.kind !== 'direct' && !(sg.kind === 'ground' && !onWall)) return false;
+        return isPt(sg.from) && isPt(sg.to) && pathCrossesWalkway([sg.from, sg.to], own, imageId);
       });
     }
     /** A cord from outlet o to the start of `feed`: {kind:'home', outlet, route, lengthFt|null, cost, door, walkway}. */
@@ -6679,11 +6940,12 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       // Pixels on two different photos are not comparable: no distance and nothing to draw.
       const samePhoto = !(o.imageId && feed.start.imageId && o.imageId !== feed.start.imageId);
       if (isPt(o.point) && samePhoto) {
-        const A = router.locate(o.point, o.planeId), B = router.locate(feed.start.point, feed.start.planeId);
+        // The outlet is where it is: its cord drops straight down, even half a foot from a door frame.
+        const A = router.locate(o.point, o.planeId, true), B = router.locate(feed.start.point, feed.start.planeId);
         if (A && B) r = router.home(A, B, feed.featureIds, feed.start.imageId);
       }
       const lengthFt = r.ft === null ? null : r.ft * routingFactor + slackFt;
-      const walkway = lengthFt !== null && (r.walkway || pathCrossesWalkway(r.path, feed.featureIds, feed.start.imageId));
+      const walkway = lengthFt !== null && (r.walkway || routeCrossesWalkway(r, feed.featureIds, feed.start.imageId));
       const crossings = (r.door ? 1 : 0) + (walkway ? 1 : 0);
       return { kind: 'home', outlet: o, node: null, port: null, route: r, lengthFt, plug: false, srcId: o.id,
         cost: lengthFt === null ? Infinity : lengthFt + crossings * penaltyFt, door: r.door, walkway };
@@ -6726,7 +6988,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       // A cord from one walkway edge to another lies across the walkway between them.
       const from = port === 'end' ? node.feed.lastFeature : node.feed.firstFeature;
       const between = !!from && from.type === 'walkway' && feed.firstFeature.type === 'walkway' && from.id !== feed.firstFeature.id;
-      const walkway = !r.plug && (r.walkway || between || pathCrossesWalkway(r.path, own, feed.start.imageId));
+      const walkway = !r.plug && (r.walkway || between || routeCrossesWalkway(r, own, feed.start.imageId));
       const crossings = (r.door && !r.plug ? 1 : 0) + (walkway ? 1 : 0);
       return { kind: 'jumper', outlet: null, node, port, route: r, lengthFt, plug: !!r.plug, srcId: node.feed.id,
         cost: lengthFt + crossings * penaltyFt, door: r.plug ? null : r.door, walkway };
@@ -6750,7 +7012,8 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       opt.feeds.forEach((f, fi) => { f.id = 'feed_' + key + '_' + (fi + 1); });
       opt.firstCord = soloCost(opt.feeds[0]);
       // With daisy chains the second walk of a split plugs into a tap on the first walk's cord: no cord of its own.
-      const tapped = (f) => daisy && !!opt.split && f.firstOfWalk && f.walk > 0 && !f.ownCord && !f.forcedOutlet;
+      // A run with "its own cord" keeps that cord: both halves hang off the tap where it arrives.
+      const tapped = (f) => daisy && !!opt.split && f.firstOfWalk && f.walk > 0 && !f.forcedOutlet;
       opt.totalCord = 0;
       // Rough dollars (strings bought, 16 AWG cords, taps) so a split is never chosen when it costs more than it saves.
       const product = items[opt.walks[0][0].k].product;
@@ -6891,12 +7154,18 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
       if (c.node) c.node.children.push(node);
       nodes.push(node);
       // The feed just powered is a source for every feed still waiting.
-      if (daisy && !f.ownCord) {
+      if (daisy) {
+        const split = !!optionsOf[t.n][t.oi].split && f.firstOfWalk;
         for (const u of targets) {
-          if (!active(u) || u.feed.ownCord || u.feed.forcedOutlet) continue;
-          for (const port of ['end', 'start']) {
+          if (!active(u) || u.feed.forcedOutlet) continue;
+          // The other half of a run that is fed from its middle plugs into the tap on this half's cord, even when
+          // the run has "its own cord": that cord still comes straight from the outlet.
+          const sibling = split && u.n === t.n && u.oi === t.oi && u.feed.firstOfWalk && u.feed !== f;
+          const linked = !f.ownCord && !u.feed.ownCord;
+          if (!linked && !sibling) continue;
+          for (const port of linked ? ['end', 'start'] : ['start']) {
             const j = jumperCandidate(u.feed, node, port);
-            if (j) u.cands.push(j);
+            if (j && (linked || j.plug)) u.cands.push(j);
           }
         }
       }
@@ -6974,6 +7243,9 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
           start: path[0].slice(), end: path[path.length - 1].slice(), reversed: reversed[it.run.id],
           quantity: round(e.bought, 4), hung: round(e.hung, 4), watts: round(e.hung * it.wattsPerUnit, 2),
         };
+        if (it.solo && e.bought > e.hung + 1e-9) {
+          runInfo[it.run.id].note = `${fmtInt(e.hung)} ft of it is cut, hung and lit; the other ${fmtInt(e.bought - e.hung)} ft is the allowance for waste and stays on the spool.`;
+        }
         const pool = e.steps.map((ps) => ps.pool).find(Boolean);
         if (pool) {
           const others = pool.labels.filter((l) => l !== it.run.label);
@@ -7087,6 +7359,9 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
     }
 
     // ---- outlets, supply trees, circuits, counts
+    // The timer the chosen supplier has on file may be rated for less than the outlet (1,000 W at 1000Bulbs).
+    const timerOffer = lib.supplierId ? suppliers.accessoryOffer(lib.supplierId, 'timer-outdoor') : null;
+    const timerMaxW = timerOffer ? pos(timerOffer.maxWatts) : null;
     const outletsOut = outlets.map((o) => {
       const fs = feedsOut.filter((f) => f.outletId === o.id);
       const direct = fs.filter((f) => f.source && f.source.kind === 'outlet');
@@ -7100,6 +7375,7 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         needsSplitter: n > 1, splitters: stakesFor(n),
         timer: fs.length > 0 && cfg.timerPerOutlet !== false,
         limitW: lim, overloaded: w > lim + 1e-9,
+        timerMaxW: fs.length > 0 && cfg.timerPerOutlet !== false ? timerMaxW : null,
         incandescentW: round(fs.filter((f) => f._incandescent).reduce((s, f) => s + f.watts, 0), 2),
       };
     });
@@ -7197,6 +7473,13 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
           `${o.label} feeds ${o.directFeedIds.length} cords through ${o.splitters} chained power stakes. Spread the cords over more outlets if you can, ` +
           'and keep every stake and joint off the ground.', { outletId: o.id });
       }
+      if (o.timer && o.timerMaxW && o.watts > o.timerMaxW + 1e-9 && !o.overloaded) {
+        const sup = suppliers.getSupplier(lib.supplierId);
+        warn('warn', 'timer-rating',
+          `${o.label} would run ${fmtInt(o.watts)} W through its timer, more than the ${fmtInt(o.timerMaxW)} W the ${(sup && sup.name) || 'supplier'} timer is rated for. ` +
+          `The shopping list has a heavy-duty timer for this outlet instead: check that its label says ${fmtInt(plugAmps)} A (${fmtInt(plugAmps * outletVoltage(outletById.get(o.id)))} W).`,
+          { outletId: o.id });
+      }
       if (o.timer && o.incandescentW > tungstenW + 1e-9) {
         warn('warn', 'timer-tungsten',
           `${o.label} would run ${fmtInt(o.incandescentW)} W of incandescent lights through one timer. Many outdoor timers are rated about ` +
@@ -7243,8 +7526,8 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
         warn('warn', 'cord-walkway', `The ${cordName} to the ${f.start.label} crosses a walkway. Put a cord cover over it so nobody trips.`, { featureId: fid, outletId: f.outletId });
       }
       if (f.crossesDoorway) {
-        warn('warn', 'cord-doorway', `The ${cordName} to the ${f.start.label} passes ${f._doorLabel}. Run it along the bottom of the wall under a cord cover, ` +
-          'never across the doorway, or use an outlet on the other side.', { featureId: fid, outletId: f.outletId });
+        warn('warn', 'cord-doorway', `The ${cordName} to the ${f.start.label} runs along the ground in front of ${f._doorLabel}. Keep it tight against the doorstep under a cord cover ` +
+          'so nobody trips, or use an outlet on the other side of the door.', { featureId: fid, outletId: f.outletId });
       }
       if (node.feed.watts + node.throughW > node.feed.maxConnW + 1e-6) {
         warn('warn', 'pass-through', `The lights starting at the ${f.start.label} would carry ${fmtInt(node.feed.watts + node.throughW)} W through their own wiring, more than the ` +
@@ -7362,10 +7645,22 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
  *    ('verified' | 'observed' | 'default' | 'yours'). 'yours' = pricing.overrides has the line's sku, or the
  *    price of a supplier item was edited in the project's own product list. Links are https only.
  *  - Bulk C7/C9 (product.kind 'bulk') is bought as parts, gathered per product across the job: socket wire
- *    (cheapest mix of the sizes on file that covers the feet; with config.buying.costBasis 'used' the size that
- *    is cheapest per foot, because leftovers are kept), bulbs per colour in packs, and a male and a female
- *    slide-on plug for every power feed (every run without a power plan). These lines are category 'lights'.
- *    A bulk product whose parts cannot be priced falls back to one per-foot line at product.price.
+ *    (the best mix of the sizes on file that covers the feet, see MIX_RULE: each piece counts as $5 of plugs and
+ *    work, a price seen on a category list only as 10% dearer, at most 4 ready-made lengths), bulbs per colour
+ *    in packs, and slide-on plugs. These lines are category 'lights'. A bulk product whose parts cannot be priced
+ *    falls back to one per-foot line at product.price. The same wire is ordered whatever the cost basis.
+ *  - Slide-on plugs are counted from the wire that is bought (plugNeeds): every cut length (one per power feed,
+ *    one per run without a power plan; the hung feet, not the feet with waste) needs a male plug where the cord
+ *    arrives and a female plug on its far end, a joint between two pieces needs one of each, and a plug a
+ *    ready-made length comes with is used where that end of the piece is used. C7 and C9 wire take the same
+ *    plugs, so there is one line per plug part for the whole job, and no line when no plug is needed.
+ *  - config.buying.costBasis 'used' applies in installer mode only (project.quote.enabled); otherwise every line
+ *    is totalled as ordered. The result carries costBasis (the basis applied) and orderTotal (sum of buyTotal).
+ *  - A supplier item in a colour it is not sold in (product.colors) and a bulb colour that is not on file keep
+ *    the supplier but lose the part number and page, get a findUrl, and are priceStatus 'observed'.
+ *  - A supplier timer with a watt limit (offer.maxWatts) is ordered only for outlets within it; an outlet that
+ *    carries more gets a generic heavy-duty timer line. Gutter runs use the supplier's all-in-one clip when it
+ *    has no gutter clip of its own. Custom colours are named by colour family ("Red and green"), not by code.
  *  - qty is what to order. usedQty is the share of it this job uses (bulk parts only; otherwise equal to qty).
  *    buyTotal = qty × unitPrice. total (and lineTotal, kept for Phase 1 readers) = buyTotal, or
  *    usedQty × unitPrice for bulk parts when the cost basis is 'used'. subtotal and byCategory add up lineTotal.
@@ -7376,7 +7671,9 @@ LP.define('power', ['geometry', 'catalog'], function (geometry, catalog) {
  *    orderSheetToText write one sheet. priceNote(bom) is the "prices were last checked on ..." sentence for
  *    exports; priceStatusText(line) is the short "as of ... (check the price)" label.
  *  - bomToCsv adds Supplier, Part number, Price status and Link columns when a line has any of them; a plan
- *    with no supplier keeps the Phase 1 columns.
+ *    with no supplier keeps the Phase 1 columns. With cost basis 'used' it adds Used Qty and Order Total columns,
+ *    a "To order" row and a note. priceNote says "Supplier prices ... the other prices are typical store prices"
+ *    for a list that mixes supplier and any-store lines.
  *  - Checklist: a bulk feed starts with a "cut the wire, add the plugs, screw in the bulbs" step.
  */
 LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
@@ -7416,10 +7713,11 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
     const w = UNIT_WORDS[unit] || ['unit', 'units'];
     return Math.abs(n - 1) < EPS ? w[0] : w[1];
   }
-  function listText(items) {
+  function listText(items, word) {
+    const and = ' ' + (word || 'and') + ' ';
     if (items.length <= 1) return items.join('');
-    if (items.length === 2) return items[0] + ' and ' + items[1];
-    return items.slice(0, -1).join(', ') + ' and ' + items[items.length - 1];
+    if (items.length === 2) return items[0] + and + items[1];
+    return items.slice(0, -1).join(', ') + and + items[items.length - 1];
   }
   /** First n items, then "N more". */
   function shortList(items, n) {
@@ -7437,7 +7735,7 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
   function colorLabel(mode) { return (COLOR_MODES[mode] && COLOR_MODES[mode].label) || 'Warm white'; }
   function emptyCategories() { const o = {}; for (const c of CATEGORIES) o[c] = 0; return o; }
   function emptyBom(reason) {
-    const b = { ok: !reason, lines: [], subtotal: 0, byCategory: emptyCategories() };
+    const b = { ok: !reason, lines: [], subtotal: 0, byCategory: emptyCategories(), orderTotal: 0, costBasis: 'bought' };
     if (reason) b.reason = reason;
     return b;
   }
@@ -7469,7 +7767,10 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
     const lines = [];
     // Who the project buys from (SPEC §8.3): null = "Any store", the Phase 1 behaviour.
     const preferred = preferredSupplier(lib);
-    const usedBasis = isObj(config.buying) && config.buying.costBasis === 'used';
+    // "Only what is used" is an installer's way of costing a job (leftovers go to the next one), so it applies in
+    // installer mode only: with the quote switched off the list is always priced as everything ordered.
+    const installer = isObj(project) && isObj(project.quote) && project.quote.enabled === true;
+    const usedBasis = installer && isObj(config.buying) && config.buying.costBasis === 'used';
 
     /** Unit price for a SKU: the user's own price (pricing.overrides) when it is a valid number, else the default. */
     function priceOf(sku, defaultPrice) {
@@ -7536,14 +7837,18 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
       }
       const mode = typeof run.colorMode === 'string' && run.colorMode ? run.colorMode : 'warmWhite';
       const colors = arr(run.colors).filter((c) => typeof c === 'string');
-      const key = run.productId + '|' + mode + (mode === 'custom' ? '|' + colors.join(',') : '');
+      // Custom colours are named by their colour families ("Red and green"), so two palettes of the same
+      // families are one line and nobody has to read colour codes.
+      const named = mode === 'custom' ? suppliers.colourNames(colors) : '';
+      const key = run.productId + '|' + mode + (mode === 'custom' ? '|' + (named || colors.join(',')) : '');
       let g = groups.get(key);
       if (!g) {
         const baseName = (product && product.name) || run.productName || run.productId;
-        const suffix = mode === 'custom' && colors.length ? colorLabel(mode) + ' (' + colors.join(', ') + ')' : colorLabel(mode);
+        const suffix = mode === 'custom' && named ? named.charAt(0).toUpperCase() + named.slice(1) : colorLabel(mode);
         g = {
           sku: (product && (product.sku || product.id)) || run.productId,
           name: baseName + ' - ' + suffix,
+          colour: suffix.toLowerCase(), mode,
           unit: (product && product.unit) || run.unit || 'string',
           price: product ? product.price : null,
           product,
@@ -7555,26 +7860,139 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
       g.qty += qty;
       g.uses.push((run.label || 'A run') + ' (' + fmtNum(qty, 2) + ')');
     }
+    const plugPlan = planPlugs(Array.from(groups.values()).filter((g) => g.bulk));
     for (const g of groups.values()) {
       if (g.bulk) { addBulkLines(g); continue; }
       const priceNote = Number.isFinite(g.price) && g.price >= 0 ? '' : ' No price in the product library.';
       const p = g.product;
       let meta = null;
       let caution = '';
+      let name = g.name;
       if (catalog.isSupplierProduct(p)) {
-        meta = offerMeta(p.supplierId, p);
-        if (typeof p.orderNote === 'string' && p.orderNote) caution = ' ' + p.orderNote;
+        const sold = arr(p.colors).filter((c) => typeof c === 'string');
+        if (sold.length && !sold.includes(g.mode)) {
+          // A supplier item picked by hand in a colour it is not sold in: its part number and page are for another
+          // colour, so they are left off and the line says to choose the colour at the supplier (the automatic
+          // choice never gets here: design.js keeps the any-store product instead).
+          const have = listText(sold.map((c) => colorLabel(c).toLowerCase()), 'or');
+          name += ` (the part on file is ${have} only: choose the colour at the supplier)`;
+          meta = { supplierId: p.supplierId, priceAsOf: p.priceAsOf, priceStatus: 'observed',
+            findUrl: suppliers.findUrl(p.supplierId, catalog.categoryRole(p.category), searchWords((p.name || '') + ' ' + g.colour)) };
+          caution = ` The part number on file${p.supplierSku ? ' (' + p.supplierSku + ')' : ''} is the ${have} one, so it is left off: choose ${g.colour} at the supplier and check its price.`;
+        } else {
+          meta = offerMeta(p.supplierId, p);
+          if (typeof p.orderNote === 'string' && p.orderNote) caution = ' ' + p.orderNote;
+          const other = cheaperSet(p, g.mode);
+          if (other) {
+            caution += ` A lower-priced set for the same job is also on file at this supplier (${other.name}, part ${other.supplierSku}): ` +
+              'pick it on the run in the Design step if you prefer it.';
+          }
+        }
       } else if (preferred && p) {
         meta = { findUrl: suppliers.findUrl(preferred, catalog.categoryRole(p.category), searchWords(p.name || '')) };
       }
-      addLine('lights', g.sku, g.name, roundQty(g.qty), g.unit, g.price, 'For ' + shortList(g.uses, 6).join(', ') + '.' + priceNote + caution, meta);
+      addLine('lights', g.sku, name, roundQty(g.qty), g.unit, g.price, 'For ' + shortList(g.uses, 6).join(', ') + '.' + priceNote + caution, meta);
+    }
+    /**
+     * Another ready-made set from the same supplier that fills the same role, is sold in this colour and costs at
+     * least 10% less per lit foot, or null. The planner picks the first set on file for a role; the line says when
+     * a cheaper kind exists so the buyer can choose.
+     */
+    function cheaperSet(p, mode) {
+      const perFt = (x) => x.price / x.stringLengthFt;
+      if (!p.equiv || p.unit !== 'string' || !pos(p.stringLengthFt) || !pos(p.price)) return null;
+      const others = lib.products.filter((x) => isObj(x) && x.id !== p.id && x.supplierId === p.supplierId && x.equiv === p.equiv && x.kind !== 'bulk' &&
+        x.enabled !== false && x.unit === 'string' && pos(x.stringLengthFt) && pos(x.price) && typeof x.supplierSku === 'string' && x.supplierSku &&
+        (!arr(x.colors).length || x.colors.includes(mode)));
+      others.sort((a, b) => perFt(a) - perFt(b));
+      return others.length && perFt(others[0]) < 0.9 * perFt(p) ? others[0] : null;
+    }
+
+    /** Feet of wire a run hangs (its true length, whole feet): the waste allowance stays on the spool. */
+    function hungFeet(run) {
+      const q = Math.max(0, fin(run.quantity, 0));
+      const h = fin(run.hung, null);
+      if (h !== null && h >= 0) return Math.min(h, q);
+      const L = fin(run.lengthFt, 0);
+      return L > 0 ? Math.min(q, Math.ceil(L - EPS)) : q;
+    }
+    /** The feet of each length of wire that is cut for a bulk product: one per power feed, one per run that is on no feed. */
+    function cutLengths(g) {
+      const runById = new Map(g.runs.map((r) => [r.id, r]));
+      const feedsOf = new Map();
+      const mine = [];
+      for (const f of arr(pw.feeds)) {
+        if (!isObj(f)) continue;
+        const ids = arr(f.runIds).filter((id) => runById.has(id));
+        if (!ids.length) continue;
+        mine.push({ f, ids });
+        for (const id of ids) feedsOf.set(id, (feedsOf.get(id) || 0) + 1);
+      }
+      const cuts = [];
+      for (const { f, ids } of mine) {
+        const listed = arr(f.portions).filter((x) => isObj(x) && runById.has(x.runId) && fin(x.units, null) !== null);
+        const ft = listed.length ? listed.reduce((t, x) => t + Math.max(0, x.units), 0) : ids.reduce((t, id) => t + hungFeet(runById.get(id)) / feedsOf.get(id), 0);
+        cuts.push(Math.max(1, Math.ceil(ft - EPS)));
+      }
+      for (const r of g.runs) if (!feedsOf.has(r.id)) cuts.push(Math.max(1, Math.ceil(hungFeet(r) - EPS)));
+      return cuts;
+    }
+    /** The sizes a bulk product's wire can be bought in, with today's price for each (the user's own price when set). */
+    function wireSizes(c) {
+      const ready = (o) => o.plugsIncluded === 'both' || o.plugsIncluded === 'male';
+      const sizes = [{ offer: c.wire, lengthFt: c.wire.spoolFt, unit: 'spool', readyMade: ready(c.wire) }];
+      for (const x of arr(c.wire.sizes)) {
+        if (isObj(x) && pos(x.lengthFt) && nonNeg(x.price, null) !== null && typeof x.sku === 'string' && x.sku) {
+          // A spool is wire with no plugs; a ready-made length comes with a plug on one or both ends.
+          sizes.push({ offer: x, lengthFt: x.lengthFt, unit: ready(x) ? 'each' : 'spool', readyMade: ready(x) });
+        }
+      }
+      for (const x of sizes) {
+        const pr = priceOf(x.offer.sku, x.offer.price);
+        x.price = pr.unitPrice;
+        // A price seen on a category list only counts as a little dearer when sizes are compared (see MIX_RULE).
+        x.unsure = !pr.overridden && x.offer.priceStatus !== 'verified';
+      }
+      return sizes;
+    }
+    /**
+     * What each bulk product buys as wire and how many slide-on plugs the whole job needs, per plug part
+     * (C7 and C9 wire take the same plugs, so their needs are pooled into one line per plug).
+     * Returns {byProduct: Map(product id → {feet, mix, cuts, need}), plugs: Map(key → {...}), order: [key]}.
+     */
+    function planPlugs(bulkGroups) {
+      const byProduct = new Map();
+      const plugs = new Map();
+      for (const g of bulkGroups) {
+        const c = g.product.components;
+        const feet = Math.ceil(g.feet - EPS);
+        const mix = cheapestMix(feet, wireSizes(c), MIX_RULE);
+        const cuts = cutLengths(g);
+        const pieces = [];
+        for (const m of mix) for (let i = 0; i < Math.min(m.count, 2000); i++) pieces.push({ lengthFt: m.size.lengthFt, plugs: m.size.offer.plugsIncluded });
+        const need = plugNeeds(cuts, pieces);
+        byProduct.set(g.product.id, { feet, mix, cuts, need });
+        const wireType = typeof c.wire.wireType === 'string' && c.wire.wireType ? c.wire.wireType : 'SPT-1';
+        const sid = catalog.isSupplierProduct(g.product) ? g.product.supplierId : null;
+        for (const gender of ['male', 'female']) {
+          const o = isOffer(gender === 'male' ? c.plugMale : c.plugFemale) ? (gender === 'male' ? c.plugMale : c.plugFemale) : null;
+          const key = o ? o.sku : 'plug-' + wireType.toLowerCase().replace(/[^a-z0-9]/g, '') + '-' + gender;
+          let e = plugs.get(key);
+          if (!e) { e = { key, gender, offer: o, wireType, sid, need: 0, cuts: 0, joints: 0, allPlugged: true, first: g.product.id }; plugs.set(key, e); }
+          e.need += need[gender];
+          e.cuts += cuts.length;
+          e.joints += need.joints;
+          if (pieces.some((x) => x.plugs !== 'both')) e.allPlugged = false;
+        }
+      }
+      return { byProduct, plugs };
     }
 
     /**
-     * Wire, bulbs and plugs for one bulk product (SPEC §8.3). Wire: the feet of all its runs, bought as the
-     * cheapest mix of the sizes on file. Bulbs: one per socket, split by each run's colour pattern, in packs.
-     * Plugs: one male and one female for every length that is cut = every power feed of this product (every
-     * run when there is no power plan).
+     * Wire, bulbs and plugs for one bulk product (SPEC §8.3). Wire: the feet of all its runs (waste included),
+     * bought as the best mix of the sizes on file (cheapestMix with MIX_RULE). Bulbs: one per socket, split by
+     * each run's colour pattern, in packs. Plugs: what the cut lengths and joints need beyond the plugs the wire
+     * comes with, pooled per plug part across every bulk product of the job.
      */
     function addBulkLines(g) {
       const product = g.product;
@@ -7582,22 +8000,20 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
       const sid = catalog.isSupplierProduct(product) ? product.supplierId : null;
       const spacing = pos(product.bulbSpacingIn) || 12;
       const where = shortList(g.uses, 6).join(', ');
+      const planned = plugPlan.byProduct.get(product.id);
 
       // -- wire
-      const feet = Math.ceil(g.feet - EPS);
-      const sizes = [{ offer: c.wire, lengthFt: c.wire.spoolFt, unit: 'spool' }];
-      for (const s of arr(c.wire.sizes)) {
-        if (isObj(s) && pos(s.lengthFt) && nonNeg(s.price, null) !== null && typeof s.sku === 'string' && s.sku) sizes.push({ offer: s, lengthFt: s.lengthFt, unit: 'each' });
-      }
-      for (const s of sizes) s.price = priceOf(s.offer.sku, s.offer.price).unitPrice;
-      const mix = usedBasis ? cheapestPerFoot(feet, sizes) : cheapestMix(feet, sizes);
+      const feet = planned.feet;
+      const mix = planned.mix;
       const boughtFt = mix.reduce((t, m) => t + m.count * m.size.lengthFt, 0);
       const leftFt = Math.max(0, boughtFt - feet);
       const mixText = mix.map((m) => `${fmtNum(m.count, 0)} × ${fmtNum(m.size.lengthFt, 0)} ft`).join(' + ');
+      // Installers who keep leftovers may have this wire on the truck already.
+      const onHand = usedBasis ? ` If you already have this wire on a spool, take the ${fmtNum(feet, 0)} ft from it instead of ordering.` : '';
       for (const m of mix) {
         const note = `${fmtNum(feet, 0)} ft needed for ${where}. ` +
           (mix.length > 1 ? `Bought as ${mixText} = ${fmtNum(boughtFt, 0)} ft, ` : `${fmtNum(boughtFt, 0)} ft bought, `) +
-          `${fmtNum(leftFt, 0)} ft left over.` + cautionOf(m.size.offer);
+          `${fmtNum(leftFt, 0)} ft left over.` + cautionOf(m.size.offer) + onHand;
         addLine('lights', m.size.offer.sku, m.size.offer.name || 'Socket wire', m.count, m.size.unit, m.size.offer.price, note,
           Object.assign(offerMeta(sid, m.size.offer), { usedQty: boughtFt > 0 ? (m.count * feet) / boughtFt : m.count }));
       }
@@ -7637,46 +8053,38 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
         } else {
           // A colour this supplier's list does not have: priced like the default colour, with no part number
           // (the default's number would order the wrong colour) and a link to the supplier's bulb page instead.
+          // Nobody read a price for this colour, so the line always says "check the price".
           const defLabel = (suppliers.VARIANT_LABELS[bulb.defaultVariant] || 'the default colour').toLowerCase();
           addLine('lights', o.sku + ':' + e.family, `${bulb.name || 'Bulbs'} - ${label} (choose the colour at the supplier)`, packs, 'pack', o.price,
-            `${base} No ${label.toLowerCase()} bulb is on file for this supplier, so it is priced like ${defLabel}: choose the colour at the supplier.`,
-            Object.assign({ supplierId: sid, priceAsOf: o.priceAsOf, priceStatus: o.priceStatus, findUrl: sid ? suppliers.findUrl(sid, bulbRole, (bulb.name || '') + ' ' + label) : null }, used));
+            `${base} No ${label.toLowerCase()} bulb is on file for this supplier, so it is priced like ${defLabel}: choose the colour at the supplier and check its price.`,
+            Object.assign({ supplierId: sid, priceAsOf: o.priceAsOf, priceStatus: 'observed', findUrl: sid ? suppliers.findUrl(sid, bulbRole, (bulb.name || '') + ' ' + label) : null }, used));
         }
       }
 
-      // -- plugs: one male and one female per cut length
-      const runIds = new Set(g.runs.map((r) => r.id));
-      const onFeed = new Set();
-      let cuts = 0;
-      for (const f of arr(pw.feeds)) {
-        if (!isObj(f)) continue;
-        const mine = arr(f.runIds).filter((id) => runIds.has(id));
-        if (!mine.length) continue;
-        cuts += 1;
-        for (const id of mine) onFeed.add(id);
-      }
-      const loose = g.runs.filter((r) => !onFeed.has(r.id)).length;
-      cuts += loose;
-      const wireType = typeof c.wire.wireType === 'string' && c.wire.wireType ? c.wire.wireType : 'SPT-1';
-      const plugLine = (o, gender, use) => {
-        const acc = accessory('plug-spt1-' + gender);
+      // -- plugs: one line per plug part for the whole job, written with the first product that takes that plug
+      for (const e of plugPlan.plugs.values()) {
+        if (e.first !== product.id || !(e.need > 0)) continue;
+        const acc = accessory('plug-spt1-' + e.gender);
+        const o = e.offer;
         const size = pos(o && o.packQty) || pos(acc && acc.packSize) || 10;
-        const packs = Math.ceil(cuts / size - EPS);
-        const note = `One for each length of wire that is cut: ${fmtNum(cuts, 0)} needed, ${fmtNum(packs * size, 0)} bought. ${use}`;
-        const used = { usedQty: cuts / size };
+        const packs = Math.ceil(e.need / size - EPS);
+        const joint = e.joints > 0 ? (e.gender === 'male' ? ' and on the second piece wherever two pieces of wire are joined' : ', and on the first piece wherever two pieces of wire are joined') : '';
+        const use = e.gender === 'male' ? `It goes on the end where the cord arrives${joint}.`
+          : `It goes on the far end, so the next run or a jumper cord can plug in${joint}.`;
+        const own = e.allPlugged ? ' The lengths bought come with a plug on each end, so only the ends you cut need one.' : '';
+        const note = `One for each cut end of wire that has no plug of its own: ${fmtNum(e.need, 0)} needed, ${fmtNum(packs * size, 0)} bought. ${use}${own}`;
+        const used = { usedQty: e.need / size };
         if (o) {
-          addLine('lights', o.sku, o.name || `Slide-on ${gender} plugs`, packs, 'pack', o.price, note + cautionOf(o), Object.assign(offerMeta(sid, o), used));
+          addLine('lights', o.sku, o.name || `Slide-on ${e.gender} plugs`, packs, 'pack', o.price, note + cautionOf(o), Object.assign(offerMeta(e.sid, o), used));
         } else {
           // No plug on file for this supplier: a plain line with a link to where the supplier keeps its plugs.
-          const name = `Slide-on ${gender} plugs for ${wireType} socket wire, pack of ${fmtNum(size, 0)}`;
-          const from = sid || preferred;
-          addLine('lights', 'plug-' + wireType.toLowerCase().replace(/[^a-z0-9]/g, '') + '-' + gender, name, packs, 'pack', acc ? acc.price : 0,
+          const name = `Slide-on ${e.gender} plugs for ${e.wireType} socket wire, pack of ${fmtNum(size, 0)}`;
+          const from = e.sid || preferred;
+          addLine('lights', e.key, name, packs, 'pack', acc ? acc.price : 0,
             note + (from ? ' No part number is on file for this plug: pick the one that matches the wire.' : ''),
-            Object.assign({ findUrl: from ? suppliers.findUrl(from, 'plugs', `${wireType} ${gender} plug`) : null }, used));
+            Object.assign({ findUrl: from ? suppliers.findUrl(from, 'plugs', `${e.wireType} ${e.gender} plug`) : null }, used));
         }
-      };
-      plugLine(isOffer(c.plugMale) ? c.plugMale : null, 'male', 'It goes on the end where the cord arrives.');
-      plugLine(isOffer(c.plugFemale) ? c.plugFemale : null, 'female', 'It goes on the far end, so the next run or a jumper cord can plug in.');
+      }
     }
 
     // ---- clips: one line per clip type, packs of the accessory pack size, waste % added
@@ -7685,6 +8093,14 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
       const c = run.clips;
       if (!isObj(c) || !CLIP_TYPES[c.type] || !(fin(c.count, 0) > 0)) continue;
       clipCounts.set(c.type, (clipCounts.get(c.type) || 0) + Math.ceil(c.count));
+    }
+    // A supplier with an all-in-one clip (made for gutters and shingles) but no gutter clip of its own: gutter
+    // runs are counted with the all-in-one clips, so there is one pack to buy and one place to buy it.
+    let gutterAsAllInOne = 0;
+    if (clipCounts.get('gutter') && !offerFor(CLIP_TYPES.gutter.sku) && offerFor(CLIP_TYPES.allInOne.sku)) {
+      gutterAsAllInOne = clipCounts.get('gutter');
+      clipCounts.set('allInOne', (clipCounts.get('allInOne') || 0) + gutterAsAllInOne);
+      clipCounts.delete('gutter');
     }
     for (const type of Object.keys(CLIP_TYPES)) {
       const count = clipCounts.get(type);
@@ -7698,7 +8114,8 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
       const withWaste = Math.ceil(count * (1 + wastePct / 100) - EPS);
       const packs = Math.ceil(withWaste / packSize - EPS);
       const noun = type === 'zipTie' ? 'zip ties' : 'clips';
-      const note = `${fmtNum(count, 0)} ${noun} + ${fmtNum(wastePct, 1)}% spare = ${fmtNum(withWaste, 0)}, in packs of ${fmtNum(packSize, 0)}.`;
+      const note = `${fmtNum(count, 0)} ${noun} + ${fmtNum(wastePct, 1)}% spare = ${fmtNum(withWaste, 0)}, in packs of ${fmtNum(packSize, 0)}.` +
+        (type === 'allInOne' && gutterAsAllInOne ? ` ${fmtNum(gutterAsAllInOne, 0)} of them are for the gutter runs: this clip hangs on a gutter too.` : '');
       const name = (acc && acc.name) || info.label;
       if (off) addLine('clips', off.sku, off.name || name, packs, 'pack', off.price, note + cautionOf(off), offerMeta(preferred, off));
       else addLine('clips', info.sku, name, packs, (acc && acc.unit) || 'pack', acc ? acc.price : 0, note, lookFor(info.sku, name));
@@ -7748,15 +8165,25 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
       if (off) addLine(category, off.sku, off.name || name, n, (acc && acc.unit) || 'each', off.price, ((notes || '') + cautionOf(off)).trim(), offerMeta(preferred, off));
       else addLine(category, sku, name, n, (acc && acc.unit) || 'each', acc ? acc.price : 0, notes, lookFor(sku, name));
     };
-    const timerOutlets = pwOutlets.filter((o) => o.timer).map(outletLabel);
-    // A supplier's timer with a watt limit of its own: say so when an outlet in this plan carries more.
+    // A supplier's timer with a watt limit of its own is only ordered for the outlets it can carry. An outlet that
+    // carries more gets a plain heavy-duty timer instead (power.js raises the 'timer-rating' warning for it).
     const timerOffer = offerFor('timer-outdoor');
     const timerMaxW = timerOffer ? pos(timerOffer.maxWatts) : null;
-    const tooMuch = timerMaxW ? pwOutlets.filter((o) => o.timer && fin(o.watts, 0) > timerMaxW + EPS) : [];
-    const timerCaution = tooMuch.length
-      ? ` ${listText(shortList(tooMuch.map((o) => `${outletLabel(o)} (${fmtNum(fin(o.watts, 0), 0)} W)`), 3))} ${tooMuch.length > 1 ? 'carry' : 'carries'} more than this timer's ${fmtNum(timerMaxW, 0)} W limit: use a heavier timer there.`
-      : '';
-    accLine('power', 'timer-outdoor', counts.timers, (timerOutlets.length ? 'One for each outlet used: ' + listText(shortList(timerOutlets, 4)) + '.' : '') + timerCaution);
+    const timed = pwOutlets.filter((o) => o.timer);
+    const tooMuch = timerMaxW ? timed.filter((o) => fin(o.watts, 0) > timerMaxW + EPS) : [];
+    const light = timed.filter((o) => !tooMuch.includes(o));
+    const timerCount = Math.max(0, Math.round(fin(counts.timers, 0)));
+    const heavyCount = Math.min(timerCount, tooMuch.length);
+    accLine('power', 'timer-outdoor', timerCount - heavyCount, light.length ? 'One for each outlet used: ' + listText(shortList(light.map(outletLabel), 4)) + '.' : '');
+    if (heavyCount > 0) {
+      const acc = accessory('timer-outdoor');
+      const plugA = pos(isObj(config.power) ? config.power.plugAmps : null) || 15;
+      const volts = pos(isObj(config.power) ? config.power.voltage : null) || 120;
+      const who = listText(shortList(tooMuch.map((o) => `${outletLabel(o)} (${fmtNum(fin(o.watts, 0), 0)} W)`), 3));
+      addLine('power', 'timer-outdoor', `Heavy-duty outdoor plug-in timer, rated ${fmtNum(plugA, 0)} A (${fmtNum(plugA * volts, 0)} W)`, heavyCount, (acc && acc.unit) || 'each', acc ? acc.price : 0,
+        `For ${who}: more than the ${fmtNum(timerMaxW, 0)} W the ${suppliers.getSupplier(preferred).name} timer is rated for, so ${heavyCount > 1 ? 'these outlets need' : 'this outlet needs'} a heavier timer. Check the watt rating on its label.`,
+        lookFor('timer-outdoor', 'heavy duty outdoor timer 15 amp'));
+    }
     const splitOutlets = pwOutlets.filter((o) => o.splitters > 0).map(outletLabel);
     accLine('power', 'splitter-3', counts.splitters, splitOutlets.length ? 'For outlets that feed more than one cord: ' + listText(shortList(splitOutlets, 4)) + '.' : '');
     // 3-way taps where jumper cords branch off a run (SPEC §8.2).
@@ -7785,7 +8212,9 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
     const byCategory = emptyCategories();
     for (const l of lines) byCategory[l.category] = round2(byCategory[l.category] + l.lineTotal);
     const subtotal = round2(lines.reduce((s, l) => s + l.lineTotal, 0));
-    return { ok: true, lines, subtotal, byCategory };
+    // orderTotal: what everything on the list costs to order (equal to subtotal unless the basis is 'used').
+    const orderTotal = round2(lines.reduce((s, l) => s + l.buyTotal, 0));
+    return { ok: true, lines, subtotal, byCategory, orderTotal, costBasis: usedBasis ? 'used' : 'bought' };
   }
   /** Quantities are whole units for everything except odd per-foot products; keep 2 decimals at most. */
   function roundQty(q) { return Math.abs(q - Math.round(q)) < 1e-6 ? Math.round(q) : Math.round(q * 100) / 100; }
@@ -7810,68 +8239,107 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
   function searchWords(name) {
     return String(name || '').replace(/\([^)]*\)/g, ' ').replace(/[^A-Za-z0-9.\- ]+/g, ' ').replace(/\s+/g, ' ').trim();
   }
+  const { colourFamily, bulbPattern } = suppliers; // colour families of bulbs (shared with design.js, which counts watts by colour)
   /**
-   * Colour family of a hex colour, as bulbs are sold: warmWhite, coolWhite, red, orange, yellow, green, teal,
-   * blue, purple or pink. Pale or grey colours are a white (warm when it leans red, else cool).
+   * How wire sizes are compared when a job is bought (cheapestMix): every piece counts as $5 of plugs and work
+   * (a joint to make and keep dry), a price seen on a category list only counts as 10% dearer than it says, and
+   * at most 4 ready-made lengths are bought for one product (more wire than that comes off a spool). The line
+   * always shows the real prices.
    */
-  function colourFamily(hex) {
-    let h = String(hex || '').trim().replace(/^#/, '');
-    if (/^[0-9a-f]{3,4}$/i.test(h)) h = h.slice(0, 3).split('').map((ch) => ch + ch).join('');
-    if (!/^[0-9a-f]{6}([0-9a-f]{2})?$/i.test(h)) return 'warmWhite';
-    const r = parseInt(h.slice(0, 2), 16) / 255, g = parseInt(h.slice(2, 4), 16) / 255, b = parseInt(h.slice(4, 6), 16) / 255;
-    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min, l = (max + min) / 2;
-    const s = d < 1e-9 ? 0 : d / (1 - Math.abs(2 * l - 1) + 1e-9);
-    if (s < 0.18 || l > 0.9 || l < 0.08) return r - b > 0.04 ? 'warmWhite' : 'coolWhite';
-    let hue;
-    if (max === r) hue = ((g - b) / d) % 6; else if (max === g) hue = (b - r) / d + 2; else hue = (r - g) / d + 4;
-    hue = (hue * 60 + 360) % 360;
-    if (hue < 15 || hue >= 345) return 'red';
-    if (hue < 40) return l >= 0.68 ? 'warmWhite' : 'orange';
-    if (hue < 65) return l >= 0.8 ? 'warmWhite' : 'yellow';
-    if (hue < 165) return 'green';
-    if (hue < 190) return 'teal';
-    if (hue < 255) return 'blue';
-    if (hue < 290) return 'purple';
-    return 'pink';
-  }
+  const MIX_RULE = { pieceCost: 5, unsurePct: 10, maxReadyMade: 4 };
   /**
-   * The bulb colours along a run, one entry per position of its repeating pattern: warm white and cool white
-   * are one colour, "multicolor" is the supplier's mixed box ('multi'), and a custom pattern lists the family
-   * of each of its colours (red, green → half red, half green).
+   * Slide-on plugs a job needs beyond the plugs its wire comes with. `cuts` = feet of each length that is hung
+   * (one per power feed); `pieces` = the wire bought, [{lengthFt, plugs: 'both' | 'male' | false}]. The wire is
+   * shared out the way an installer would: the longest cut first, each from the shortest piece that covers it
+   * (so few pieces are joined), a longer cut from several pieces joined end to end. Every cut needs a male plug
+   * where the cord arrives and a female plug on its far end; a joint needs a female on the first piece and a
+   * male on the second. A plug the piece came with is used where that end of the piece is used.
+   * Returns {male, female, joints}.
    */
-  function bulbPattern(run) {
-    const mode = typeof run.colorMode === 'string' ? run.colorMode : 'warmWhite';
-    if (mode === 'coolWhite') return ['coolWhite'];
-    if (mode === 'multicolor') return ['multi'];
-    if (mode === 'custom') {
-      const list = arr(run.colors).filter((c) => typeof c === 'string' && /^#[0-9a-f]{3,8}$/i.test(c)).map(colourFamily);
-      if (list.length) return list;
+  function plugNeeds(cuts, pieces) {
+    const stock = arr(pieces).filter((x) => isObj(x) && pos(x.lengthFt))
+      .map((x) => ({ ft: x.lengthFt, male: x.plugs === 'both' || x.plugs === 'male', female: x.plugs === 'both' }))
+      .sort((a, b) => b.ft - a.ft);
+    const order = arr(cuts).filter((x) => pos(x)).sort((a, b) => b - a);
+    let male = 0, female = 0, joints = 0;
+    for (const cut of order) {
+      let need = cut, first = true;
+      for (let guard = 0; need > EPS && guard < 10000; guard++) {
+        // The shortest piece that covers what is left, else the longest one (a joint follows it).
+        let idx = -1;
+        for (let i = 0; i < stock.length; i++) {
+          if (stock[i].ft < need - EPS) continue;
+          if (idx < 0 || stock[i].ft < stock[idx].ft - EPS || (Math.abs(stock[i].ft - stock[idx].ft) <= EPS && stock[i].male && !stock[idx].male)) idx = i;
+        }
+        if (idx < 0) for (let i = 0; i < stock.length; i++) if (idx < 0 || stock[i].ft > stock[idx].ft + EPS || (Math.abs(stock[i].ft - stock[idx].ft) <= EPS && stock[i].male && !stock[idx].male)) idx = i;
+        if (!first) joints += 1;
+        if (idx < 0) { male += 1; female += 1; break; } // no wire left to share out: count a full pair
+        const seg = stock[idx];
+        const take = Math.min(need, seg.ft);
+        const whole = take >= seg.ft - EPS;
+        if (whole) {
+          if (!seg.male) male += 1;
+          if (!seg.female) female += 1;
+          stock.splice(idx, 1);
+        } else if (!seg.male && seg.female) {
+          // Cut from the far end of the piece, so the plug it came with is the far end of this length.
+          male += 1;
+          seg.female = false;
+          seg.ft -= take;
+        } else {
+          if (!seg.male) male += 1;
+          female += 1;
+          seg.male = false;
+          seg.ft -= take;
+        }
+        need -= take;
+        first = false;
+      }
     }
-    return ['warmWhite'];
+    return { male, female, joints };
   }
   /**
-   * Cheapest way to buy at least `feet` of wire from the sizes on file ([{lengthFt, price}]): a small dynamic
-   * programme over whole feet. Ties go to fewer pieces, then to the longer piece. Returns [{size, count}],
-   * longest first.
+   * Cheapest way to buy at least `feet` of wire from the sizes on file ([{lengthFt, price, unsure?, readyMade?}]):
+   * a small dynamic programme over whole feet. Ties go to fewer pieces, then to the longer piece.
+   * `rule` (optional) makes the comparison more like a buyer's: pieceCost dollars are added for every piece,
+   * unsurePct percent to the price of a size marked `unsure`, and at most maxReadyMade pieces marked `readyMade`
+   * are used (when the other sizes cannot cover the feet, that cap is dropped). Returns [{size, count}], longest first.
    */
-  function cheapestMix(feet, sizes) {
+  function cheapestMix(feet, sizes, rule) {
     const need = Math.max(1, Math.ceil(feet - EPS));
     const list = sizes.slice().sort((a, b) => b.lengthFt - a.lengthFt);
-    if (list.length === 1 || need > 200000) return cheapestPerFoot(need, list);
-    const cost = new Float64Array(need + 1), pieces = new Int32Array(need + 1), pick = new Int32Array(need + 1);
+    if (list.length === 1 || need > 50000) return cheapestPerFoot(need, list);
+    const r = isObj(rule) ? rule : {};
+    const pieceCost = nonNeg(r.pieceCost, 0), unsure = 1 + nonNeg(r.unsurePct, 0) / 100;
+    const capped = Number.isInteger(r.maxReadyMade) && r.maxReadyMade >= 0 && list.some((x) => x.readyMade) && list.some((x) => !x.readyMade);
+    const K = capped ? r.maxReadyMade : 0;
+    const adj = list.map((x) => x.price * (x.unsure ? unsure : 1) + pieceCost);
     // Whole feet a piece is sure to cover (a 12.5 ft piece covers 12).
     const covers = list.map((x) => Math.max(1, Math.floor(x.lengthFt + EPS)));
-    for (let f = 1; f <= need; f++) {
-      let best = Infinity, bestN = 0, bestI = 0;
-      for (let i = 0; i < list.length; i++) {
-        const rest = Math.max(0, f - covers[i]);
-        const cst = list[i].price + cost[rest], n = pieces[rest] + 1;
-        if (cst < best - 1e-9 || (Math.abs(cst - best) <= 1e-9 && n < bestN)) { best = cst; bestN = n; bestI = i; }
+    const W = need + 1;
+    // cost[k * W + f]: the least it costs to cover f feet with at most k ready-made pieces.
+    const cost = new Float64Array((K + 1) * W), pieces = new Int32Array((K + 1) * W), pick = new Int32Array((K + 1) * W).fill(-1);
+    for (let k = 0; k <= K; k++) {
+      for (let f = 1; f <= need; f++) {
+        let best = Infinity, bestN = 0, bestI = -1;
+        for (let i = 0; i < list.length; i++) {
+          const kk = capped && list[i].readyMade ? k - 1 : k;
+          if (kk < 0) continue;
+          const rest = kk * W + Math.max(0, f - covers[i]);
+          const cst = adj[i] + cost[rest], n = pieces[rest] + 1;
+          if (cst < best - 1e-9 || (Math.abs(cst - best) <= 1e-9 && n < bestN)) { best = cst; bestN = n; bestI = i; }
+        }
+        cost[k * W + f] = best; pieces[k * W + f] = bestN; pick[k * W + f] = bestI;
       }
-      cost[f] = best; pieces[f] = bestN; pick[f] = bestI;
     }
+    if (!Number.isFinite(cost[K * W + need])) return cheapestMix(feet, sizes, Object.assign({}, r, { maxReadyMade: null }));
     const countOf = list.map(() => 0);
-    for (let f = need; f > 0; f = Math.max(0, f - covers[pick[f]])) countOf[pick[f]] += 1;
+    for (let k = K, f = need; f > 0;) {
+      const i = pick[k * W + f];
+      countOf[i] += 1;
+      if (capped && list[i].readyMade) k -= 1;
+      f = Math.max(0, f - covers[i]);
+    }
     return list.map((size, i) => ({ size, count: countOf[i] })).filter((m) => m.count > 0);
   }
   /** One size only: the cheapest per foot (ties to the longer), as many as cover `feet`. For buyers who keep leftovers. */
@@ -7932,9 +8400,14 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
    * account prices differ. '' when no line has a supplier price (nothing to warn about).
    */
   function priceNote(bomOrSheet) {
-    const dates = arr(isObj(bomOrSheet) ? bomOrSheet.lines : null).filter((l) => isObj(l) && typeof l.priceAsOf === 'string' && l.priceAsOf).map((l) => l.priceAsOf).sort();
+    const list = arr(isObj(bomOrSheet) ? bomOrSheet.lines : null).filter(isObj);
+    const dates = list.filter((l) => typeof l.priceAsOf === 'string' && l.priceAsOf).map((l) => l.priceAsOf).sort();
     if (!dates.length) return '';
-    return `Prices were last checked on ${suppliers.formatDate(dates[0])}; confirm at checkout. Account (wholesale) prices differ: edit any price.`;
+    const tail = 'Account (wholesale) prices differ: edit any price.';
+    // A list that also holds any-store items: their prices are typical ones, not checked on that date.
+    const mixed = list.some((l) => !l.priceAsOf && (l.priceStatus === 'default' || l.priceStatus === undefined) && fin(l.qty, 0) > 0);
+    if (mixed) return `Supplier prices were last checked on ${suppliers.formatDate(dates[0])}; the other prices are typical store prices. Confirm at checkout. ${tail}`;
+    return `Prices were last checked on ${suppliers.formatDate(dates[0])}; confirm at checkout. ${tail}`;
   }
   /** "as of Nov 11, 2026 (check the price)" for a line with a supplier price, "your price" for an edited one, '' otherwise. */
   function priceStatusText(line) {
@@ -8115,7 +8588,7 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
       const jumper = isObj(feed.source) && feed.source.kind === 'feed';
       const cordName = feed.plugIn ? 'plug' : jumper ? 'jumper cord' : 'cord';
       if (feed.crossesDoorway) {
-        steps.push(`Keep the ${cordName} along the bottom of the wall where it passes ${feed.doorway || 'the door'} and lay a cord cover over it there${feed.crossesWalkway ? ' and across the walkway' : ''}.`);
+        steps.push(`Keep the ${cordName} tight against the doorstep where it runs in front of ${feed.doorway || 'the door'} and lay a cord cover over it there${feed.crossesWalkway ? ' and across the walkway' : ''}.`);
       } else if (feed.crossesWalkway) steps.push(`Lay a cord cover over the ${cordName} where it crosses the walkway.`);
       const kids = childrenOf(feed);
       const atStart = kids.filter((k) => portOf(k) === 'start'), atEnd = kids.filter((k) => portOf(k) === 'end');
@@ -8142,7 +8615,7 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
             : `the bulbs into the sockets in the pattern ${colours.join(', ')}`;
         if (ft > EPS) {
           steps.push(`On the ground, cut one length of socket wire for ${listText(shortList(labels, 3))}: ${fmtNum(ft, 0)} ft (${fmtNum(sockets, 0)} sockets). ` +
-            `Slide a male plug onto the end that meets ${plugInto} and a female plug onto the far end, then screw ${bulbs}.`);
+            `Slide a male plug onto the end that meets ${plugInto} and a female plug onto the far end, unless that end already has a plug, then screw ${bulbs}.`);
         }
       }
       let stringRun = null; // the run whose last string is the one in hand (a carried-on run starts none)
@@ -8193,7 +8666,10 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
         const first = list.length ? list[0].run : null;
         const n = fin(chain.spares, 0);
         const noun = first && first.unit === 'foot' ? 'ft' : unitWord(first ? first.unit : 'string', n);
-        steps.push(`Keep the ${fmtNum(n, 2)} spare ${noun} (bought for waste) to replace a dead one later.`);
+        if (bulkFeed) {
+          // Cut-to-length wire: the waste allowance is not hung. It stays on the spool in case a run is longer than measured.
+          steps.push(`The order has ${fmtNum(n, 0)} ft of wire and bulbs to spare. If a run turns out longer than the plan says, cut it longer; keep what is left for repairs.`);
+        } else steps.push(`Keep the ${fmtNum(n, 2)} spare ${noun} (bought for waste) to replace a dead one later.`);
       }
       if (atEnd.length > 1) {
         const n = Math.ceil((atEnd.length - 1) / tapPer);
@@ -8388,12 +8864,12 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
     return `Put up ${count} ${(info ? info.label : 'light clips').toLowerCase()} ${prep} ${label}, ${every}.`;
   }
 
-  /** "warm white C9 LED string, 25 bulbs" or "C9 LED string, 25 bulbs in custom colors #ff3b30, #34c759". */
+  /** "warm white C9 LED string, 25 bulbs" or "C9 LED string, 25 bulbs in red and green". */
   function coloredName(run) {
     const name = run.productName || run.productId || 'lights';
     if (run.colorMode === 'custom') {
-      const cs = arr(run.colors).filter((c) => typeof c === 'string');
-      return name + ' in custom colors' + (cs.length ? ' ' + cs.join(', ') : '');
+      const named = suppliers.colourNames(run.colors);
+      return name + (named ? ' in ' + named : ' in custom colors');
     }
     return colorLabel(run.colorMode).toLowerCase() + ' ' + name;
   }
@@ -8490,31 +8966,42 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
   /** The product page of a line, else where to look for it at the chosen supplier, else ''. */
   const lineLink = (l) => suppliers.safeUrl(l.url) || suppliers.safeUrl(l.findUrl) || '';
 
+  /** Printed under a list whose line totals are shares of what is ordered (cost basis 'used'). */
+  const USED_NOTE = 'Line totals count only the share of the wire, bulbs and plugs that this job uses. "Order Total" and "To order" are what the whole spools, boxes and packs cost.';
   /**
    * CSV of the BOM: a header row and one row per line, then a blank row and a summary row
    * ("Subtotal" in the SKU column, the amount in the Item column). The subtotal is kept out of the
    * Line Total column so summing that column in a spreadsheet gives the real total. CRLF line ends.
    * When any line names a supplier or carries a link, four columns are added (Supplier, Part number, Price
    * status, Link) and a last row carries the "prices were last checked" sentence.
+   * When a line total is only the share this job uses (cost basis 'used'), two more columns say how much of the
+   * quantity is used and what the whole quantity costs to order, a "To order" row follows the subtotal, and a
+   * note explains the difference, so Qty x Unit Price never silently disagrees with Line Total.
    */
   function bomToCsv(bom) {
     const b = isObj(bom) ? bom : {};
     const list = arr(b.lines).filter(isObj);
     const withSupplier = list.some((l) => l.supplierId || l.supplierSku || lineLink(l));
-    const header = withSupplier ? CSV_HEADER.concat(CSV_SUPPLIER_HEADER) : CSV_HEADER;
+    const buyOf = (l) => fin(l.buyTotal, fin(l.lineTotal, 0));
+    const shares = list.some((l) => Math.abs(buyOf(l) - fin(l.lineTotal, 0)) > 0.004);
+    let header = withSupplier ? CSV_HEADER.concat(CSV_SUPPLIER_HEADER) : CSV_HEADER;
+    if (shares) header = header.concat(['Used Qty', 'Order Total']);
     const rows = [header];
     for (const l of list) {
       const row = [csvText(l.sku), csvText(l.name), csvText(l.category), Number.isFinite(l.qty) ? String(l.qty) : '',
         csvText(l.unit), money(l.unitPrice), money(l.lineTotal), csvText(l.notes)];
       if (withSupplier) row.push(csvText(l.supplierName || ANY_STORE), csvText(l.supplierSku || ''), csvText(priceStatusText(l)), lineLink(l));
+      if (shares) row.push(Number.isFinite(l.usedQty) ? String(Math.round(l.usedQty * 100) / 100) : (Number.isFinite(l.qty) ? String(l.qty) : ''), money(buyOf(l)));
       rows.push(row);
     }
     const subtotal = Number.isFinite(b.subtotal) ? b.subtotal : list.reduce((s, l) => s + fin(l.lineTotal, 0), 0);
     const blank = header.map(() => '');
     rows.push(blank);
     rows.push(['Subtotal', money(subtotal)].concat(blank.slice(2)));
+    if (shares) rows.push(['To order', money(list.reduce((s, l) => s + buyOf(l), 0))].concat(blank.slice(2)));
     const note = withSupplier ? priceNote(b) : '';
     if (note) rows.push(['Note', csvText(note)].concat(blank.slice(2)));
+    if (shares) rows.push(['Note', csvText(USED_NOTE)].concat(blank.slice(2)));
     return csvRows(rows);
   }
 
@@ -8549,7 +9036,8 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
       const part = l.supplierSku ? 'Part ' + l.supplierSku + ': ' : '';
       const status = priceStatusText(l);
       const count = l.unit === 'foot' ? fmtNum(l.qty, 2) + ' ft of' : fmtNum(l.qty, 2) + ' ×';
-      out.push(`${count} ${part}${l.name} - $${money(l.unitPrice)} each = $${money(l.total)}` + (status ? ' (' + status + ')' : ''));
+      // One pair of brackets: "(as of Nov 11, 2026, check the price)".
+      out.push(`${count} ${part}${l.name} - $${money(l.unitPrice)} each = $${money(l.total)}` + (status ? ' (' + status.replace(' (check the price)', ', check the price') + ')' : ''));
       const link = lineLink(l);
       if (link) out.push('  ' + link);
     }
@@ -8561,7 +9049,7 @@ LP.define('bom', ['catalog', 'suppliers'], function (catalog, suppliers) {
 
   return {
     buildBom, buildQuote, buildChecklist, bomToCsv, round2, emptyBom,
-    orderSheets, orderSheetToCsv, orderSheetToText, priceNote, priceStatusText, colourFamily, cheapestMix,
+    orderSheets, orderSheetToCsv, orderSheetToText, priceNote, priceStatusText, colourFamily, cheapestMix, plugNeeds, MIX_RULE, USED_NOTE,
   };
 });
 
@@ -8911,7 +9399,7 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
         description: 'How C7/C9 from the chosen supplier is bought and costed (library.config.buying). Both keys are optional.',
         properties: {
           style: { enum: ENUMS.buyingStyle.slice(), description: 'bulk = socket wire cut to length, bulbs by the box and slide-on plugs (default); strings = ready-made strings.' },
-          costBasis: { enum: ENUMS.costBasis.slice(), description: 'bought = the plan costs everything that is ordered (default); used = only the share of bulk wire, bulbs and plugs this job uses.' },
+          costBasis: { enum: ENUMS.costBasis.slice(), description: 'bought = the plan costs everything that is ordered (default); used = only the share of bulk wire, bulbs and plugs this job uses (applies in installer mode only; the order itself is the same).' },
         },
       },
       offer: {
@@ -8925,7 +9413,7 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
           price: { type: 'number', minimum: 0, description: 'Price of one pack, spool or piece in USD.' },
           packQty: { type: 'number', exclusiveMinimum: 0, description: 'How many come in one pack.' },
           priceAsOf: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Day the price was seen (YYYY-MM-DD).' },
-          priceStatus: { enum: ENUMS.priceStatus.slice(), description: 'verified = seen on the supplier\'s page that day; observed = seen in a search result, not confirmed.' },
+          priceStatus: { enum: ENUMS.priceStatus.slice(), description: 'verified = read on the item\'s own page at the supplier that day; observed = seen on the supplier\'s category list only, or a per-foot price worked out for a kit, or a colour whose own price was not read ("check the price").' },
           notes: { type: 'string', description: 'A short caution printed on the BOM line.' },
         },
       },
@@ -8992,7 +9480,7 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
           supplierSku: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'The part number to type at the supplier; null = not confirmed, order from the link.' },
           url: { anyOf: [{ type: 'string', pattern: '^https://' }, { type: 'null' }], description: 'Product page at the supplier (https only).' },
           priceAsOf: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Day the price was seen (YYYY-MM-DD).' },
-          priceStatus: { enum: ENUMS.priceStatus.slice(), description: 'verified = seen on the supplier\'s page that day; observed = seen in a search result, not confirmed.' },
+          priceStatus: { enum: ENUMS.priceStatus.slice(), description: 'verified = read on the item\'s own page at the supplier that day; observed = seen on the supplier\'s category list only, or a per-foot price worked out for a kit, or a colour whose own price was not read ("check the price").' },
           equiv: { type: 'string', description: 'Id of the generic product whose job this one does, e.g. "c9-led": the planner swaps it in when the project buys from this supplier.' },
           kind: { anyOf: [{ enum: ENUMS.productKind.slice() }, { type: 'null' }], description: 'bulk = socket wire cut to length + bulbs + plugs, planned per foot (unit "foot"). Missing or null = a ready-made product.' },
           components: { anyOf: [ref('bulkComponents'), { type: 'null' }], description: 'Bulk only: the parts it is bought as (wire, bulbs, plugs).' },
@@ -9828,11 +10316,11 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
         for (const k of ['stringLengthFt', 'maxEndToEnd']) if (!(typeof x[k] === 'number' && Number.isFinite(x[k]) && x[k] > 0)) err(who + ': "' + k + '" must be a number above 0.');
         // Supplier fields (SPEC §8.3) are free-form except links and the price status.
         if (x.url != null && suppliers.safeUrl(x.url) === null) err(who + ': the link must be an https address.');
-        if (x.priceStatus !== undefined && !ENUMS.priceStatus.includes(x.priceStatus)) err(who + ': "priceStatus" must be one of ' + ENUMS.priceStatus.join(', ') + '.');
+        if (x.priceStatus !== undefined && !ENUMS.priceStatus.includes(x.priceStatus)) err(who + ': the price check must be ' + ENUMS.priceStatus.map((v) => '"' + v + '"').join(' or ') + '.');
         if (x.kind !== undefined && x.kind !== null && !ENUMS.productKind.includes(x.kind)) err(who + ': "kind" must be "bulk" or left out.');
         for (const c of suppliers.componentOffers(x)) {
           if (c.offer.url != null && suppliers.safeUrl(c.offer.url) === null) err(who + ': the link of one of its parts must be an https address.');
-          if (c.offer.priceStatus !== undefined && !ENUMS.priceStatus.includes(c.offer.priceStatus)) err(who + ': the "priceStatus" of one of its parts must be one of ' + ENUMS.priceStatus.join(', ') + '.');
+          if (c.offer.priceStatus !== undefined && !ENUMS.priceStatus.includes(c.offer.priceStatus)) err(who + ': the price check of one of its parts must be ' + ENUMS.priceStatus.map((v) => '"' + v + '"').join(' or ') + '.');
         }
       });
       if (lib.config !== null && !isObj(lib.config)) err('The library config overrides must be an object or empty.');
@@ -9919,6 +10407,14 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
     if (!isObj(data)) throw new Error(NOT_A_PROJECT);
     let rawProject = data;
     let rawImages = {};
+    // What the file said the plan came to when it was saved (materials cost, quote total). The plan is always
+    // worked out again; these two numbers are only kept so the app can say when the totals have moved.
+    let saved = null;
+    if (isObj(data.derived) && isObj(data.derived.summary)) {
+      const sm = data.derived.summary;
+      const numOrNull = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+      if (numOrNull(sm.cost) !== null) saved = { cost: numOrNull(sm.cost), quoteTotal: numOrNull(sm.quoteTotal) };
+    }
     if (data.schema === EXPORT_SCHEMA_ID || (data.schema === undefined && isObj(data.project))) {
       // Read the wrapper version the way migrateProject reads a project version: numeric strings count.
       let v = data.version === undefined || data.version === null ? EXPORT_VERSION : data.version;
@@ -9944,7 +10440,7 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
       const v = im.storageKey ? rawImages[im.storageKey] : undefined;
       if (typeof v === 'string' && /^data:image\//i.test(v)) images[im.storageKey] = v;
     }
-    return { project, images };
+    return { project, images, saved };
   }
 
   return {
@@ -13509,6 +14005,12 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
               step: proj.features.length ? 6 : hasImage ? 2 : 1,
             }));
             const name = proj.name ? "'" + proj.name + "'" : 'the project';
+            // The plan is always worked out again. When that moves the totals the file was saved with (a file from
+            // an older LightPlan, whose cords and bush lights were planned by other rules), say so in a note that
+            // stays until it is closed: an installer may already have sent the old quote.
+            const moved = replannedText(res && res.saved, store.plan());
+            if (moved && !(store.ui().notice && store.ui().notice.kind === 'storage')) store.setUI({ notice: { kind: 'replanned', message: moved } });
+            else if (store.ui().notice && store.ui().notice.kind === 'replanned') store.setUI({ notice: null });
             if (h.damaged && h.damaged.length) actions.toast('Opened ' + name + ', but the photo in this file is damaged and could not be opened. The plan and measurements are kept; choose the photo again to see it.', 'warn');
             else if (h.missing.length) actions.toast('Opened ' + name + ', but its photo was not saved in the file. The plan and measurements are kept.', 'warn');
             else actions.toast('Opened ' + name + '.', 'ok');
@@ -13524,7 +14026,27 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       return actions;
     }
 
-    return { createActions, parseLength, nextFeatureLabel, nextOutletLabel, wallForPoint, KINDS_FOR_TYPE, isSmallPhoto, SMALL_PHOTO_PX };
+    /**
+     * What to tell someone whose saved file was planned again with different results: the materials cost (and the
+     * customer quote, when there is one) then and now. '' when the file carries no totals or they have not moved
+     * (by more than a dollar). saved = {cost, quoteTotal} from schema.importProject; plan = the fresh plan.
+     */
+    function replannedText(saved, plan) {
+      const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+      const money = (v) => '$' + v.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+      const sm = plan && plan.summary ? plan.summary : null;
+      if (!saved || !sm) return '';
+      const parts = [];
+      const was = num(saved.cost), now = num(sm.cost);
+      if (was !== null && now !== null && Math.abs(was - now) > 1) parts.push('materials were ' + money(was) + ', now ' + money(now));
+      const qWas = num(saved.quoteTotal), qNow = num(sm.quoteTotal);
+      if (qWas !== null && qNow !== null && Math.abs(qWas - qNow) > 1) parts.push('the customer quote was ' + money(qWas) + ', now ' + money(qNow));
+      if (!parts.length) return '';
+      return 'This plan was saved with different planning rules (an older LightPlan, most likely). Cords, lights and prices were worked out again: ' +
+        parts.join('; ') + '. Check the shopping list before you order or quote.';
+    }
+
+    return { createActions, parseLength, nextFeatureLabel, nextOutletLabel, wallForPoint, KINDS_FOR_TYPE, isSmallPhoto, SMALL_PHOTO_PX, replannedText };
   });
 
 </script>
@@ -14874,6 +15396,17 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     return { visible, alts };
   }
 
+  /** Does the polyline S (CSS px) pass through the box {x, y, w, h} grown by `pad` px on every side? */
+  function pathHitsBox(S, box, pad) {
+    const p = pad || 0;
+    const x = box.x - p, y = box.y - p, w = box.w + 2 * p, h = box.h + 2 * p;
+    for (let i = 0; i + 1 < S.length; i++) {
+      const c = clipSegment([S[i][0] - x, S[i][1] - y], [S[i + 1][0] - x, S[i + 1][1] - y], w, h);
+      if (c && Math.hypot(c[1][0] - c[0][0], c[1][1] - c[0][1]) > 0.5) return true;
+    }
+    return false;
+  }
+
   function isTypingTarget(el) {
     if (!el || !el.tagName) return false;
     if (el.isContentEditable) return true;
@@ -14902,6 +15435,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     const loupeCtx = loupeCanvas.getContext('2d');
 
     const view = { scale: 1, tx: 0, ty: 0, cssW: 0, cssH: 0, dpr: 1, fitted: true, imageKey: null, pendingFit: true, imgW: 0, imgH: 0 };
+    const insets = { top: 0, bottom: 0 };  // canvas CSS px covered by the hint bar (top) and the view buttons (bottom)
     const pointers = new Map();     // pointerId → {x, y, type}
     let drag = null;                // {type:'pending'|'pan'|'handle'|'pinch', ...}
     let hover = null;               // {img (snapped), snap, raw} while placing, or null
@@ -14956,15 +15490,38 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       view.tx = clamp(view.tx, mx - iw, view.cssW - mx);
       view.ty = clamp(view.ty, my - ih, view.cssH - my);
     }
+    /**
+     * The part of the canvas the photo is fitted into: below whatever the page floats over its top (the hint bar
+     * while a tool is in use) and above what it floats over its bottom (the view buttons). The insets are ignored
+     * when they would leave less than a third of the canvas.
+     */
+    function freeArea() {
+      const top = clamp(insets.top, 0, view.cssH), bottom = clamp(insets.bottom, 0, view.cssH);
+      const h = view.cssH - top - bottom;
+      return h >= Math.max(120, view.cssH / 3) ? { top, h } : { top: 0, h: view.cssH };
+    }
     function fit() {
       if (!(view.cssW > 0 && view.cssH > 0) || !(view.imgW > 0 && view.imgH > 0)) { view.pendingFit = true; requestRedraw(); return; }
-      const s = fitScaleFor(view.cssW, view.cssH) * FIT_MARGIN;
+      const area = freeArea();
+      const s = fitScaleFor(view.cssW, area.h) * FIT_MARGIN;
       view.scale = s;
       view.tx = (view.cssW - view.imgW * s) / 2;
-      view.ty = (view.cssH - view.imgH * s) / 2;
+      view.ty = area.top + (area.h - view.imgH * s) / 2;
       view.fitted = true;
       view.pendingFit = false;
       requestRedraw();
+    }
+    /**
+     * Tell the viewport how much of the canvas the page covers at the top and bottom ({top, bottom}, CSS px).
+     * A photo that is still at its fitted size moves into the free part; one the user has zoomed or moved stays.
+     */
+    function setInsets(v) {
+      const top = isObj(v) && isNum(v.top) && v.top > 0 ? Math.round(v.top) : 0;
+      const bottom = isObj(v) && isNum(v.bottom) && v.bottom > 0 ? Math.round(v.bottom) : 0;
+      if (Math.abs(top - insets.top) < 2 && Math.abs(bottom - insets.bottom) < 2) return false;
+      insets.top = top; insets.bottom = bottom;
+      if (view.fitted || view.pendingFit) fit();
+      return true;
     }
     function syncImage() {
       const prj = project();
@@ -16028,6 +16585,12 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
       // Cords, in the colour of their outlet's circuit. A cord from an outlet is a solid line; a jumper cord (run to
       // run) is thinner and dashed. The pieces lying on the ground are drawn a little heavier than the risers.
       const plugIns = [];
+      // Every cord on screen, so that a label is put beside its own cord and never across another one.
+      const drawnCords = [];
+      for (const feed of arr(power.feeds)) {
+        if (!isObj(feed) || !onPhoto(feed) || feed.plugIn === true || !cordPieces(feed).length) continue;
+        drawnCords.push({ id: feed.id, S: validPts(feed.cordPath).map(imageToScreen) });
+      }
       for (const feed of arr(power.feeds)) {
         if (!isObj(feed) || !onPhoto(feed)) continue;
         const color = circuitColor(prj, feed.circuitId);
@@ -16059,7 +16622,8 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
           }
         }
         const ft = isNum(feed.cord.lengthFt) ? feed.cord.lengthFt : 0;
-        labels.push({ text, alts, swatch: color, priority: jumper ? 0.4 + Math.min(0.5, ft / 100) : 1.5, dashed: jumper });
+        labels.push({ text, alts, swatch: color, priority: jumper ? 0.4 + Math.min(0.5, ft / 100) : 1.5, dashed: jumper,
+          avoid: drawnCords.filter((c) => c.id !== feed.id).map((c) => c.S) });
       }
       // Run start arrows: where each run is plugged in, pointing the way the lights run.
       const features = new Map(arr(prj.features).filter(isObj).map((f) => [f.id, f]));
@@ -16376,11 +16940,18 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         if (Array.isArray(l.alts)) {
           // Anchored labels (cords): only at one of their own spots, wholly on the canvas, or not at all.
           const gap = isNum(l.gap) ? l.gap : 5;
-          for (const a of l.alts) {
-            const t = Math.abs(a.nx) * w / 2 + Math.abs(a.ny) * h / 2 + (isNum(a.gap) ? a.gap : gap);
-            const b = { x: a.x + a.nx * t - w / 2, y: a.y + a.ny * t - h / 2, w, h };
-            if (b.x < 2 || b.y < 2 || b.x + w > view.cssW - 2 || b.y + h > view.cssH - 2) continue;
-            if (free(b)) { box = b; break; }
+          // First a spot whose box touches no other cord (a label lying across another cord reads as that cord's);
+          // only when there is none, any free spot beside its own cord.
+          const others = arr(l.avoid);
+          for (const strict of others.length ? [true, false] : [false]) {
+            for (const a of l.alts) {
+              const t = Math.abs(a.nx) * w / 2 + Math.abs(a.ny) * h / 2 + (isNum(a.gap) ? a.gap : gap);
+              const b = { x: a.x + a.nx * t - w / 2, y: a.y + a.ny * t - h / 2, w, h };
+              if (b.x < 2 || b.y < 2 || b.x + w > view.cssW - 2 || b.y + h > view.cssH - 2) continue;
+              if (strict && others.some((S) => pathHitsBox(S, b, 2))) continue;
+              if (free(b)) { box = b; break; }
+            }
+            if (box) break;
           }
           if (!box) continue;
         } else {
@@ -16576,6 +17147,8 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     return {
       canvas,
       fit,
+      setInsets,
+      getInsets: () => ({ top: insets.top, bottom: insets.bottom }),
       zoomBy,
       zoomIn: () => zoomBy(1.4),
       zoomOut: () => zoomBy(1 / 1.4),
@@ -16601,7 +17174,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
 
   return {
     createViewport, selectionHandles, snapCandidates, layersFor, targetKey, midpointHandles, isDoubleTap, snapRadiusImg,
-    cordLabelText, cordPieces, tapMarkers, cordLabelSpots, clipSegment, tapErrorPx,
+    cordLabelText, cordPieces, tapMarkers, cordLabelSpots, clipSegment, tapErrorPx, pathHitsBox,
   };
 });
 
@@ -17364,9 +17937,11 @@ LP.define('ui.export', ['catalog', 'bom', 'schema', 'suppliers'], function (cata
    *                 splitters, trees: [[row, …]] }],
    *     loose: [row] (lights with no outlet yet), rows: [row] (everything, same order) }
    * row = { feedId, outletId, depth, kind: 'home' | 'jumper' | 'plugIn' | 'unknown' | 'none',
-   *         names: [run labels], lights: 'Front eave, Ridge', featureIds, ownCord,
+   *         names: [run labels; 'Eave 1, left part' when a run is on more than one cord], lights: 'Front eave, Ridge',
+   *         featureIds, ownCord,
    *         what: '25 ft cord' | '6 ft jumper cord' | 'Plugs straight in' | 'Cord length unknown' | 'No outlet yet',
-   *         source: 'Porch outlet' | 'the end of Front door' | 'the 3-way tap at the start of Walkway left edge' | '',
+   *         source: 'Porch outlet' | 'the end of Front door' | 'the 3-way tap at the start of Walkway left edge' |
+   *                 'the 3-way tap 19 ft from the left end of Eave 1' (a run fed from its middle) | '',
    *         line: what + where it comes from, as one sentence part ('6 ft jumper cord from the end of Front door'),
    *         route: cord.routeText | '', startLabel, pieces, boughtFt, neededFt (rounded up), awg, gauge: '16-gauge',
    *         dropPct, pathDropPct, watts (its own lights), carriesW (everything on its cord), strings, unit, taps,
@@ -17382,7 +17957,34 @@ LP.define('ui.export', ['catalog', 'bom', 'schema', 'suppliers'], function (cata
     const featureById = new Map(arr(prj.features).filter(isObj).map((f) => [f.id, f]));
     const outletLabel = (id) => { const o = byId(prj.outlets, id) || byId(power.outlets, id); return o ? str(o.label) || 'Outlet' : null; };
     const runsOf = (f) => arr(f.runIds).map((id) => runById.get(id)).filter(Boolean);
-    const namesOf = (f) => runsOf(f).map((r) => str(r.label)).filter(Boolean);
+    // A run that is on more than one cord (fed from its middle, or longer than one cord may feed) has a row per
+    // part: "Eave 1, left part" and "Eave 1, right part" (the end each part runs to), or "part 1 of 3".
+    const feedsOfRun = new Map();
+    for (const f of feeds) for (const id of arr(f.runIds)) { if (!feedsOfRun.has(id)) feedsOfRun.set(id, []); feedsOfRun.get(id).push(f); }
+    const sideOf = (f) => {
+      const st = isObj(f.start) ? f.start : {};
+      const toward = /^(left|right|top|bottom) end of /.exec(str(st.toward));
+      if (toward) return toward[1];
+      // Starts at an end of the run and works away from it.
+      const from = /^(left|right|top|bottom) end of /.exec(str(st.label));
+      return from ? { left: 'right', right: 'left', top: 'bottom', bottom: 'top' }[from[1]] : null;
+    };
+    const partName = (f, run) => {
+      const label = str(run.label);
+      const sharing = feedsOfRun.get(run.id) || [];
+      if (!label || sharing.length < 2) return label;
+      if (sharing.length === 2) {
+        const sides = sharing.map(sideOf);
+        if (sides[0] && sides[1] && sides[0] !== sides[1]) return label + ', ' + sideOf(f) + ' part';
+      }
+      return label + ', part ' + (sharing.indexOf(f) + 1) + ' of ' + sharing.length;
+    };
+    const namesOf = (f) => runsOf(f).map((r) => partName(f, r)).filter(Boolean);
+    /** "the 3-way tap 19 ft from the left end of Eave 1" for a cord that arrives part-way along a run. */
+    const tapPlace = (parent, pn) => {
+      const mid = /^point (.+)$/.exec(isObj(parent.start) ? str(parent.start.label) : '');
+      return mid ? 'the 3-way tap ' + mid[1] : 'the 3-way tap at the start of ' + (pn[0] || 'the run before it');
+    };
 
     const makeRow = (f) => {
       const fruns = runsOf(f);
@@ -17397,7 +17999,7 @@ LP.define('ui.export', ['catalog', 'bom', 'schema', 'suppliers'], function (cata
       else if (cord) kind = cord.kind === 'jumper' || (src && src.kind === 'feed') ? 'jumper' : 'home';
       else kind = 'unknown';
       let source = '';
-      if (parent) source = src.port === 'start' ? 'the 3-way tap at the start of ' + (pn[0] || 'the run before it') : 'the end of ' + (pn[pn.length - 1] || 'the run before it');
+      if (parent) source = src.port === 'start' ? tapPlace(parent, pn) : 'the end of ' + (pn[pn.length - 1] || 'the run before it');
       else if (f.outletId || (src && src.kind === 'outlet')) source = outletLabel(src && src.outletId ? src.outletId : f.outletId) || 'the outlet';
       const pieces = cord ? arr(cord.pieces).filter(isNum) : [];
       const length = pieces.length ? pieces.map((x) => formatNumber(x, 0) + ' ft').join(' + ')
@@ -17483,9 +18085,11 @@ LP.define('ui.export', ['catalog', 'bom', 'schema', 'suppliers'], function (cata
   }
   /**
    * The traced items whose size should be checked with a tape before buying: every item rated Low and every
-   * Medium item whose expected error is above 6%. Items that already use a tape-measured size are left out.
+   * Medium item whose expected error is above 6%. Items that already use a tape-measured size are left out; a
+   * bush has two sizes, so it stays on the list until both its width and its height are tape-measured
+   * (taped: 'width' | 'height' says which one is done).
    * → [{ featureId, label, type, level, kind: 'length' | 'height' | 'bush', pct (expected error, % or null),
-   *      lengthFt, lowFt, highFt, widthFt, heightFt, lights,
+   *      lengthFt, lowFt, highFt, widthFt, heightFt, lights, taped,
    *      text: 'about 38 ft, could be 33 to 44 ft' }]   (text never claims more precision than the photo gives)
    */
   function roughMeasurements(plan, project) {
@@ -17495,22 +18099,33 @@ LP.define('ui.export', ['catalog', 'bom', 'schema', 'suppliers'], function (cata
     for (const f of arr(isObj(project) ? project.features : null)) {
       if (!isObj(f)) continue;
       const m = measured[f.id];
-      if (!isObj(m) || m.ok === false || m.overridden) continue;
+      if (!isObj(m) || m.ok === false) continue;
+      // A bush with only one of its two sizes typed is half checked: it stays, with the typed size in its field.
+      const params = isObj(f.params) ? f.params : {};
+      const tapedW = f.type === 'bush' && isNum(params.overrideWidthFt) && params.overrideWidthFt > 0;
+      const tapedH = f.type === 'bush' && isNum(params.overrideHeightFt) && params.overrideHeightFt > 0;
+      const half = tapedW !== tapedH;
+      if (m.overridden && !half) continue;
       const level = isObj(m.confidence) ? m.confidence.level : null;
       const pct = isNum(m.uncertaintyPct) && m.uncertaintyPct >= 0 ? m.uncertaintyPct : m.uncertaintyPct === Infinity ? Infinity : null;
       if (!(level === 'low' || (level === 'medium' && pct !== null && pct > ROUGH_MEDIUM_PCT))) continue;
       const t = FEATURE_TYPES[f.type];
       const label = str(f.label) || (t ? t.label : 'Item');
       const item = { featureId: f.id, label, type: f.type, level, pct, kind: 'length', lengthFt: null, lowFt: null, highFt: null,
-        widthFt: null, heightFt: null, lights: isNum(m.lights) ? m.lights : null, text: '' };
+        widthFt: null, heightFt: null, lights: isNum(m.lights) ? m.lights : null, taped: half ? (tapedW ? 'width' : 'height') : null, text: '' };
       const offBy = pct !== null && pct !== Infinity ? 'about ' + formatNumber(Math.max(1, Math.round(pct)), 0) + '%' : null;
       if (f.type === 'bush') {
         item.kind = 'bush';
         item.widthFt = isNum(m.widthFt) ? m.widthFt : null;
         item.heightFt = isNum(m.heightFt) ? m.heightFt : null;
         if (item.widthFt === null || item.heightFt === null) continue;
-        item.text = 'about ' + roughFeet(item.widthFt) + ' wide by ' + roughFeet(item.heightFt) + ' tall' +
-          (offBy ? ', each side could be off by ' + offBy : ', a rough size');
+        if (half) {
+          item.text = tapedW ? roughFeet(item.widthFt) + ' wide by tape, about ' + roughFeet(item.heightFt) + ' tall from the photo: measure the height too'
+            : 'about ' + roughFeet(item.widthFt) + ' wide from the photo, ' + roughFeet(item.heightFt) + ' tall by tape: measure the width too';
+        } else {
+          item.text = 'about ' + roughFeet(item.widthFt) + ' wide by ' + roughFeet(item.heightFt) + ' tall' +
+            (offBy ? ', each side could be off by ' + offBy : ', a rough size');
+        }
       } else {
         const vertical = !!(t && t.geometry === 'vertical');
         // A tree or column is checked by its height (the tape field sets the height; the wrap follows from it).
@@ -17788,7 +18403,9 @@ LP.define('ui.export', ['catalog', 'bom', 'schema', 'suppliers'], function (cata
     if (count.typical) statuses.push({ kind: 'typical', text: some('typical', '1 part', 'parts') + ' at a typical price' });
     return {
       summary: 'Ordered as parts: socket wire ' + (ready ? 'by the spool or as a ready-made length' : 'by the spool') + ', bulbs in ' + (box ? 'boxes' : 'packs') + ' of ' +
-        n(packQty) + ' by colour, and a male and a female slide-on plug for every length you cut.',
+        n(packQty) + ' by colour, and slide-on plugs for the ends you cut' + (ready ? ' (a ready-made length comes with plugs)' : '') + '.' +
+        (str(c.wire.wireType) ? ' ' + c.wire.wireType + ' is the thin two-wire cord the sockets and plugs are made for.' : ''),
+      short: 'Socket wire, bulbs and slide-on plugs, cut to fit each run.',
       limit: limits.length ? 'One cord can feed at most ' + limits.join(' or ') + (limits.length > 1 ? ', whichever comes first.' : '.') : '',
       perFoot: perFt !== null ? 'about ' + formatMoney(perFt) + ' per ft with bulbs' : '',
       prices: priceSentence(parts, { account: false }),
@@ -19307,6 +19924,59 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       return (Number(t) === 0 ? '' : v > 0 ? '+' : '-') + t + '%';
     }
     function plural(n, one, many) { return fmtNum(n, 0) + ' ' + (n === 1 ? one : many); }
+    /**
+     * A price as people type it: "12.5", "$12", "12,50" (a comma for the decimal point) or "1,234.50" → dollars,
+     * or null when it is not a number of 0 or more.
+     */
+    function parseMoney(text) {
+      let t = String(text == null ? '' : text).trim().replace(/^\$\s*/, '').replace(/\s+/g, '');
+      if (!t) return null;
+      if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) t = t.replace(/,/g, '');
+      else if (/^\d*,\d{1,2}$/.test(t)) t = t.replace(',', '.');
+      if (!/^(\d+\.?\d*|\.\d+)$/.test(t)) return null;
+      const v = Number(t);
+      return Number.isFinite(v) && v >= 0 ? v : null;
+    }
+    /**
+     * A tape-measured size that is so far from what the photo says that it is probably a slip of the finger
+     * (150 for 15.0): the factor between them when it is 3 or more, else null.
+     */
+    function tapeMismatch(typedFt, photoFt) {
+      if (!(isNum(typedFt) && typedFt > 0 && isNum(photoFt) && photoFt > 0)) return null;
+      const k = typedFt > photoFt ? typedFt / photoFt : photoFt / typedFt;
+      return k >= 3 ? k : null;
+    }
+    /** A plain name for a price-override key that is not on the shopping list right now (a part number, a product). */
+    function overrideName(library, sku) {
+      const lib = library || {};
+      for (const p of arr(lib.products)) {
+        if (!p) continue;
+        if (p.sku === sku || p.id === sku) return p.name || sku;
+        for (const c of suppliers.componentOffers(p)) if (c.offer && c.offer.sku === sku) return c.offer.name || sku;
+      }
+      for (const a of arr(lib.accessories)) if (a && a.sku === sku) return a.name || sku;
+      for (const sid of Object.keys(suppliers.SUPPLIER_ACCESSORIES)) {
+        const m = suppliers.SUPPLIER_ACCESSORIES[sid];
+        for (const k of Object.keys(m)) if (m[k].sku === sku) return m[k].name || sku;
+      }
+      return sku;
+    }
+    /**
+     * Your own prices for things that are not on the shopping list right now (the plan changed, or a dearer size
+     * dropped out of the wire mix): [{sku, name, price}]. They are kept, so they need a way to be seen and reset.
+     */
+    function strayOverrides(project, plan) {
+      const overrides = project && project.pricing && project.pricing.overrides;
+      if (!overrides || typeof overrides !== 'object') return [];
+      const onList = new Set(arr(plan && plan.bom && plan.bom.lines).map((l) => l.sku));
+      const out = [];
+      for (const sku of Object.keys(overrides)) {
+        const v = typeof overrides[sku] === 'string' ? Number(overrides[sku]) : overrides[sku];
+        if (onList.has(sku) || !(isNum(v) && v >= 0)) continue;
+        out.push({ sku, name: overrideName(plan && plan.library, sku), price: v });
+      }
+      return out;
+    }
     const UNIT_WORDS = { string: ['string', 'strings'], net: ['net', 'nets'], set: ['set', 'sets'], foot: ['ft', 'ft'], pack: ['pack', 'packs'], spool: ['spool', 'spools'], each: ['', ''] };
     function unitWord(unit, n) { const w = UNIT_WORDS[unit] || ['unit', 'units']; return n === 1 ? w[0] : w[1]; }
     function hashKey(s) {
@@ -19594,9 +20264,11 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
     const MOUNT_OPTIONS = [['gutter', 'Gutter clips'], ['shingle', 'Shingle tabs'], ['allInOne', 'All-in-one clips'], ['ridge', 'Ridge clips'],
       ['adhesive', 'Adhesive clips'], ['zipTie', 'Zip ties'], ['stake', 'Light stakes'], ['none', 'No clips']];
     const MOUNT_LABEL = MOUNT_OPTIONS.reduce((o, m) => { o[m[0]] = m[1]; return o; }, {});
-    const CALIBRATE_SENTENCE = 'Tap the four corners of something rectangular on this wall, like the garage door, and LightPlan ' +
-      'will un-tilt the photo so measurements come out as if you stood straight in front of it.';
+    const CALIBRATE_SENTENCE = 'Tap the four corners of this wall, then one thing on it whose size you know, like the height of the front door. ' +
+      'LightPlan un-tilts the photo so lengths come out as if you stood straight in front of it. ' +
+      'To tap a garage door or the front door instead, choose it under "What is it?" first.';
     const WASTE_NOTE = 'Add 10% for waste, corners and drops to the outlet';
+    const RAKE_NOTE = 'A rake is the sloped edge of a gable roof, from the eave up to the peak.';
     const PHOTO_TIPS = [
       'Stand across the street so the whole front of the house fits in the photo.',
       'Hold the phone level at chest height and use the main (1×) lens.',
@@ -19889,7 +20561,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       } else {
         statusRows.push(['How', 'Not measured yet. ' + ((sol && sol.reason) || (pl.kind === 'wall' ? 'Mark a rectangle or add a reference length below.' : ''))]);
       }
-      if (K && K.ok !== false) statusRows.push(['Lens', lensWords(K.label) + (isNum(K.f) ? ' (' + fmtNum(K.f, 0) + ' px)' : '')]);
+      // How the lens was worked out, in words (the focal length in pixels is on the Upload step for those who want it).
+      if (K && K.ok !== false) statusRows.push(['Lens', lensWords(K.label)]);
       if (pl.kind === 'roof' && sol && sol.pitch) statusRows.push(['Pitch', sol.pitch.rise + '/' + sol.pitch.run + (sol.pitch.source === 'estimated' ? ' (estimated)' : sol.pitch.source === 'default' ? ' (assumed)' : '')]);
       kids.push(h('div', { class: 'status-card' }, dl(statusRows), conf ? confidenceBlock(conf, 'plane-conf-' + pl.id) : null));
       const zoomWhy = zoomedOutReason(conf);
@@ -19947,7 +20620,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       kids.push(h('div', { class: 'btn-row' },
         button(rect ? 'Mark corners again' : 'Mark 4 corners', { act: 'mark-rect', data: { id: pl.id }, icon: 'corners', cls: rect ? '' : 'primary' }),
         rect ? button('Remove', { act: 'remove-rect', data: { id: pl.id }, cls: 'ghost' }) : null));
-      return h('div', { class: 'sub', 'data-key': 'rect' }, h('h4', null, 'Perspective rectangle'), kids);
+      return h('div', { class: 'sub', 'data-key': 'rect' }, h('h4', null, 'The 4 corners of a rectangle'),
+        h('p', { class: 'hint' }, 'Four corners of anything truly rectangular on this wall (the wall itself, a garage door, a door). Seeing how it is skewed in the photo is how LightPlan un-tilts the picture. This is also called a perspective rectangle.'),
+        kids);
     }
 
     function refEditor(ctx, pl, sol) {
@@ -20070,6 +20745,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           field('Surface to trace on', selectInput({ act: 'active-plane', value: ctx.activePlane ? ctx.activePlane.id : '', options: planes.map((p) => [p.id, planeOptionLabel(p)]) })),
           toggle('Snap', { act: 'view-toggle', data: { key: 'snap' }, checked: ui.view.snap })),
         h('p', { class: 'hint' }, 'Lines: tap each corner, then Finish or double-tap. Windows and bushes: tap around and tap the first point to close. Trees and columns: tap the base, then the top.'),
+        h('p', { class: 'hint', 'data-key': 'rake-note' }, RAKE_NOTE),
       ], { key: 'types' }));
 
       // Feature list
@@ -20098,9 +20774,10 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const ft = FEATURE_TYPES[f.type] || {};
       const cfg = ctx.config;
       const kids = [];
+      // The short names (the same words as the "What to light" buttons) fit the half-width picker whole.
       kids.push(h('div', { class: 'row-2' },
         field('Label', textInput({ act: 'feature-field', value: f.label, data: { id: f.id, field: 'label' }, maxlength: 80 })),
-        field('Type', selectInput({ act: 'feature-type', value: f.type, options: TYPE_ORDER.map((t) => [t, FEATURE_TYPES[t].label]), data: { id: f.id } }))));
+        field('Type', selectInput({ act: 'feature-type', value: f.type, options: TYPE_ORDER.map((t) => [t, FEATURE_TYPES[t].short]), data: { id: f.id } }))));
       kids.push(field('Surface', selectInput({ act: 'feature-plane', value: f.planeId || '', options: [['', 'None']].concat(ctx.planes.map((p) => [p.id, p.name])), data: { id: f.id } })));
       const fpl = byId(ctx.planes, f.planeId);
       const kinds = actionsModule.KINDS_FOR_TYPE && actionsModule.KINDS_FOR_TYPE[f.type];
@@ -20365,10 +21042,13 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           w.url ? linkRow(ctx, w.url, 'Wholesale page', 'whole-' + facts.id, { aria: facts.name + ' wholesale page', kind: 'wholesale' }) : null,
           w.note ? h('p', { class: 'hint' }, w.note) : null) : null));
       const style = lib.config.buying && lib.config.buying.style === 'strings' ? 'strings' : 'bulk';
+      // What "cut-to-length" is ordered as, said once here instead of on every run card.
+      const bulkUsed = arr(plan.runs).map((r) => (r && r.productKind === 'bulk' ? catalog.getProduct(lib.products, r.productId) : null)).find(Boolean);
+      const bulkWords = bulkUsed ? words.describeBulk(bulkUsed, project.pricing && project.pricing.overrides) : null;
       kids.push(h('div', { 'data-key': 'buy-style' }, choiceList('C7 and C9 as', 'buy-style-label', [
         { title: 'Cut-to-length wire + bulbs', sub: 'How installers buy: wire by the spool, bulbs by the box, cut to fit each run.', on: style === 'bulk', act: 'buy-style', data: { style: 'bulk' } },
         { title: 'Ready-made strings', sub: 'Ready to hang. A run uses whole strings, so some length is left over.', on: style === 'strings', act: 'buy-style', data: { style: 'strings' } },
-      ])));
+      ]), bulkWords ? h('p', { class: 'hint', 'data-key': 'bulk-what' }, bulkWords.summary + (bulkWords.limit ? ' ' + bulkWords.limit : '')) : null));
       return section('Buy from', kids, { key: 'buy-from' });
     }
 
@@ -20413,7 +21093,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         }
         return h('div', { class: 'prod-info bulk', 'data-key': 'pi-' + run.id, 'data-supplier': p.supplierId, 'data-kind': 'bulk' },
           h('p', { class: 'prod-from' }, h('strong', null, supName), ' · sold as parts' + (bulk.perFoot ? ' · ' + bulk.perFoot : '')),
-          h('p', { class: 'prod-what' }, bulk.summary + (bulk.limit ? ' ' + bulk.limit : '')),
+          h('p', { class: 'prod-what' }, bulk.short || bulk.summary),
           h('p', { class: 'prod-prices' }, bulk.statuses.map((st) => priceBadge(st))),
           h('details', { class: 'disclosure parts', 'data-key': 'parts-' + run.id },
             h('summary', null, h('span', null, 'Parts and part numbers (' + bulk.parts.length + ')'), icon('chevronDown', 'chev')),
@@ -20475,7 +21155,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         const ft = FEATURE_TYPES[run.featureType] || { color: '#999', short: '' };
         // Every supplier's products are offered, grouped by supplier with the chosen one first (SPEC §8.5).
         const suitable = design.suitableProducts(run.featureType, lib, { allSuppliers: true });
-        const auto = design.resolveProduct(Object.assign({}, f, { productId: null }), lib).product;
+        const auto = design.resolveProduct(Object.assign({}, f, { productId: null }), lib, { colorMode: run.colorMode }).product;
         const groups = productGroups(suitable, lib);
         const extra = [];
         if (f.productId && !suitable.some((p) => p.id === f.productId)) {
@@ -20489,6 +21169,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           h('div', { class: 'run-head' }, swatch(ft.color, 'dot'), h('span', { class: 'run-label' }, run.label),
             h('span', { class: 'swatches' }, arr(run.colors).slice(0, 5).map((c) => swatch(c)))),
           field('Product', groupedSelect({ act: 'run-product', value: f.productId || '', first: [['', 'Auto: ' + (auto ? auto.name : 'none available')]], groups, last: extra, data: { id: f.id } })),
+          // The picker cuts a long name short, so the product in use is written out in full under it.
+          run.productName ? h('p', { class: 'run-product', 'data-key': 'pn-' + run.id }, run.productName) : null,
           productInfo(ctx, run),
           field('Color', selectInput({ act: 'run-color', value: f.color ? f.color.mode : '', options: colorOptions, data: { id: f.id } })),
           runControls(ctx, f, run),
@@ -20517,17 +21199,18 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const kids = [];
       if (catalog.LINEAR_TYPES.includes(f.type)) {
         const def = MOUNT_LABEL[ft.defaultMount] || 'type default';
-        const mountOpts = [['', 'Auto (' + def + ')']].concat(MOUNT_OPTIONS);
+        const mountOpts = [['', 'Auto: ' + def.toLowerCase()]].concat(MOUNT_OPTIONS);
         kids.push(field('Clips', selectInput({ act: 'run-mount', value: params.mount || '', options: mountOpts, data: { id: f.id } })));
       }
       const outlets = ctx.project.outlets.filter((o) => !ctx.image || o.imageId === ctx.image.id || o.imageId == null);
       if (outlets.length) {
-        const opts = [['', 'Auto (nearest)']].concat(outlets.map((o) => [o.id, o.label]));
+        const opts = [['', 'Auto: nearest']].concat(outlets.map((o) => [o.id, o.label]));
         if (params.outletId && !opts.some((x) => x[0] === params.outletId)) opts.push([params.outletId, 'Missing outlet']);
         kids.push(field('Outlet', selectInput({ act: 'run-outlet', value: params.outletId || '', options: opts, data: { id: f.id } })));
       }
       const open = !(f.closed || ft.geometry === 'polygon' || ft.geometry === 'area' || ft.geometry === 'vertical');
-      const grid = kids.length ? h('div', { class: 'row-2' }, kids) : null;
+      // One full-width row each, so the choice can be read without opening the picker.
+      const grid = kids.length ? h('div', { class: 'run-picks' }, kids) : null;
       const rev = open ? toggle('Start from the other end', { act: 'run-reverse', data: { id: f.id }, checked: params.reverse === true }) : null;
       return grid || rev ? h('div', { class: 'run-controls' }, grid, rev) : null;
     }
@@ -20695,7 +21378,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         toggle('Link nearby runs with jumper cords', { act: 'power-daisy', checked: daisy }),
         h('p', { class: 'hint' }, daisy
           ? 'On: runs that sit close together are joined with a jumper cord (a short cord from one run to the next), so only a few cords go back to the outlets.'
-          : 'Off: every run gets its own cord from an outlet. Turn it on to join nearby runs with jumper cords (short cords from one run to the next).'),
+          : 'Off: every run, or set of runs joined end to end, gets its own cord from an outlet. Turn it on to join nearby runs with jumper cords (short cords from one run to the next).'),
       ];
       for (const o of cords.outlets) {
         if (!o.trees.length) continue;
@@ -20713,7 +21396,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         treeKids.push(h('p', { class: 'hint legend' },
           h('span', { class: 'lg' }, h('i', { class: 'lg-line home', 'aria-hidden': 'true' }), 'cord from an outlet'),
           h('span', { class: 'lg' }, h('i', { class: 'lg-line jumper', 'aria-hidden': 'true' }), 'jumper cord'),
+          h('span', { class: 'lg' }, h('i', { class: 'lg-line none', 'aria-hidden': 'true' }), 'plugs straight in (no cord)'),
           h('span', { class: 'lg' }, h('i', { class: 'lg-tap', 'aria-hidden': 'true' }), '3-way tap (a plug with three outlets)')));
+        treeKids.push(h('p', { class: 'hint', 'data-key': 'gauge-note' }, '16-gauge is the usual light outdoor extension cord. A smaller number (14 or 12) is a thicker cord for a heavier load or a longer run.'));
         const detail = cords.rows.filter((r) => r.kind === 'home' || r.kind === 'jumper').map((r) => h('li', { 'data-key': 'cd-' + r.feedId },
           h('strong', null, r.lights + ': '),
           h('span', { class: 'num' }, [
@@ -20738,7 +21423,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         tile('Cords to outlets', n(c.homeRuns)),
         tile('Jumper cords', n(c.jumpers), 'short cords from one run to the next'),
         tile('3-way taps', n(c.taps), 'plugs with three outlets'),
-        tile('Timers', n(c.timers)), tile('Power stakes', n(c.splitters)), tile('Cord covers', n(c.cordCovers)), tile('GFCI adapters', n(c.gfciAdapters))), { key: 'counts' }));
+        tile('Timers', n(c.timers)), tile('Power stakes', n(c.splitters), 'ground stakes with 3 outlets, for an outlet that feeds several cords'),
+        tile('Cord covers', n(c.cordCovers)), tile('GFCI adapters', n(c.gfciAdapters))), { key: 'counts' }));
 
       // Circuits
       const circuitItems = project.circuits.map((ci) => {
@@ -20785,7 +21471,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const notes = [];
       if (r.tapText) notes.push(capFirst(r.tapText) + ' (a plug with three outlets)');
       if (r.cover) notes.push('Needs a cord cover where it crosses the walkway');
-      if (r.doorway) notes.push('Passes ' + r.doorway + ': keep it clear of the door');
+      if (r.doorway) notes.push('Runs in front of ' + r.doorway + ': keep it tight against the doorstep, under a cord cover');
       const showOwn = daisy && r.featureIds.length > 0 && (r.kind === 'jumper' || r.kind === 'plugIn' || r.ownCord);
       const depth = Math.max(0, Math.min(5, r.depth || 0));
       return h('li', { class: 'feed-item ' + r.kind + (depth ? ' child' : ''), 'data-key': r.feedId, 'data-kind': r.kind, style: depth ? 'margin-left:' + depth * 12 + 'px' : null },
@@ -20915,7 +21601,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const lib = plan.library;
       const words = exportModule();
       const index = words ? words.bulkPartIndex(lib) : null;
-      const usedBasis = !!(lib.config.buying && lib.config.buying.costBasis === 'used');
+      // The basis the plan applied: "only what is used" counts in installer mode only (bom.costBasis says which).
+      const usedBasis = bom.costBasis === 'used';
       let toOrder = 0;
       let byShare = 0;
       const rows = arr(bom.lines).map((l) => {
@@ -20939,7 +21626,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           h('div', { class: 'bom-price' },
             h('span', { class: 'num bom-qty' }, qtyWords(l.qty, l.unit, l.name) + ' ×'),
             h('span', { class: 'money-input' }, h('span', { 'aria-hidden': 'true' }, '$'),
-              numInput({ act: 'price', value: l.unitPrice, min: 0, step: 0.01, decimals: 2, data: { sku: l.sku }, aria: 'Unit price of ' + l.name, cls: l.overridden ? 'changed' : '' })),
+              textInput({ act: 'price', value: isNum(l.unitPrice) ? l.unitPrice.toFixed(2) : '', inputmode: 'decimal', maxlength: 12, data: { sku: l.sku }, aria: 'Unit price of ' + l.name, cls: 'num' + (l.overridden ? ' changed' : '') })),
             l.overridden ? button('Reset', { act: 'price-reset', data: { sku: l.sku }, cls: 'small ghost', aria: 'Reset the price of ' + l.name + ' to ' + money(l.defaultPrice) }) : null),
           use ? h('p', { class: 'bom-use' }, h('span', { class: 'num' }, use), share ? h('span', { class: 'num' }, ' · the whole order costs ' + money(l.buyTotal)) : null) : null,
           url ? linkRow(ctx, url, 'Open', 'bom-' + key, { aria: l.name + ' at ' + (l.supplierName || 'the supplier'), kind: 'product' }) : null,
@@ -20950,11 +21637,18 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const basis = project.quote.enabled && rows.length ? h('div', { class: 'cost-basis', 'data-key': 'cost-basis' },
         choiceList('Charge this job for', 'cost-basis-label', [
           { title: 'Everything ordered', sub: 'The whole spool, box or pack goes on this job.', on: !usedBasis, act: 'cost-basis', data: { basis: 'bought' } },
-          { title: 'Only what is used', sub: 'You keep the leftover wire, bulbs and plugs for the next job, so wire is bought in the size that costs least per foot.', on: usedBasis, act: 'cost-basis', data: { basis: 'used' } },
+          { title: 'Only what is used', sub: 'You keep the leftover wire, bulbs and plugs for the next job. The order stays the same; only what this job is charged changes.', on: usedBasis, act: 'cost-basis', data: { basis: 'used' } },
         ]),
         byShare ? null : h('p', { class: 'hint' }, 'Nothing in this plan is bought by the spool or box, so both give the same total.')) : null;
       const differs = Math.abs(toOrder - bom.subtotal) > 0.004;
       const from = arr(lib.suppliers).find((x) => x && x.id === (lib.supplierId || GENERIC));
+      const stray = strayOverrides(project, plan);
+      const strayBlock = stray.length ? h('div', { class: 'bom-stray', 'data-key': 'bom-stray' },
+        h('p', { class: 'hint' }, 'Your own ' + (stray.length === 1 ? 'price for an item that is' : 'prices for items that are') + ' not on the list right now. ' +
+          (stray.length === 1 ? 'It is' : 'They are') + ' kept in case the item comes back:'),
+        h('ul', { class: 'stray-list' }, stray.map((x) => h('li', { 'data-key': 'stray-' + hashKey(x.sku), 'data-sku': x.sku },
+          h('span', { class: 'stray-name' }, x.name), h('span', { class: 'num' }, money(x.price)),
+          button('Reset', { act: 'price-reset', data: { sku: x.sku }, cls: 'small ghost', aria: 'Remove your price for ' + x.name }))))) : null;
       return section('Shopping list', [
         rows.length ? h('p', { class: 'bom-buying', 'data-key': 'bom-buying' }, h('span', null, 'Buying from ', h('strong', null, from ? from.name : 'Any store'), '.'),
           button('Change', { act: 'go-step', data: { step: 4 }, cls: 'small ghost', aria: 'Change who you buy from, in step 4' })) : null,
@@ -20962,6 +21656,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         basis,
         rows.length ? h('p', { class: 'bom-subtotal' }, h('span', null, differs ? 'Subtotal for this job' : 'Subtotal'), h('strong', { class: 'num' }, money(bom.subtotal))) : null,
         rows.length && differs ? h('p', { class: 'bom-subtotal order', 'data-key': 'to-order' }, h('span', null, 'To order'), h('strong', { class: 'num' }, money(toOrder))) : null,
+        strayBlock,
         rows.length ? h('p', { class: 'hint', 'data-key': 'bom-hint' }, bomHint(words ? words.priceSentence(bom.lines) : '')) : null,
       ], { key: 'bom' });
     }
@@ -21073,7 +21768,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           h('div', { class: 'disclosure-body' }, h('ol', { class: 'check-list' }, items)));
       });
       return section('Install checklist', [
-        groups.length ? h('p', { class: 'hint' }, h('span', { class: 'num' }, done + ' of ' + total), ' steps done. Ticks are saved in this browser.') : null,
+        groups.length ? h('p', { class: 'hint', 'data-key': 'ticks-note' }, h('span', { class: 'num' }, done + ' of ' + total),
+          persist.isAvailable() ? ' steps done. Ticks are saved in this browser.' : ' steps done. Ticks last until this page closes: this browser is not saving anything.') : null,
         groups.length ? blocks : h('p', { class: 'hint' }, 'The checklist appears once there are lights and outlets.'),
         done ? h('div', { class: 'btn-row' }, button('Clear ticks', { act: 'check-clear', cls: 'small ghost' })) : null,
       ], { key: 'checklist' });
@@ -21164,6 +21860,18 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       // ---------------------------------------------------------------- handlers
       const P = () => store.project();
       const num = (el) => { const v = parseFloat(String(el.value).replace(',', '.')); return Number.isFinite(v) ? v : null; };
+      /** What the photo itself measures for a tape field (the size before any tape value), or null. */
+      const photoSizeOf = (featureId, fieldName) => {
+        const f = byId(P().features, featureId);
+        const m = f ? store.plan().measured.features[featureId] : null;
+        if (!f || !m || !m.ok) return null;
+        const params = f.params || {};
+        if (fieldName === 'overrideWidthFt') return params.overrideWidthFt ? null : m.widthFt;
+        if (fieldName === 'overrideHeightFt') return params.overrideHeightFt ? null : m.heightFt;
+        const ft = FEATURE_TYPES[f.type] || {};
+        if (ft.geometry === 'vertical') return f.overrideFt ? null : (isNum(m.heightFt) ? m.heightFt : m.measuredFt);
+        return m.measuredFt;
+      };
       const badLength = (el) => {
         actions.toast('"' + el.value + '" is not a length LightPlan understands. Try 32\' 4", 32.3 or 388in.', 'warn');
         schedule();
@@ -21458,8 +22166,23 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           const v = raw ? parseLength(raw) : null;
           if (raw && v == null) { badLength(el); return; }
           const k = el.dataset.field;
-          if (k === 'overrideFt') actions.updateFeature(el.dataset.id, { overrideFt: v });
-          else actions.updateFeature(el.dataset.id, { params: { [k]: v } });
+          const id = el.dataset.id;
+          const apply = () => {
+            if (k === 'overrideFt') actions.updateFeature(id, { overrideFt: v });
+            else actions.updateFeature(id, { params: { [k]: v } });
+          };
+          // A size far from what the photo says is probably a slip (150 for 15.0): ask before it reaches the order.
+          const photo = photoSizeOf(id, k);
+          const off = v == null ? null : tapeMismatch(v, photo);
+          if (off === null || typeof actions.confirm !== 'function') { apply(); return; }
+          const fmt = (ft) => measure.formatLength(ft, P().settings && P().settings.lengthFormat);
+          const times = fmtNum(Math.round(off), 0) + ' times';
+          actions.confirm({
+            title: 'Is ' + fmt(v) + ' right?',
+            body: 'The photo measures about ' + fmt(photo) + ' here, so ' + fmt(v) + ' is ' + (v > photo ? times + ' as much' : 'only one part in ' + fmtNum(Math.round(off), 0) + ' of that') +
+              '. Keep it if the tape says so; otherwise check for a slip of the finger.',
+            confirmLabel: 'Keep ' + fmt(v), cancelLabel: 'Change it',
+          }).then((ok) => { if (ok) apply(); else schedule(); });
         },
         'feature-param': (el) => {
           const v = num(el);
@@ -21521,10 +22244,19 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         'circuit-breaker': (el) => actions.updateCircuit(el.dataset.id, { breakerAmps: Number(el.value) || 15 }),
         'circuit-existing': (el) => { const v = num(el); actions.updateCircuit(el.dataset.id, { existingLoadW: v != null && v >= 0 ? v : 0 }); },
         price: (el) => {
-          const v = num(el);
           if (el.value.trim() === '') { actions.setPriceOverride(el.dataset.sku, null); return; }
-          if (v == null || v < 0) { actions.toast('Enter a price of $0 or more.', 'warn'); schedule(); return; }
+          const v = parseMoney(el.value);
+          if (v == null) {
+            // Put the price that is in the plan back in the field, so what is shown is what is used.
+            const line = arr(store.plan().bom.lines).find((l) => l.sku === el.dataset.sku);
+            actions.toast('"' + el.value.trim().slice(0, 20) + '" is not a price. Type dollars and cents of $0 or more, like 12.50.', 'warn');
+            if (line && isNum(line.unitPrice)) el.value = line.unitPrice.toFixed(2);
+            schedule();
+            return;
+          }
           actions.setPriceOverride(el.dataset.sku, v);
+          // The same price typed again changes nothing in the plan: still show it as dollars and cents.
+          el.value = (Math.round(v * 100) / 100).toFixed(2);
         },
         'quote-toggle': (el) => actions.updateQuote({ enabled: !!el.checked }),
         'quote-text': (el) => actions.updateQuote({ [el.dataset.field]: el.value.slice(0, el.dataset.field === 'notes' ? 2000 : 120) }),
@@ -21589,6 +22321,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       mount, icon, h, morph, pickFile, exportFile, stepWarnings, warningStep, STEPS, validateProducts, diffConfig, ICONS,
       powerVerdict, outletSummaryText, roughList, planProgress, nextAction, runNextAction, lensWords, zoomedOutReason,
       productGroups, productOptionText, productsToSave, bushRuleText, supplierOfUrl, writeClipboard,
+      parseMoney, tapeMismatch, strayOverrides, CALIBRATE_SENTENCE,
     };
   });
 
@@ -21804,8 +22537,9 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
         if (!ft) return null;
         const label = ft.label.toLowerCase();
         if (ft.geometry === 'vertical') return { text: 'Tap the base of the ' + label.replace(/ \(.*\)/, '') + ', then its top.', count: pts + ' of 2', finish: false };
-        if (ft.geometry === 'polygon' || ft.geometry === 'area') return { text: 'Tap around the ' + label.replace(/ \(.*\)/, '') + '. Tap the first point to close it, or tap Finish.', count: pts ? pts + ' points' : '', finish: pts >= 3 };
-        return { text: 'Tap along the ' + label + ', corner by corner. Double-tap or tap Finish when done.', count: pts ? pts + ' points' : '', finish: pts >= 2 };
+        const count = pts + (pts === 1 ? ' point' : ' points');
+        if (ft.geometry === 'polygon' || ft.geometry === 'area') return { text: 'Tap around the ' + label.replace(/ \(.*\)/, '') + '. Tap the first point to close it, or tap Finish.', count, finish: pts >= 3 };
+        return { text: 'Tap along the ' + label + ', corner by corner. Double-tap or tap Finish when done.', count, finish: pts >= 2 };
       }
       if (mode.name === 'outlet') return { text: 'Tap where the outlet is on the photo.', count: '', finish: false };
       return null;
@@ -21893,6 +22627,51 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
       let lastPref = null;
       let lastSelKey = null;
       let hintPlaneKey = null;
+      const stageEl = $('stage');
+      const stageTop = hintbar ? hintbar.parentElement : null;
+      const workspace = stageEl ? stageEl.parentElement : null;
+
+      /**
+       * Keep the photo and the messages clear of what floats over the photo.
+       *  - While the hint bar is up (a tool in use, or "Trace next"), the viewport fits the photo into the room
+       *    under it and above the view buttons, so no tap aimed at the roof lands on a button of the bar.
+       *  - A message (toast) sits just under the hint bar, the sample note or a notice, never on top of them; while
+       *    a tool is in use it sits at the bottom of the photo instead, away from where the taps go.
+       */
+      function layoutOverlays() {
+        if (!stageEl) return;
+        const st = stageEl.getBoundingClientRect();
+        const hintUp = hintbar && !hintbar.hidden;
+        if (typeof viewport.setInsets === 'function') {
+          let top = 0;
+          let bottom = 0;
+          if (hintUp) {
+            top = Math.max(0, hintbar.getBoundingClientRect().bottom - st.top + 6);
+            const vc = document.querySelector('.view-controls');
+            const r = vc ? vc.getBoundingClientRect() : null;
+            // Only the buttons at the bottom of the photo take room there (on a wide screen the zoom buttons are at the top).
+            if (r && r.height > 0 && r.top > st.top + st.height / 2) bottom = Math.max(0, st.bottom - r.top + 6);
+          }
+          viewport.setInsets({ top, bottom });
+        }
+        if (toastRegion && workspace) {
+          const ws = workspace.getBoundingClientRect();
+          const tool = DRAW_MODES.includes(store.ui().mode.name);
+          if (tool) {
+            toastRegion.style.top = 'auto';
+            toastRegion.style.bottom = Math.max(8, Math.round(ws.bottom - st.bottom + 68)) + 'px';
+          } else {
+            let under = 0;
+            if (stageTop) for (const el of Array.from(stageTop.children)) { if (!el.hidden) under = Math.max(under, el.getBoundingClientRect().bottom - ws.top); }
+            toastRegion.style.bottom = 'auto';
+            toastRegion.style.top = Math.round(under > 0 ? under + 8 : 8) + 'px';
+          }
+        }
+      }
+      // The hint bar and the notes change height when their text wraps: follow them.
+      if (typeof ResizeObserver === 'function' && stageTop) {
+        try { const ro = new ResizeObserver(() => layoutOverlays()); ro.observe(stageTop); if (stageEl) ro.observe(stageEl); } catch (e) { /* ignore */ }
+      }
 
       const on = (el, ev, fn, opts) => { if (el) el.addEventListener(ev, fn, opts); };
 
@@ -22197,6 +22976,8 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
           a = 'Reload';
           b = 'Keep this tab\'s plan';
           closable = false;
+        } else if (n.kind === 'replanned') {
+          text = n.message || 'This plan was worked out again, and its totals changed.';
         }
         noticeText.textContent = text;
         noticeA.textContent = a || '';
@@ -22250,6 +23031,12 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
         const toolKey = toolOn ? ui.mode.name + '|' + ((ui.mode.opts && (ui.mode.opts.type || ui.mode.opts.purpose)) || '') : '';
         const toolStarted = !!toolKey && toolKey !== lastToolKey;
         lastToolKey = toolKey;
+        // A message that was already showing when a tool is picked has done its job: the hint bar takes over
+        // (otherwise it would jump from the top of the photo to the bottom). Errors and warnings stay.
+        if (toolStarted && ui.toast && ui.toast.id === shownToastId && (ui.toast.kind === 'ok' || ui.toast.kind === 'info' || !ui.toast.kind)) {
+          actions.dismissToast(ui.toast.id);
+          return;
+        }
         if (((drawing && !lastDrawing) || toolStarted) && !isDesktop() && ui.sheet !== 'min') {
           if (!restoreSheet) restoreSheet = ui.sheet;
           lastDrawing = drawing;
@@ -22429,6 +23216,7 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
 
         renderToast(ui);
         renderDialog(ui);
+        layoutOverlays();
       }
       function schedule() {
         if (scheduled) return;
