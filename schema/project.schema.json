@@ -558,7 +558,7 @@
             "roof",
             "ground"
           ],
-          "description": "wall (vertical), roof (sloped, derived from a wall eave) or ground (horizontal, derived from a wall base)."
+          "description": "wall (vertical), roof (sloped, derived from an eave line on a wall, or on a roof face for an upper roof) or ground (horizontal, derived from a wall base)."
         },
         "color": {
           "$ref": "#/$defs/hexColor"
@@ -590,7 +590,7 @@
               "type": "null"
             }
           ],
-          "description": "For roof and ground planes: how the plane hangs off its parent wall. null for walls."
+          "description": "For roof and ground planes: how the plane hangs off its parent (a wall; for an upper roof, a roof face). null for walls."
         }
       }
     },
@@ -657,7 +657,7 @@
         "line",
         "pitch"
       ],
-      "description": "Roof: line is the eave on the parent wall and the plane slopes up and away at pitch. Ground: line is the wall base and the plane is horizontal toward the camera (pitch ignored).",
+      "description": "Roof: line is the eave on the parent wall and the plane slopes up and away at pitch. Ground: line is the wall base and the plane is horizontal toward the camera (pitch ignored). Steep roof face (mansard): a roof with steep true, whose slope is pitch (measured) or angleDeg (a guess). Upper roof: a roof whose parent is a roof face; line is drawn along the top of that face.",
       "properties": {
         "parentPlaneId": {
           "anyOf": [
@@ -668,7 +668,7 @@
               "type": "null"
             }
           ],
-          "description": "Id of the wall this plane is built from."
+          "description": "Id of the plane this plane is built from: a wall, or for an upper roof the roof face below it."
         },
         "line": {
           "anyOf": [
@@ -684,7 +684,7 @@
               "type": "null"
             }
           ],
-          "description": "Two image points on the parent wall: the eave (roof) or the wall base (ground)."
+          "description": "Two image points on the parent plane: the eave (roof), the top edge of the roof face below (upper roof) or the wall base (ground)."
         },
         "pitch": {
           "anyOf": [
@@ -695,13 +695,30 @@
               "type": "null"
             }
           ],
-          "description": "Roof pitch for this plane; null = project roofPitch, else estimated, else 6/12."
+          "description": "Roof pitch for this plane; null = project roofPitch, else estimated, else 6/12. On a steep face: its measured slope as rise over run in any one unit, e.g. how far it goes up over how far it goes back in feet; null = not measured (angleDeg is used)."
         },
         "tapErr": {
           "$ref": "#/$defs/tapErr",
           "minItems": 2,
           "maxItems": 2,
           "description": "Optional tap error of the 2 points of line (see #/$defs/tapErr)."
+        },
+        "steep": {
+          "type": "boolean",
+          "description": "Optional, roofs only. true = a steep roof face (mansard): the project roof pitch and the gable estimate are never used for it. Left out on ordinary roofs."
+        },
+        "angleDeg": {
+          "anyOf": [
+            {
+              "type": "number",
+              "minimum": 20,
+              "maximum": 85
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional, steep faces only. A guess of the slope in degrees from level, used while pitch is null. null = 70 is assumed. Lengths on the face are rated Low until pitch is measured."
         }
       }
     },

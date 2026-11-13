@@ -132,6 +132,33 @@ or `widthFt` and `heightFt` for rectangles. A line has exactly 2 points, a rect 
 eave on the parent wall, the plane slopes up and away at `pitch` (null → project pitch → estimate → 6/12).
 Ground: `line` is the wall base; the plane is horizontal toward the camera.
 
+**Steep roof face (mansard, optional).** A roof plane may carry two more keys in `derived`:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `steep` | `true` | This roof is a steep face. Left out on ordinary roofs (never `false` in a saved file). |
+| `angleDeg` | number 20 to 85 \| null | A guess of the slope in degrees from level, used while `pitch` is null. null = 70° is assumed. |
+
+On a steep face `pitch` is its *measured* slope, as rise over run in any one unit. The natural values are the
+two tape numbers: how far the face goes up over how far it goes back, in feet (`{rise: 8, run: 2.9}`);
+`measure.steepFromTape({upFt, backFt, slopeFt})` works it out from any two of up, back and sloped height.
+The slope is resolved `pitch` (measured) → `angleDeg` (a guess) → 70° (assumed). The project `roofPitch` and
+the gable-rake estimate are never used for a steep face, and a rake that starts on its eave line does not feed
+the house-wide pitch estimate. Lengths on a face whose slope is a guess or assumed are rated Low. A measured
+slope steeper than 85° is measured as 85°. Files written before steep faces have neither key and load and
+save unchanged.
+
+**Upper roof.** `derived.parentPlaneId` of a roof may name another roof plane (normally a steep face). `line`
+is then drawn along the top edge of that face, and the roof is built in 3D from the face's frame and the
+wall's camera pose. It needs a perspective rectangle on the wall at the bottom of the chain. A ground plane
+always hangs off a wall.
+
+**Best rectangle for scale (derived, not stored).** When a wall has a known-size `rect` and known-size
+rectangle `refs`, `measure` solves the wall from the one that gives the lowest expected error and uses the
+others as checks; the wall's own rectangle stays unless another one is better by a quarter or more. The
+stored `rect` and `refs` are never rewritten: the choice is reported as `measured.planes[id].calib.rectFrom`
+(`'rect'` or a reference id) with `rectLabel`, `rectAuto`, `rectWhy` and `rectCandidates`.
+
 **Tap precision (`tapErr`, optional, Phase 1.1).** Beside any tapped point list there may be a `tapErr`
 array, index for index with the points: `rect.tapErr` (4 numbers, beside `rect.corners`), `ref.tapErr`
 (2 for a line, 4 for a rectangle, beside `ref.points`), `feature.tapErr` (one per point, beside
@@ -415,7 +442,7 @@ Plan = { library, measured, runs, power, bom, quote, checklist, warnings, summar
 |---|---|---|
 | `library` | `{products, config, accessories, supplierId, suppliers}` | Catalog defaults with the project overrides applied. `products` = the project's own list (or the defaults) followed by every supplier product whose id is not already in it, so a saved, edited copy of a supplier product wins. `supplierId` = `library.supplierId` when it names a known supplier, else `generic`. `suppliers` = the supplier map (§3a). `config.buying` always holds a valid `style` and `costBasis`. |
 | `measured.planes[id]` | `{ok, mode, Himg2plane, Hplane2img, scale, refResults, disagreementPct, viewAngleDeg, pose, K, pitch, …}` | One solution per plane; `mode` says how it was calibrated. |
-| `measured.features[id]` | `{ok, method, measuredFt, wrapFt, lengthFt, withWasteFt, areaSqFt, widthFt, heightFt, lights, overridden, confidence: {level, score, reasons}}` | `lengthFt = overrideFt ?? wrapFt ?? measuredFt`. |
+| `measured.features[id]` | `{ok, method, measuredFt, wrapFt, lengthFt, withWasteFt, areaSqFt, widthFt, heightFt, lights, overridden, wrongSurface, confidence: {level, score, reasons}}` | `lengthFt = overrideFt ?? wrapFt ?? measuredFt`. `wrongSurface` is `'roof'` for a ridge drawn on a wall, `'ground'` for a tree or column drawn on a wall, else null; `measure.misplacedFeatures(project, measured)` lists the surfaces such an item can move to. |
 | `runs[]` (LightRun) | `{id, featureId, productId, productName, unit, colorMode, colors, lengthFt, withWasteFt, quantity, hung?, bulbs, watts, amps, clips: {type, count}, lightStakes, method, detail, warnings, start, end, reversed, chainId, feedIds, outletId, circuitId, sourceFeedId, supplierId?, productKind?}` | One per feature. **Product choice:** the run's own `productId` always wins (it may be any supplier's product); otherwise the type default, replaced by the chosen supplier's product whose `equiv` names it (buying style `bulk`: its cut-to-length product, else its ready-made one; `strings`: only a ready-made one, never cut-to-length wire); otherwise the generic product stays. Another supplier's catalog is never chosen automatically. `supplierId` is set on runs of supplier products and `productKind: 'bulk'` on cut-to-length runs (then `unit` is `foot`, `quantity` is feet of socket wire, `bulbs` is sockets, and clips are one per socket). `quantity` is strings, nets, sets or feet to buy; strings are counted along each chain, so a run the previous run's last string carries on along can buy 0. `hung` is the strings hung on it; `watts`/`amps` are the live load (spares from waste rounding are not plugged in). `start`/`end` are image points of where the run begins and ends after power planning. `sourceFeedId` is the feed the run's first feed is jumpered from (null: its cord comes from the outlet). |
 | `power.feeds[]` | `{id, chainId, runIds, strings, watts, amps, start: {point, label, toward?}, outletId, circuitId, source, parentFeedId, childFeedIds, depth, supplyW, throughW, pathDropPct, taps, plugIn, cord: {kind, lengthFt, boughtFt, awg, pieces, voltageDropPct, route: [{kind, lengthFt, planeId, from, to}], routeText}, cordPath, cordUnknown, crossesWalkway, crossesDoorway, doorway?, portions: [{runId, units, total, startsRun, endsRun}]}` | A feed is the part of a chain on one cord, limited by the product's max end-to-end. `strings` counts hung strings. `source` is `{kind: 'outlet', outletId}` (a **home run**: its cord comes from the outlet) or `{kind: 'feed', feedId, port}` (a **jumper** from a powered feed: `port` `'end'` = the end plug of its last string, so the load passes through its strings; `'start'` = a 3-way tap where its own cord arrives). `outletId`/`circuitId` are the outlet at the root of its supply tree. `supplyW` is what its cord carries (itself and everything hanging off it), `throughW` what passes through its strings, `pathDropPct` the voltage drop summed over the cords back to the outlet, `taps` the 3-way taps it needs. `cord.kind` is `'home'` or `'jumper'`; `cord.route` lists the pieces of the route in order (`drop`, `ground`, `rise`, `hop`, `roof`, `wall`, `direct`; lengths in feet before the routing factor and slack; `from`/`to` are image points) and `cord.routeText` says it in words ("down 1.5 ft, 18 ft along the ground, up 8.5 ft beside Window left"). `cordPath` is the same route as an image polyline. `plugIn: true` (with `cord: null`) means the run plugs straight into its source with no cord. The cord gauge and voltage drop are worked out on the pieces bought (`boughtFt`) for the watts carried (`supplyW`). |
 | `power.chains[]` | `{id, productId, runIds, reversed, strings, spares, watts, feedIds}` | `strings` hung, `spares` bought for waste, `watts` live. |

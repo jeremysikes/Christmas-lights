@@ -36,6 +36,9 @@
  *    are kept as they are, with two repairs: a link (product.url and every url inside components) that is not a
  *    plain https address is dropped, and so is a priceStatus that is not 'verified' or 'observed'.
  *    validateProject reports both.
+ *  - Steep roof faces (mansard) and upper roofs: plane.derived may carry `steep: true` and `angleDeg` (a guess,
+ *    20..85 degrees, null = 70 assumed); both are optional and only kept on roofs with steep true, so files
+ *    written before them load and save unchanged. derived.parentPlaneId may name a roof plane (an upper roof).
  *  - tapErr (expected tap error per point, stored-image pixels) beside rect.corners, ref.points, feature.points
  *    and plane.derived.line: kept only when it is a list of finite numbers of 0 or more with exactly one entry
  *    per point; otherwise dropped silently (no information = the 2.5 px default).
@@ -209,11 +212,11 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
           id: { type: 'string', minLength: 1, description: 'Plane id, e.g. "pl_front".' },
           imageId: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Photo this plane is traced on.' },
           name: { type: 'string', description: 'Plane name, e.g. "Front wall".' },
-          kind: { enum: ENUMS.planeKind.slice(), description: 'wall (vertical), roof (sloped, derived from a wall eave) or ground (horizontal, derived from a wall base).' },
+          kind: { enum: ENUMS.planeKind.slice(), description: 'wall (vertical), roof (sloped, derived from an eave line on a wall, or on a roof face for an upper roof) or ground (horizontal, derived from a wall base).' },
           color: ref('hexColor'),
           rect: { anyOf: [ref('planeRect'), { type: 'null' }], description: 'Perspective rectangle on this wall (e.g. a garage door or the facade corners), or null.' },
           refs: { type: 'array', items: ref('ref'), description: 'Calibration references (known lengths or rectangles) lying on this plane.' },
-          derived: { anyOf: [ref('planeDerived'), { type: 'null' }], description: 'For roof and ground planes: how the plane hangs off its parent wall. null for walls.' },
+          derived: { anyOf: [ref('planeDerived'), { type: 'null' }], description: 'For roof and ground planes: how the plane hangs off its parent (a wall; for an upper roof, a roof face). null for walls.' },
         },
       },
       planeRect: {
@@ -229,12 +232,14 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
       },
       planeDerived: {
         type: 'object', required: ['parentPlaneId', 'line', 'pitch'],
-        description: 'Roof: line is the eave on the parent wall and the plane slopes up and away at pitch. Ground: line is the wall base and the plane is horizontal toward the camera (pitch ignored).',
+        description: 'Roof: line is the eave on the parent wall and the plane slopes up and away at pitch. Ground: line is the wall base and the plane is horizontal toward the camera (pitch ignored). Steep roof face (mansard): a roof with steep true, whose slope is pitch (measured) or angleDeg (a guess). Upper roof: a roof whose parent is a roof face; line is drawn along the top of that face.',
         properties: {
-          parentPlaneId: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Id of the wall this plane is built from.' },
-          line: { anyOf: [{ type: 'array', minItems: 2, maxItems: 2, items: ref('point') }, { type: 'null' }], description: 'Two image points on the parent wall: the eave (roof) or the wall base (ground).' },
-          pitch: { anyOf: [ref('pitch'), { type: 'null' }], description: 'Roof pitch for this plane; null = project roofPitch, else estimated, else 6/12.' },
+          parentPlaneId: { anyOf: [{ type: 'string' }, { type: 'null' }], description: 'Id of the plane this plane is built from: a wall, or for an upper roof the roof face below it.' },
+          line: { anyOf: [{ type: 'array', minItems: 2, maxItems: 2, items: ref('point') }, { type: 'null' }], description: 'Two image points on the parent plane: the eave (roof), the top edge of the roof face below (upper roof) or the wall base (ground).' },
+          pitch: { anyOf: [ref('pitch'), { type: 'null' }], description: 'Roof pitch for this plane; null = project roofPitch, else estimated, else 6/12. On a steep face: its measured slope as rise over run in any one unit, e.g. how far it goes up over how far it goes back in feet; null = not measured (angleDeg is used).' },
           tapErr: { $ref: '#/$defs/tapErr', minItems: 2, maxItems: 2, description: 'Optional tap error of the 2 points of line (see #/$defs/tapErr).' },
+          steep: { type: 'boolean', description: 'Optional, roofs only. true = a steep roof face (mansard): the project roof pitch and the gable estimate are never used for it. Left out on ordinary roofs.' },
+          angleDeg: { anyOf: [{ type: 'number', minimum: 20, maximum: 85 }, { type: 'null' }], description: 'Optional, steep faces only. A guess of the slope in degrees from level, used while pitch is null. null = 70 is assumed. Lengths on the face are rated Low until pitch is measured.' },
         },
       },
       ref: {
@@ -755,6 +760,8 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
   }
 
   const PLANE_KEYS = ['id', 'imageId', 'name', 'kind', 'color', 'rect', 'refs', 'derived'];
+  // Guessed slope of a steep roof face, degrees from level (the same limits as measure.STEEP).
+  const STEEP_MIN_DEG = 20, STEEP_MAX_DEG = 85;
   function normPlane(raw, id, index, refIdFor) {
     const pl = isObj(raw) ? raw : {};
     const kind = oneOf(pl.kind, ENUMS.planeKind, 'wall');
@@ -774,11 +781,18 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
     let derived = null;
     if (kind !== 'wall' && isObj(pl.derived)) {
       const line = toPoints(pl.derived.line);
-      derived = keepExtras(keepTapErr({
+      derived = keepTapErr({
         parentPlaneId: cleanId(pl.derived.parentPlaneId),
         line: line.length === 2 ? line : null,
         pitch: normPitch(pl.derived.pitch),
-      }, pl.derived, line.length === 2 ? line : null, pl.derived.line), pl.derived, ['tapErr']);
+      }, pl.derived, line.length === 2 ? line : null, pl.derived.line);
+      // A steep roof face (mansard). Ordinary roofs and ground planes carry neither key, so old files are unchanged.
+      if (kind === 'roof' && pl.derived.steep === true) {
+        derived.steep = true;
+        const a = num(pl.derived.angleDeg, null);
+        derived.angleDeg = a === null ? null : Math.min(STEEP_MAX_DEG, Math.max(STEEP_MIN_DEG, a));
+      }
+      derived = keepExtras(derived, pl.derived, ['tapErr', 'steep', 'angleDeg']);
     }
     const defaultName = kind === 'wall' ? 'Wall ' + (index + 1) : kind === 'roof' ? 'Roof' : 'Ground';
     const out = {
@@ -1184,10 +1198,15 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
         const d = pl.derived;
         if (!isObj(d)) err(who + ': the roof/ground details must be an object or null.');
         else {
-          if (!refOk(d.parentPlaneId, planeIds) || d.parentPlaneId === pl.id) err(who + ' is built from a wall that does not exist.');
+          if (!refOk(d.parentPlaneId, planeIds) || d.parentPlaneId === pl.id) err(who + ' is built from a wall or roof face that does not exist.');
           if (d.line !== null && !(Array.isArray(d.line) && d.line.length === 2 && d.line.every(isPoint))) err(who + ': the eave or base line needs exactly 2 points.');
           if (d.pitch !== null && !validPitch(d.pitch)) err(who + ': the pitch must be a rise and run (for example 6/12) or empty.');
           if (!tapErrOk(d.tapErr, 2)) err(who + ': the tap precision of the eave or base line must be 2 numbers of 0 or more.');
+          if (d.steep !== undefined && typeof d.steep !== 'boolean') err(who + ': steep must be true or false.');
+          if (d.steep === true && pl.kind !== 'roof') err(who + ': only a roof can be a steep roof face.');
+          if (d.angleDeg !== undefined && d.angleDeg !== null && !(typeof d.angleDeg === 'number' && d.angleDeg >= STEEP_MIN_DEG && d.angleDeg <= STEEP_MAX_DEG)) {
+            err(who + ': the slope of a steep roof face must be ' + STEEP_MIN_DEG + ' to ' + STEEP_MAX_DEG + ' degrees or empty.');
+          }
         }
       }
     });

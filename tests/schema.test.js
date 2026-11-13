@@ -668,3 +668,62 @@ test('tapErr is kept only as one finite number of 0 or more per point, and is ne
   assert.ok(messages.some((m) => /the tap precision of the rectangle must be 4 numbers of 0 or more/.test(m)));
   assert.ok(messages.some((m) => /the tap precision must be one number of 0 or more for each point/.test(m)));
 });
+
+test('steep roof faces and upper roofs: steep and angleDeg are optional, kept only on steep roofs, repaired and validated', () => {
+  const S = schema.JSON_SCHEMA;
+  // Nothing is added to a roof that is not steep, so files written before steep faces load and save unchanged.
+  const old = schema.normalizeProject(sampleProject());
+  for (const pl of old.planes) {
+    if (pl.derived) assert.deepEqual(Object.keys(pl.derived).filter((k) => k !== 'tapErr'), ['parentPlaneId', 'line', 'pitch'], pl.id);
+  }
+  assert.ok(!('steep' in schema.createPlane({ kind: 'roof' }).derived));
+  const line = [[10, 20], [300, 22]];
+  const make = (derivedA, derivedB) => schema.normalizeProject({
+    images: [{ id: 'img', width: 800, height: 600 }],
+    planes: [
+      { id: 'pl_w', kind: 'wall', imageId: 'img' },
+      { id: 'pl_s', kind: 'roof', imageId: 'img', derived: Object.assign({ parentPlaneId: 'pl_w', line }, derivedA) },
+      { id: 'pl_u', kind: 'roof', imageId: 'img', derived: Object.assign({ parentPlaneId: 'pl_s', line }, derivedB) },
+      { id: 'pl_g', kind: 'ground', imageId: 'img', derived: { parentPlaneId: 'pl_w', line, steep: true, angleDeg: 70 } },
+    ],
+  });
+  const n = make({ steep: true, angleDeg: 65, pitch: null }, { pitch: { rise: 4, run: 12 } });
+  const [, steep, upper, ground] = n.planes;
+  assert.deepEqual(steep.derived, { parentPlaneId: 'pl_w', line, pitch: null, steep: true, angleDeg: 65 });
+  // An upper roof names a roof plane as its parent; that survives.
+  assert.deepEqual(upper.derived, { parentPlaneId: 'pl_s', line, pitch: { rise: 4, run: 12 } });
+  assert.deepEqual(ground.derived, { parentPlaneId: 'pl_w', line, pitch: null }, 'only a roof can be steep');
+  assert.deepEqual(validateJson(S, n), []);
+  assert.deepEqual(schema.validateProject(n).errors, []);
+  assert.deepEqual(schema.normalizeProject(n), n, 'normalizing twice changes nothing');
+  // A measured slope: the two tape numbers are stored as the pitch (up over back, in feet).
+  const taped = make({ steep: true, pitch: { rise: 8, run: 2.9 } }, {}).planes[1].derived;
+  assert.deepEqual(taped, { parentPlaneId: 'pl_w', line, pitch: { rise: 8, run: 2.9 }, steep: true, angleDeg: null });
+  // Repairs: a guess is kept inside 20..85 degrees; anything that is not a number becomes null (70 is assumed);
+  // steep must be exactly true.
+  assert.equal(make({ steep: true, angleDeg: 89 }, {}).planes[1].derived.angleDeg, 85);
+  assert.equal(make({ steep: true, angleDeg: 3 }, {}).planes[1].derived.angleDeg, 20);
+  assert.equal(make({ steep: true, angleDeg: 'steep' }, {}).planes[1].derived.angleDeg, null);
+  assert.equal(make({ steep: true, angleDeg: '72' }, {}).planes[1].derived.angleDeg, 72);
+  for (const v of ['yes', 1, false, null]) {
+    const d = make({ steep: v, angleDeg: 70 }, {}).planes[1].derived;
+    assert.ok(!('steep' in d) && !('angleDeg' in d), 'steep ' + JSON.stringify(v) + ' is not a steep face');
+  }
+  // validateProject and the JSON Schema refuse what normalizeProject would have repaired.
+  const bad = clone(n);
+  bad.planes[1].derived.angleDeg = 95;
+  bad.planes[2].derived.steep = 'yes';
+  bad.planes[3].derived.steep = true;
+  const errs = schema.validateProject(bad).errors;
+  assert.ok(errs.some((e) => /slope of a steep roof face must be 20 to 85 degrees/.test(e)), errs.join('\n'));
+  assert.ok(errs.some((e) => /steep must be true or false/.test(e)), errs.join('\n'));
+  assert.ok(errs.some((e) => /only a roof can be a steep roof face/.test(e)), errs.join('\n'));
+  const jsonErrs = validateJson(S, bad);
+  assert.ok(jsonErrs.some((e) => e.startsWith('#/planes/1/derived')), jsonErrs.join('\n'));
+  assert.ok(jsonErrs.some((e) => e.startsWith('#/planes/2/derived')), jsonErrs.join('\n'));
+  // A parent that does not exist is still caught, whatever kind it was meant to be.
+  const orphan = clone(n);
+  orphan.planes[2].derived.parentPlaneId = 'pl_gone';
+  assert.ok(schema.validateProject(orphan).errors.some((e) => /built from a wall or roof face that does not exist/.test(e)));
+  assert.equal(schema.normalizeProject(orphan).planes[2].derived.parentPlaneId, null);
+});
