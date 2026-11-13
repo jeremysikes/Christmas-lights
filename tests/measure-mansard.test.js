@@ -340,7 +340,7 @@ test('B: a steep face never takes the project pitch or the gable estimate, and n
   proj.settings.roofPitch = { rise: 4, run: 12 };
   const r = measure.measureProject(proj);
   assert.deepEqual([r.planes.pl_s.pitch.source, Math.round(r.planes.pl_s.pitch.angleDeg)], ['guess', 70]);
-  assert.deepEqual([r.planes.pl_u.pitch.rise, r.planes.pl_u.pitch.source], [4, 'user'], 'the upper roof does take the project pitch');
+  assert.deepEqual([r.planes.pl_u.pitch.rise, r.planes.pl_u.pitch.source], [4, 'house'], 'the upper roof borrows the project pitch as an assumption (review B1)');
   assert.ok(Math.abs(r.features.trim.measuredFt / h.truth.trim - 1) < 1e-6);
 
   // The leaning corner edges traced as rakes on the WALL look like a very steep gable. They start on the steep
@@ -555,7 +555,7 @@ test('C: the ridge drawn on the wall of the mansard house is reported with the f
   );
   const m2 = measure.measureProject(withRoofs);
   assert.equal(m2.planes.pl_steep.ok && m2.planes.pl_upper.ok, true, m2.planes.pl_steep.reason || m2.planes.pl_upper.reason);
-  assert.deepEqual([m2.planes.pl_upper.pitch.rise, m2.planes.pl_upper.pitch.source], [4, 'user'], 'the project pitch (4/12) is the upper roof\'s');
+  assert.deepEqual([m2.planes.pl_upper.pitch.rise, m2.planes.pl_upper.pitch.source], [4, 'house'], 'the project pitch (4/12) is only borrowed by the upper roof (review B1)');
   const c = measure.misplacedFeatures(withRoofs, m2)[0].candidates;
   // Ordinary roof first, then the steep face; the yard and the other wall are not roof surfaces.
   assert.deepEqual(c.map((x) => [x.planeId, x.name, x.kind, x.steep, x.parentPlaneId]), [['pl_upper', 'Top roof', 'roof', false, 'pl_steep'], ['pl_steep', 'Steep roof', 'roof', true, WALL]]);

@@ -15,7 +15,10 @@
  *     Best rectangle for scale: when a wall has a known-size rectangle AND known-size rectangle references, each is
  *     a candidate. The wall is solved from the wall's own rectangle unless another candidate cuts the expected
  *     error (tap precision, for a level and a plumb line across the box that holds all candidates) by a quarter
- *     or more; the others become checks. calib.rectFrom says which one was used. Stored data is not rewritten.
+ *     or more AND the wall's own rectangle, measured with that candidate, matches its stated size within tap
+ *     noise (z ≤ 2). A candidate that disagrees (set back from the wall, mistyped size) stays a check and is
+ *     reported in calib.rectRejected. The others become checks. calib.rectFrom says which one was used. Stored
+ *     data is not rewritten.
  *  3. ROOF and GROUND planes are built in 3D from their parent wall's pose: the eave/base line is lifted to
  *     wall coordinates, a sloped (roof) or level (ground) frame is built on it, and its homography is
  *     K·[R·e1, R·e2, R·origin + t]. Without a pose, roofs fall back to an orthographic pitch correction.
@@ -85,11 +88,17 @@
  *  - PlaneSolution.calib also has `rectFrom` ('rect' = the wall's own rectangle, a reference id, or null when no
  *    rectangle is in use), `rectLabel` (plain name of that rectangle), `rectAuto` (true when a reference rectangle
  *    was chosen over the wall's own), `rectWhy` ('largest' | 'steadiest' | null) and `rectCandidates`
- *    ([{from, label, expectedPct, areaPx, used}] or null when there was nothing to choose). When the wall's own
+ *    ([{from, label, expectedPct, areaPx, used}] or null when there was nothing to choose; expectedPct is a
+ *    comparison figure, not an accuracy) and `rectRejected` ({from, label, pct} when a steadier reference
+ *    rectangle was left as a check because it disagrees with the wall's own, else null) and `rectCheckPct` (how
+ *    far the wall's own rectangle is from its stated size when another one sets the scale; 3% or more caps the
+ *    level at Medium, 6% or more at Low). When the wall's own
  *    rectangle is only a check, its two refResults have refId null and `fromRect: true`.
  *  - Roof PlaneSolutions also have `steep` (true on a steep face), `pitch.angleDeg` / `pitch.steep` /
  *    `pitch.clamped` on steep faces, pitch.source 'guess' (besides 'user' | 'estimated' | 'default') and
- *    `slopeBelow` ('default' | 'guess' | 'estimated' | null: an unmeasured slope under an upper roof).
+ *    `slopeBelow` ('default' | 'guess' | 'estimated' | 'house' | null: an unmeasured slope under an upper roof).
+ *    An upper roof with no pitch of its own uses the project pitch as an assumption: pitch.source 'house',
+ *    capped at Low (the top of a mansard is usually flatter than the house pitch).
  *    Issue codes: 'steep-angle-assumed', 'steep-angle-guess' (info), 'derived-parent-no-3d'.
  *  - FeatureMeasurement also has `wrongSurface`: 'roof' (a ridge drawn on a wall), 'ground' (a tree or column
  *    drawn on a wall) or null. misplacedFeatures(project, measured?) lists those items with the surfaces they
@@ -405,7 +414,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       viewAngleDeg: null, pose: null, K: null, pitch: null, pitchInfo: null, extent: null, gridExtent: null,
       poseConsistencyPct: null, poseToleranceZ: null, focalMismatchPct: null, tapSigmaPx: planeTapSigma(plane),
       calib: { scaleFrom: null, onlyMediumLowRefs: false, minCourses: null, rectProblem: null, refsBothDirections: false, anisotropic: false,
-        rectFrom: null, rectLabel: null, rectAuto: false, rectWhy: null, rectCandidates: null },
+        rectFrom: null, rectLabel: null, rectAuto: false, rectWhy: null, rectCandidates: null, rectRejected: null, rectCheckPct: null },
       warnings: [], notes: [], issues: [], reason: null, confidence: null,
     };
   }
@@ -508,6 +517,49 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
   }
 
   /**
+   * Does the wall's own rectangle agree with a candidate scale rectangle? The own rectangle's width and height
+   * are measured with the candidate's map and compared with their stated sizes, against what ±tapSigma taps
+   * explain: the candidate's 4 corners are nudged one coordinate at a time (the measurement of a small rectangle
+   * far from the candidate moves a lot with them), and the own rectangle's corners add their own tap noise.
+   * {ok, z, pct}: z is the root mean square of the two misfits in σ (width and height), ok when z ≤ 2; pct is the
+   * larger of the two gaps in percent. A candidate that cannot be solved, or with absurd numbers, is not ok.
+   */
+  function rectAgreement(cand, own, tapSigma) {
+    const bad = { ok: false, z: Infinity, pct: null };
+    const cons = [
+      { kind: 'width', pts: own.quad, expectedFt: own.w },
+      { kind: 'height', pts: own.quad, expectedFt: own.h },
+    ];
+    const logs = (quad) => {
+      const H = g.homographyFromPoints(quad, [[0, cand.h], [cand.w, cand.h], [cand.w, 0], [0, 0]]);
+      if (!H) return null;
+      const out = [];
+      for (const c of cons) {
+        const d = constraintVector(c, H);
+        const m = d ? Math.hypot(d[0], d[1]) : 0;
+        if (!(m > 0) || !isNum(m)) return null;
+        out.push(Math.log(m / c.expectedFt));
+      }
+      return out;
+    };
+    const base = logs(cand.quad);
+    if (!base) return bad;
+    const v = cons.map((c) => constraintSigma(c, tapSigma) ** 2);
+    for (let k = 0; k < 4; k++) {
+      for (const axis of [0, 1]) {
+        const mv = (dd) => cand.quad.map((p, i) => (i === k ? (axis === 0 ? [p[0] + dd, p[1]] : [p[0], p[1] + dd]) : p));
+        const hi = logs(mv(tapSigma)), lo = logs(mv(-tapSigma));
+        if (!hi || !lo) return bad;
+        for (let i = 0; i < 2; i++) v[i] += ((hi[i] - lo[i]) / 2) ** 2;
+      }
+    }
+    if (!(v[0] > 0) || !(v[1] > 0) || !isFinite(v[0]) || !isFinite(v[1])) return bad;
+    const z = Math.sqrt((base[0] * base[0] / v[0] + base[1] * base[1] / v[1]) / 2);
+    const pct = 100 * Math.max(Math.abs(Math.exp(base[0]) - 1), Math.abs(Math.exp(base[1]) - 1));
+    return { ok: isNum(z) && z <= 2, z: isNum(z) ? z : Infinity, pct: isNum(pct) ? pct : null };
+  }
+
+  /**
    * Solve a wall plane (rect-known / rect-refs / refs-only). K may be null when the photo is missing.
    * pin (optional) {rectFrom}: use this rectangle for scale ('rect' or a reference id) instead of choosing; nudged
    * re-solves pass the choice of the real solve so that a nudge can never flip it.
@@ -554,29 +606,40 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       constraints = constraints.concat(rc.constraints);
     }
     // Best rectangle for scale. The wall's own rectangle and every known-size rectangle reference are candidates.
-    // The wall's own stays unless another one cuts the expected error by a quarter or more: nudging a tap moves
-    // these estimates by a few percent at most, so a choice made with that margin does not flip under small
-    // nudges, and two rectangles of similar size never trade places. The others become checks.
-    let rectFrom = null, rectAuto = false, rectWhy = null, rectCandidates = null, ownRectLabel = null;
+    // The wall's own stays unless another one cuts the expected error by a quarter or more AND the two agree: the
+    // wall's own rectangle, measured with the other one, must match its stated size within what tap noise explains
+    // (z ≤ 2). A larger rectangle that sits on another surface (a garage on a set-back wing) or has a mistyped
+    // size fails that test, stays a check, and the note says why it was not used. Away from the 0.75 boundary a
+    // small nudge does not flip the choice; right at it a 1 px nudge can (a hard threshold; see SPEC §8.6). A
+    // reference whose id is the sentinel 'rect' cannot be told from the wall's own rectangle, so it never competes.
+    let rectFrom = null, rectAuto = false, rectWhy = null, rectCandidates = null, ownRectLabel = null, rectRejected = null, rectCheckPct = null;
     if (quad && rectW && rectH) {
       rectFrom = 'rect';
       ownRectLabel = rectLabel(plane.rect);
-      const others = rectRefs.filter((r) => r.ref.id != null);
+      const others = rectRefs.filter((r) => r.ref.id != null && r.ref.id !== 'rect');
       if (others.length) {
         const cands = [{ from: 'rect', label: ownRectLabel, quad, w: rectW, h: rectH, rr: null }]
           .concat(others.map((r) => ({ from: r.ref.id, label: refLabel(r.ref), quad: r.quad, w: r.w, h: r.h, rr: r })));
-        const errs = scaleRectErrors(cands, tapSigma);
-        cands.forEach((c, i) => { c.expectedPct = errs[i]; c.areaPx = g.polygonArea(c.quad); });
-        let best = cands[0];
-        const pinned = isObj(pin) && pin.rectFrom != null ? cands.find((c) => c.from === pin.rectFrom) : null;
-        if (pinned) best = pinned;
-        else if (!(isObj(pin) && pin.rectFrom != null)) {
-          for (const c of cands.slice(1)) if (c.expectedPct < best.expectedPct) best = c;
-          if (best !== cands[0] && !(best.expectedPct <= RECT_SWITCH_RATIO * cands[0].expectedPct)) best = cands[0];
+        const own = cands[0];
+        const pinFrom = isObj(pin) && pin.rectFrom != null ? pin.rectFrom : null;
+        let best = own;
+        if (pinFrom != null) {
+          // A nudged re-solve: the choice of the real solve is kept, so the candidate table is not needed.
+          best = cands.find((c) => c.from === pinFrom) || own;
+          cands.forEach((c) => { c.expectedPct = Infinity; c.areaPx = g.polygonArea(c.quad); });
+        } else {
+          const errs = scaleRectErrors(cands, tapSigma);
+          cands.forEach((c, i) => { c.expectedPct = errs[i]; c.areaPx = g.polygonArea(c.quad); });
+          const better = cands.slice(1).filter((c) => c.expectedPct <= RECT_SWITCH_RATIO * own.expectedPct).sort((a, b) => a.expectedPct - b.expectedPct);
+          for (const c of better) {
+            const fit = rectAgreement(c, own, tapSigma);
+            if (fit.ok) { best = c; rectCheckPct = fit.pct; break; }
+            if (!rectRejected) rectRejected = { from: c.from, label: c.label, pct: fit.pct };
+          }
+          if (best !== own) rectRejected = null;
         }
         rectCandidates = cands.map((c) => ({ from: c.from, label: c.label, expectedPct: c.expectedPct === Infinity ? null : c.expectedPct, areaPx: c.areaPx, used: c === best }));
-        if (best !== cands[0]) {
-          const own = cands[0];
+        if (best !== own) {
           constraints = constraints.filter((c) => best.rr.constraints.indexOf(c) < 0);
           constraints.push({ refId: null, label: own.label + ', width', kind: 'width', pts: own.quad, expectedFt: own.w, q: 1, quality: 'high', courses: null, fromRect: true });
           constraints.push({ refId: null, label: own.label + ', height', kind: 'height', pts: own.quad, expectedFt: own.h, q: 1, quality: 'high', courses: null, fromRect: true });
@@ -586,6 +649,10 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
           sol.promotedRefId = best.from;
           sol.notes.push("Scale taken from '" + best.label + "' (the " + (rectWhy === 'largest' ? 'largest measured rectangle' : 'measured rectangle that gives the steadiest scale') +
             "). '" + own.label + "' is used as a check.");
+        } else if (rectRejected) {
+          sol.notes.push("'" + rectRejected.label + "' would give a steadier scale, but it does not agree with '" + own.label + "'" +
+            (isNum(rectRejected.pct) ? ' (they are ' + rectRejected.pct.toFixed(1) + '% apart)' : '') +
+            ', so it is only used as a check. Make sure it sits on this wall and that its size is right.');
         }
       }
     } else if (quad) rectFrom = 'rect';
@@ -734,6 +801,11 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       rectAuto: mode !== 'refs-only' && rectAuto,
       rectWhy: mode !== 'refs-only' ? rectWhy : null,
       rectCandidates,
+      // A reference rectangle that would have given a steadier scale but disagrees with the wall's own rectangle:
+      // {from, label, pct} or null.
+      rectRejected: mode !== 'refs-only' ? rectRejected : null,
+      // How far the wall's own rectangle is from its stated size when measured with the chosen one (%, rectAuto only).
+      rectCheckPct: mode !== 'refs-only' && rectAuto ? rectCheckPct : null,
     };
 
     // ---- extent, pose, view angle
@@ -1166,8 +1238,17 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
               rp = resolveSteepPitch(plane.derived); // never the project pitch, never the gable estimate
             } else {
               const est = estimateRoofPitch(proj, out, plane, estimated);
-              rp = resolvePitch(isObj(plane.derived) ? plane.derived.pitch : null, settings.roofPitch, est);
-              info = est ? { onEave: est.onEave, spread: est.spread, samples: est.samples } : null;
+              const own = isObj(plane.derived) ? plane.derived.pitch : null;
+              const pid = isObj(plane.derived) ? plane.derived.parentPlaneId : null;
+              const upper = pid != null && Object.prototype.hasOwnProperty.call(out, pid) && out[pid].kind === 'roof';
+              if (upper && !validPitch(own) && validPitch(settings.roofPitch)) {
+                // An upper roof (the top of a mansard) is usually much flatter than the house pitch, so the
+                // project pitch is only an assumption here: source 'house', capped at Low.
+                rp = { rise: settings.roofPitch.rise, run: settings.roofPitch.run, source: 'house' };
+              } else {
+                rp = resolvePitch(own, settings.roofPitch, est);
+                info = est ? { onEave: est.onEave, spread: est.spread, samples: est.samples } : null;
+              }
             }
           }
           sol = solveDerived(plane, kind, out, rp, info);
@@ -1752,6 +1833,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       steep: !!(sol && sol.steep), steepAngleDeg: sol && sol.steep && sol.pitch ? sol.pitch.angleDeg : null,
       slopeBelow: sol ? sol.slopeBelow : null,
       rectProblem: sol && sol.calib ? sol.calib.rectProblem : null,
+      rectCheckPct: sol && sol.calib ? sol.calib.rectCheckPct : null,
       refsBothDirections: !!(sol && sol.calib && sol.calib.refsBothDirections),
       anisotropic: !!(sol && sol.scale && sol.scale.anisotropic),
       scaleFrom: sol && sol.calib ? sol.calib.scaleFrom : null,
@@ -1883,8 +1965,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
    * score is clamped into that level's band.
    * factors: {overridden, mode, kind, checks, disagreementPct, disagreementZ, onlyMediumLowRefs, minCourses,
    *           viewAngleDeg, focalSource, focalRelStd, focalMismatchPct, poseConsistencyPct, poseTolerancePct,
-   *           pitchSource ('user' | 'estimated' | 'default' | 'guess'), pitchOnEave, pitchSpread, steep, steepAngleDeg,
-   *           slopeBelow (an unmeasured slope under an upper roof), rectProblem, refsBothDirections, anisotropic, scaleFrom,
+   *           pitchSource ('user' | 'estimated' | 'default' | 'guess' | 'house'), pitchOnEave, pitchSpread, steep, steepAngleDeg,
+   *           slopeBelow (an unmeasured slope under an upper roof), rectProblem, rectCheckPct, refsBothDirections, anisotropic, scaleFrom,
    *           offPlane (type id or bool), offPlaneBiasPct, assumedDiameterIn, extrapolation, pixelLength,
    *           uncertaintyPct, uncertaintyBasePct, tapPx, tapWhat, ownTapPx, tapsFine, extraReasons,
    *           thresholds: {highMin, mediumMin}, reason}
@@ -1943,6 +2025,13 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       else if (d > 6) take(20, msg);
       else if (d >= 3) take(10, msg);
     }
+    // The scale was taken from a reference rectangle instead of the wall's own. The wall's own rectangle then
+    // measures this far from its stated size, and every length can be off by as much (the other rectangle may sit
+    // on another surface, or one of the sizes may be wrong), so the rating cannot promise less than that gap.
+    if (isNum(fx.rectCheckPct) && fx.rectCheckPct >= U_HIGH_PCT) {
+      cap(fx.rectCheckPct >= U_MEDIUM_PCT ? 'low' : 'medium', 'The two measured rectangles on this wall are ' + fx.rectCheckPct.toFixed(1) +
+        '% apart. Check that both sit flat on this wall and that their sizes are right.');
+    }
     if (fx.onlyMediumLowRefs) take(10, 'The scale comes only from medium-quality references such as siding or brick courses.');
     if (isNum(fx.minCourses) && fx.minCourses < 8) {
       take(10, 'The siding or brick reference spans only ' + fx.minCourses + ' courses. Span 8 or more for better accuracy.');
@@ -1987,11 +2076,15 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
         take(25, 'The slope of this steep roof face is unknown, so ' + deg + '° is assumed.');
         cap('low', 'Lengths on a steep roof face depend on its slope, and it is only assumed.' + fixIt);
       }
+    } else if (fx.pitchSource === 'house') {
+      // An upper roof (on a steep roof face) with no pitch of its own: the house pitch is only borrowed.
+      take(10, 'The pitch of this upper roof is taken from the house pitch.');
+      cap('low', 'The top of a mansard is usually flatter than the rest of the house, and this upper roof has no pitch of its own. Enter the pitch of this upper roof.');
     } else if (fx.pitchSource === 'default') {
       take(25, 'The roof pitch is unknown, so 6/12 is assumed. Enter the pitch.');
       cap('low', 'Roof lengths depend on the pitch, and it is only assumed. Enter the pitch.');
     }
-    if (fx.slopeBelow === 'default' || fx.slopeBelow === 'guess' || fx.slopeBelow === 'estimated') {
+    if (fx.slopeBelow === 'default' || fx.slopeBelow === 'guess' || fx.slopeBelow === 'estimated' || fx.slopeBelow === 'house') {
       cap('low', 'This roof starts at the top of a roof face whose slope is not measured, so it may sit in the wrong place. Measure how far that face goes up and how far it goes back.');
     }
     if (fx.offPlane) {
@@ -2100,6 +2193,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       pitchOnEave: sol.pitchInfo ? sol.pitchInfo.onEave : null, pitchSpread: sol.pitchInfo ? sol.pitchInfo.spread : null,
       steep: !!sol.steep, steepAngleDeg: sol.steep && sol.pitch ? sol.pitch.angleDeg : null, slopeBelow: sol.slopeBelow,
       rectProblem: sol.calib ? sol.calib.rectProblem : null, refsBothDirections: !!(sol.calib && sol.calib.refsBothDirections),
+      rectCheckPct: sol.calib ? sol.calib.rectCheckPct : null,
       anisotropic: !!(sol.scale && sol.scale.anisotropic), scaleFrom: sol.calib ? sol.calib.scaleFrom : null,
       thresholds,
     });

@@ -789,6 +789,10 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
       // A steep roof face (mansard). Ordinary roofs and ground planes carry neither key, so old files are unchanged.
       if (kind === 'roof' && pl.derived.steep === true) {
         derived.steep = true;
+        // On a steep face the pitch is two tape numbers (up over back), so a missing or bad run is not "12":
+        // such a pitch is dropped and the face counts as not measured.
+        const sp = pl.derived.pitch;
+        if (!(isObj(sp) && num(sp.rise, null) > 0 && num(sp.run, null) > 0)) derived.pitch = null;
         const a = num(pl.derived.angleDeg, null);
         derived.angleDeg = a === null ? null : Math.min(STEEP_MAX_DEG, Math.max(STEEP_MIN_DEG, a));
       }
@@ -1204,6 +1208,19 @@ LP.define('schema', ['geometry', 'catalog', 'suppliers'], function (geometry, ca
           if (!tapErrOk(d.tapErr, 2)) err(who + ': the tap precision of the eave or base line must be 2 numbers of 0 or more.');
           if (d.steep !== undefined && typeof d.steep !== 'boolean') err(who + ': steep must be true or false.');
           if (d.steep === true && pl.kind !== 'roof') err(who + ': only a roof can be a steep roof face.');
+          if (d.steep === true && isObj(d.pitch) && !(d.pitch.rise > 0)) err(who + ': the measured slope of a steep roof face needs a rise above 0.');
+          const par = arr(lists.planes).find((o) => isObj(o) && o.id === d.parentPlaneId && o !== pl);
+          if (par && pl.kind === 'ground' && par.kind !== 'wall') err(who + ': a ground area must be built from a wall.');
+          if (par && pl.kind === 'roof' && par.kind === 'ground') err(who + ': a roof cannot be built from a ground area.');
+          // Planes that hang off each other in a circle.
+          const seen = [pl.id];
+          let cur = par;
+          while (cur && isObj(cur.derived) && seen.indexOf(cur.id) < 0) {
+            seen.push(cur.id);
+            const nextId = cur.derived.parentPlaneId;
+            cur = arr(lists.planes).find((o) => isObj(o) && o.id === nextId);
+          }
+          if (cur && cur.id === pl.id) err(who + ' is built from a surface that is built from it.');
           if (d.angleDeg !== undefined && d.angleDeg !== null && !(typeof d.angleDeg === 'number' && d.angleDeg >= STEEP_MIN_DEG && d.angleDeg <= STEEP_MAX_DEG)) {
             err(who + ': the slope of a steep roof face must be ' + STEEP_MIN_DEG + ' to ' + STEEP_MAX_DEG + ' degrees or empty.');
           }
