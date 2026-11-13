@@ -15,6 +15,11 @@
  * step done from the plan (photo in, scale set, items traced, outlet placed), not from its position. After a
  * trace is finished the hint bar shows its length and offers what to trace next (ui.afterTrace); on a phone the
  * sheet stays collapsed until Done or More.
+ *
+ * A ridge traced on a wall comes out too short (measure: wrongSurface 'roof'). Right after such a trace the hint
+ * bar says so and, instead of "Trace next", offers "Put it on the roof", "Type its length" and "Later" (#hint-fix).
+ * The hint for a line says which line it is: an eave, the bottom of a steep roof face, or the trim line where an
+ * upper roof starts.
  */
 LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui.store', 'ui.imagesource', 'ui.actions', 'ui.panels'],
   function (schema, sample, catalog, measure, persist, storeModule, imagesource, actionsModule, panels) {
@@ -182,7 +187,16 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
       const pts = ui.draft && Array.isArray(ui.draft.points) ? ui.draft.points.length : 0;
       if (ui.afterTrace && (!mode.name || mode.name === 'select')) {
         const f = (project.features || []).find((x) => x && x.id === ui.afterTrace.featureId);
-        if (f) return { after: true, text: tracedText(f, project, plan), next: nextTraceTypes(f.type), count: '', finish: false };
+        if (f) {
+          // A ridge drawn on a wall comes out too short: say so at once and offer the two fixes instead of "Trace next".
+          const m = plan && plan.measured && plan.measured.features ? plan.measured.features[f.id] : null;
+          if (panels.needsRoof(f, m)) {
+            const fmt = (v) => measure.formatLength(v, project.settings && project.settings.lengthFormat);
+            const len = m.ok && Number.isFinite(m.measuredFt) ? ' measures ' + fmt(m.measuredFt) + ' on the wall, which is too short' : ' is drawn on the wall, so it comes out too short';
+            return { after: true, fix: { featureId: f.id }, text: (f.label || 'This ridge') + len + '. A ridge sits on the roof, behind the wall.', next: [], count: '', finish: false };
+          }
+          return { after: true, text: tracedText(f, project, plan), next: nextTraceTypes(f.type), count: '', finish: false };
+        }
       }
       const plane = project.planes.find((p) => p.id === o.planeId);
       const pname = plane ? "'" + plane.name + "'" : 'this wall';
@@ -191,14 +205,26 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
         return { text: 'Tap the 4 corners of ' + what + ' on ' + pname + '. Zoom in for accuracy.', count: pts + ' of 4', finish: false };
       }
       if (mode.name === 'line') {
-        if (o.purpose === 'roofEave') return { text: 'Tap both ends of the eave where the roof slope meets ' + pname + '.', count: pts + ' of 2', finish: false };
+        if (o.purpose === 'roofEave') {
+          let text = 'Tap both ends of the eave where the roof slope meets ' + pname + '.';
+          if (o.steep) text = 'Tap both ends of the line where the steep roof face starts on ' + pname + '. This is the eave or gutter line at its bottom.';
+          else if (o.upper || (plane && plane.kind === 'roof')) text = 'Tap both ends of the line where ' + pname + ' ends and the upper roof starts. This is the trim line at its top.';
+          else if (o.thenMove) text = 'A ridge sits on the roof, so mark the roof first: tap both ends of the eave where the roof slope meets ' + pname + '.';
+          return { text, count: pts + ' of 2', finish: false };
+        }
         if (o.purpose === 'groundBase') {
           // On the way to a walkway or stake lights: say why the ground comes first (the hint bar says it once;
           // no toast repeats it over the wall being tapped).
           const then = o.thenTrace && FEATURE_TYPES[o.thenTrace] ? FEATURE_TYPES[o.thenTrace].short : null;
           return { text: (then ? then + ' lights lie on the ground, so mark the ground first: tap' : 'Tap') + ' two points along the bottom of ' + pname + ', where it meets the ground.', count: pts + ' of 2', finish: false };
         }
-        if (o.purpose === 'planeLine') return { text: plane && plane.kind === 'roof' ? 'Tap both ends of the eave again.' : 'Tap two points along the bottom of the wall again.', count: pts + ' of 2', finish: false };
+        if (o.purpose === 'planeLine') {
+          const sk = plane ? actionsModule.surfaceKind(project, plane) : 'wall';
+          const text = sk === 'steep' ? 'Tap both ends of the line where the steep roof face starts again.'
+            : sk === 'upper' ? 'Tap both ends of the trim line where the upper roof starts again.'
+              : sk === 'roof' ? 'Tap both ends of the eave again.' : 'Tap two points along the bottom of the wall again.';
+          return { text, count: pts + ' of 2', finish: false };
+        }
         if (o.courses) return { text: 'Tap the bottom edge of one course, then the bottom edge of the course ' + o.courses + ' courses up.', count: pts + ' of 2', finish: false };
         return { text: 'Tap both ends of ' + referenceName(o.presetId) + ' on ' + pname + '.', count: pts + ' of 2', finish: false };
       }
@@ -254,6 +280,7 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
       const hintActions = $('hint-actions');
       const hintNext = $('hint-next');
       const hintNextChips = $('hint-next-chips');
+      const hintFix = $('hint-fix');
       const actionBar = $('action-bar');
       const actionBtn = $('action-btn');
       const actionLabel = $('action-label');
@@ -418,6 +445,11 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
         if (b) actions.startTrace(b.getAttribute('data-next'));
       });
       on($('hint-done'), 'click', () => actions.finishTracing());
+      // After a ridge was traced on a wall: move it to the roof, type its length, or leave it for later.
+      const fixId = () => { const at = store.ui().afterTrace; return at ? at.featureId : null; };
+      on($('hint-fix-roof'), 'click', () => { const id = fixId(); if (id) actions.putOnRoof(id); });
+      on($('hint-fix-tape'), 'click', () => { const id = fixId(); if (id) { restoreSheet = restoreSheet || 'half'; actions.typeLength(id); } });
+      on($('hint-fix-later'), 'click', () => actions.finishTracing());
       on($('hint-more'), 'click', () => {
         restoreSheet = null;
         actions.finishTracing();
@@ -656,11 +688,7 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
         noticeB.hidden = !b;
         noticeClose.hidden = !closable;
       }
-      function planeLabel(p) {
-        const kind = p.kind === 'roof' ? 'roof' : p.kind === 'ground' ? 'ground' : 'wall';
-        const name = p.name || kind;
-        return name.toLowerCase().indexOf(kind) >= 0 ? name : name + ' · ' + kind;
-      }
+      const planeLabel = (p) => actionsModule.surfaceOptionLabel(store.project(), p);
 
       function renderDialog(ui) {
         const d = ui.dialog;
@@ -803,8 +831,9 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
           hintText.textContent = hint.text;
           if (hintCount) { hintCount.textContent = hint.count || ''; hintCount.hidden = !hint.count; }
           if (hintActions) hintActions.hidden = !!hint.after;
-          if (hintNext) hintNext.hidden = !hint.after;
-          if (hint.after) {
+          if (hintNext) hintNext.hidden = !hint.after || !!hint.fix;
+          if (hintFix) hintFix.hidden = !(hint.after && hint.fix);
+          if (hint.after && !hint.fix) {
             // The result of the trace just finished, and what to trace next.
             const key = hint.next.join(',');
             if (key !== hintNextKey && hintNextChips) {
@@ -814,7 +843,7 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
                 hintNextChips.appendChild(panels.h('button', { type: 'button', class: 'btn small', data: { next: t } }, FEATURE_TYPES[t].short));
               }
             }
-          } else {
+          } else if (!hint.after) {
             const pts = ui.draft && ui.draft.points ? ui.draft.points.length : 0;
             hintUndo.disabled = !pts;
             hintUndo.hidden = ui.mode.name === 'outlet';
@@ -827,7 +856,7 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
         if (hintPlaneWrap) hintPlaneWrap.hidden = !tracing;
         if (tracing && hintPlane) {
           const planes = project.planes.filter((p) => !image || p.imageId === image.id);
-          const key = planes.map((p) => p.id + '=' + p.name + '/' + p.kind).join('|');
+          const key = planes.map((p) => p.id + '=' + p.name + '/' + actionsModule.surfaceKind(project, p)).join('|');
           if (key !== hintPlaneKey) {
             hintPlaneKey = key;
             hintPlane.textContent = '';

@@ -32,6 +32,17 @@
  * links: copying writes to the clipboard and, where that is blocked, shows the address selected in a read-only
  * field. Nothing is ever fetched or opened by code. The wording comes from ui.export (supplierFacts, priceSentence,
  * priceStatusLabel, orderUseText, describeBulk, whereToBuy) so the PDF says the same.
+ *
+ * Mansard roofs and two fixes found on a real house:
+ *  - Calibrate: when a wall's scale comes from a measured rectangle other than the one marked as its corners
+ *    (measure: calib.rectAuto), the wall's status card says so in one line (scaleLine) and the reference list shows
+ *    which rectangle sets the scale and how the other one checks.
+ *  - Calibrate: "Steep roof face (mansard)" beside Wall, Roof slope and Ground. Its editor (steepEditor) offers
+ *    typical angles (a guess) and "I measured it" (two tape numbers, measure.steepFromTape), shows the angle, and
+ *    offers "Add the upper roof". The surface list names the kinds apart (ui.actions.surfaceKind).
+ *  - Trace and Review: a ridge drawn on a wall (measure: wrongSurface 'roof', needsRoof) carries two buttons, on
+ *    its card and in its "double-check" entry: "Put it on the roof" (actions.putOnRoof) and "Type its length"
+ *    (actions.typeLength, which sets ui.focusTape; render() then puts the cursor in that item's tape field).
  */
 LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.actions', 'ui.persist', 'ui.store', 'suppliers'],
   function (catalog, measure, camera, design, power, actionsModule, persist, storeModule, suppliers) {
@@ -535,6 +546,58 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
 
     // ================================================================ text tables
     const PLANE_KIND = { wall: 'Wall', roof: 'Roof slope', ground: 'Ground' };
+    const surfaceKind = actionsModule.surfaceKind;
+    const SURFACE_LABEL = actionsModule.SURFACE_LABEL;
+    const surfaceOptionLabel = actionsModule.surfaceOptionLabel;
+    /** "70° from level, measured" for a steep roof face (sol.pitch of its solution). */
+    function steepSlopeText(pitch) {
+      if (!pitch || !isNum(pitch.angleDeg)) return '';
+      const how = pitch.source === 'user' ? (pitch.clamped ? 'measured, almost straight up' : 'measured')
+        : pitch.source === 'guess' ? 'a typical angle, not measured' : 'assumed';
+      return actionsModule.steepAngleText(pitch.angleDeg) + ' from level (' + how + ')';
+    }
+    /** A steep face's slope read from its stored data, for when its wall has no scale yet: {angleDeg, source}. */
+    function storedSteepPitch(derived) {
+      const d = derived || {};
+      const lim = measure.STEEP || { defaultDeg: 70, minDeg: 20, maxDeg: 85 };
+      if (d.pitch && d.pitch.rise > 0 && d.pitch.run > 0) {
+        const ang = Math.atan2(d.pitch.rise, d.pitch.run) * 180 / Math.PI;
+        return { angleDeg: Math.min(ang, lim.maxDeg), source: 'user', clamped: ang > lim.maxDeg };
+      }
+      if (isNum(d.angleDeg)) return { angleDeg: Math.max(lim.minDeg, Math.min(lim.maxDeg, d.angleDeg)), source: 'guess' };
+      return { angleDeg: lim.defaultDeg, source: 'default' };
+    }
+    /**
+     * The one line that says where a wall's scale comes from when LightPlan chose a measured rectangle other than
+     * the one marked as the wall's corners (measure: calib.rectAuto), or null. The wording is core's own note.
+     */
+    function scaleLine(sol) {
+      const c = sol && sol.ok && sol.calib;
+      if (!c || !c.rectAuto) return null;
+      const note = arr(sol.notes).find((n) => typeof n === 'string' && /^Scale taken from/.test(n));
+      if (note) return note;
+      const why = c.rectWhy === 'steadiest' ? 'the measured rectangle that gives the steadiest scale' : 'the largest measured rectangle';
+      return 'Scale taken from ' + (c.rectLabel ? "'" + c.rectLabel + "'" : 'another rectangle') + ' (' + why + '). The rectangle you marked on the wall is used as a check.';
+    }
+    /**
+     * Does this item need the "put it on the roof" fix? m is its measurement: a ridge drawn on a wall
+     * (m.wrongSurface 'roof') whose length is not tape-measured yet.
+     */
+    function needsRoof(f, m) {
+      return !!(f && m && m.wrongSurface === 'roof' && !(isNum(f.overrideFt) && f.overrideFt > 0));
+    }
+    /** The first two sentences of core's message for a misplaced item (what is wrong, without the "do this"). */
+    function wrongSurfaceWhy(item) {
+      const msg = item && typeof item.message === 'string' ? item.message : '';
+      const parts = msg.split('. ');
+      return parts.length > 2 ? parts.slice(0, 2).join('. ') + '.' : msg;
+    }
+    /** Under the two fix buttons: where "Put it on the roof" will put the item. */
+    function roofFixNote(project, f, item) {
+      const target = item ? actionsModule.pickRoofCandidate(project, f, item.candidates) : null;
+      if (target) return "Put it on the roof moves it to '" + (target.name || 'the roof') + "'" + (item.candidates.length > 1 ? '. You can pick another surface after.' : '.');
+      return 'No roof is marked above this wall yet. Put it on the roof has you mark where the roof starts, then moves the item.';
+    }
     const SOURCE_KIND = { upload: 'Uploaded photo', camera: 'Phone camera', sample: 'Sample house', streetview: 'Street-level screenshot', aerial: 'Aerial view' };
     /**
      * Lens wording as shown on screen: the wide-view preset is called "Screenshot (wide view)" (SPEC §8.4), whatever
@@ -701,6 +764,17 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         store, project, ui, plan, image, planes, features,
         config: plan.library.config,
         sols: plan.measured.planes || {},
+        // Items on the wrong kind of surface that have a fix here (a ridge drawn on a wall), by feature id.
+        misplaced: (() => {
+          let memo = null;
+          return () => {
+            if (!memo) {
+              memo = {};
+              for (const it of arr(measure.misplacedFeatures(project, plan.measured))) if (it && it.wants === 'roof') memo[it.featureId] = it;
+            }
+            return memo;
+          };
+        })(),
         fmt: (ft) => measure.formatLength(ft, fmtFmt),
         activePlane: byId(planes, ui.activePlaneId) || planes[0] || null,
       };
@@ -715,6 +789,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         mode: sol.mode, checks: sol.checks, disagreementPct: sol.disagreementPct,
         onlyMediumLowRefs: sol.calib && sol.calib.onlyMediumLowRefs, minCourses: sol.calib && sol.calib.minCourses,
         viewAngleDeg: sol.viewAngleDeg, focalSource: K && K.source, pitchSource: sol.pitch && sol.pitch.source,
+        steep: !!sol.steep, steepAngleDeg: sol.steep && sol.pitch ? sol.pitch.angleDeg : null, slopeBelow: sol.slopeBelow,
         thresholds: ctx.config.confidence,
       });
     }
@@ -816,7 +891,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           data: { act: 'select-plane', id: pl.id },
         }, swatch(pl.color || '#4f9dff', 'dot'),
         h('span', { class: 'plane-name' }, pl.name || PLANE_KIND[pl.kind]),
-        h('span', { class: 'plane-kind' }, PLANE_KIND[pl.kind] || 'Surface'),
+        h('span', { class: 'plane-kind' }, SURFACE_LABEL[surfaceKind(ctx.project, pl)] || 'Surface'),
         conf ? pill(conf.level) : h('span', { class: 'pill none' }, 'Needs a scale'));
       });
       kids.push(section('Surfaces', [
@@ -824,8 +899,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         h('div', { class: 'btn-row wrap' },
           button('Wall', { act: 'add-plane', data: { kind: 'wall' }, icon: 'plus', cls: 'small' }),
           button('Roof slope', { act: 'add-plane', data: { kind: 'roof' }, icon: 'plus', cls: 'small' }),
-          button('Ground', { act: 'add-plane', data: { kind: 'ground' }, icon: 'plus', cls: 'small' })),
-        h('p', { class: 'hint' }, 'Measure each wall on its own surface. A roof slope starts from its eave on a wall; the ground starts from the bottom of a wall.'),
+          button('Ground', { act: 'add-plane', data: { kind: 'ground' }, icon: 'plus', cls: 'small' }),
+          button('Steep roof face (mansard)', { act: 'add-plane', data: { kind: 'steep' }, icon: 'plus', cls: 'small' })),
+        h('p', { class: 'hint' }, 'Measure each wall on its own surface. A roof slope starts from its eave on a wall; the ground starts from the bottom of a wall. A steep roof face is the near-upright shingled part of a mansard roof.'),
       ], { key: 'surfaces' }));
 
       const pl = ctx.activePlane;
@@ -839,6 +915,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const conf = planeConfidence(ctx, sol);
       const K = ctx.image ? plan.measured.cameras[ctx.image.id] : null;
       const parent = pl.derived ? byId(ctx.project.planes, pl.derived.parentPlaneId) : null;
+      const sk = surfaceKind(ctx.project, pl);
+      const wall = actionsModule.wallOfPlane(ctx.project, pl);
       const kids = [];
       kids.push(h('div', { class: 'row-2' },
         field('Name', textInput({ act: 'plane-name', value: pl.name, data: { id: pl.id }, maxlength: 60 })),
@@ -856,8 +934,18 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       }
       // How the lens was worked out, in words (the focal length in pixels is on the Upload step for those who want it).
       if (K && K.ok !== false) statusRows.push(['Lens', lensWords(K.label)]);
-      if (pl.kind === 'roof' && sol && sol.pitch) statusRows.push(['Pitch', sol.pitch.rise + '/' + sol.pitch.run + (sol.pitch.source === 'estimated' ? ' (estimated)' : sol.pitch.source === 'default' ? ' (assumed)' : '')]);
-      kids.push(h('div', { class: 'status-card' }, dl(statusRows), conf ? confidenceBlock(conf, 'plane-conf-' + pl.id) : null));
+      if (sk === 'steep') {
+        // A steep face is told by its angle from level, never as a rise over 12.
+        const text = steepSlopeText(sol && sol.pitch ? sol.pitch : storedSteepPitch(pl.derived));
+        if (text) statusRows.push(['Slope', text]);
+      } else if (pl.kind === 'roof' && sol && sol.pitch) {
+        statusRows.push(['Pitch', sol.pitch.rise + '/' + sol.pitch.run + (sol.pitch.source === 'estimated' ? ' (estimated)' : sol.pitch.source === 'default' ? ' (assumed)' : '')]);
+      }
+      // The scale came from a measured rectangle other than the one marked as the wall's corners: say so, once.
+      const scaleText = pl.kind === 'wall' ? scaleLine(sol) : null;
+      kids.push(h('div', { class: 'status-card' }, dl(statusRows),
+        scaleText ? h('p', { class: 'scale-line', 'data-key': 'scale-line' }, icon('ruler'), h('span', null, scaleText)) : null,
+        conf ? confidenceBlock(conf, 'plane-conf-' + pl.id) : null));
       const zoomWhy = zoomedOutReason(conf);
       if (zoomWhy) kids.push(callout('warn', zoomWhy, { key: 'zoomed-out' }));
 
@@ -865,8 +953,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         kids.push(rectEditor(ctx, pl));
         kids.push(refEditor(ctx, pl, sol));
       } else {
-        const what = pl.kind === 'roof' ? 'eave line' : 'wall base line';
-        if (pl.kind === 'roof') {
+        const what = sk === 'steep' ? 'the bottom line' : sk === 'upper' ? 'the trim line' : pl.kind === 'roof' ? 'eave line' : 'wall base line';
+        if (sk === 'steep') kids.push(steepEditor(ctx, pl, sol));
+        else if (pl.kind === 'roof') {
           const pp = pl.derived && pl.derived.pitch;
           const housePitch = plan.measured.pitch;
           const houseText = 'Same as the house (' + housePitch.rise + '/' + housePitch.run + (housePitch.source === 'estimated' ? ', estimated' : housePitch.source === 'default' ? ', assumed' : '') + ')';
@@ -876,13 +965,67 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           kids.push(field('Pitch of this slope', selectInput({ act: 'plane-pitch', value: val, options: opts, data: { id: pl.id } })));
         }
         kids.push(h('div', { class: 'btn-row' }, button('Redraw ' + what, { act: 'redraw-line', data: { id: pl.id }, icon: 'ruler', cls: 'small' })));
-        if (parent) kids.push(h('p', { class: 'hint' }, 'Built from \'' + parent.name + '\'. Its accuracy depends on that wall\'s rectangle.'));
+        if (sk === 'steep') {
+          // The shallow roof above a steep face starts where the face ends: offer it here, once.
+          const upper = ctx.project.planes.filter((x) => x && x.derived && x.derived.parentPlaneId === pl.id);
+          if (upper.length) {
+            kids.push(h('p', { class: 'ok-line', 'data-key': 'upper-there' }, icon('check'), h('span', null, 'The upper roof above this face is \'' + upper[0].name + '\'.')));
+          } else {
+            kids.push(h('div', { class: 'sub', 'data-key': 'upper-offer' }, h('h4', null, 'The roof above this face'),
+              h('p', { class: 'hint' }, 'To measure the top edge of the house, add the upper roof. You mark where this face ends, along the trim line at its top.'),
+              h('div', { class: 'btn-row' }, button('Add the upper roof', { act: 'add-plane', data: { kind: 'upper', parent: pl.id }, icon: 'plus' }))));
+          }
+        }
+        if (sk === 'upper' && parent) {
+          kids.push(h('p', { class: 'hint' }, 'Starts where \'' + parent.name + '\' ends. From the street this roof is seen almost edge-on, so lengths on it are rough. Tape-measure the ones that matter.'));
+        } else if (parent) {
+          kids.push(h('p', { class: 'hint' }, 'Built from \'' + parent.name + '\'. Its accuracy depends on ' + (wall && wall.id !== parent.id ? "the rectangle on '" + wall.name + "'." : 'that wall\'s rectangle.')));
+        }
       }
       const issues = sol ? arr(sol.warnings).filter((w) => !/disagree/i.test(w)) : [];
       for (const w of issues) kids.push(callout('warn', w, { key: 'pw-' + hashKey(w) }));
       // Notes explain how the plane was solved (e.g. separate horizontal/vertical scales, a promoted rectangle).
-      for (const n of sol ? arr(sol.notes) : []) kids.push(callout('info', n, { key: 'pn-' + hashKey(n) }));
+      for (const n of sol ? arr(sol.notes) : []) { if (n !== scaleText) kids.push(callout('info', n, { key: 'pn-' + hashKey(n) })); }
       return section(pl.name || 'Surface', kids, { key: 'plane-' + pl.id, cls: 'plane-editor' });
+    }
+
+    /**
+     * "How steep is it?" for a steep roof face: a typical angle (a guess, 70° to start with), or two tape numbers
+     * (how far the face goes up, how far it goes back, its sloped height), which measure.steepFromTape turns into
+     * the angle. Only typed tape numbers are stored as measured.
+     */
+    function steepEditor(ctx, pl, sol) {
+      const d = pl.derived || {};
+      const measured = !!(d.pitch && d.pitch.rise > 0 && d.pitch.run > 0);
+      const lim = measure.STEEP || { defaultDeg: 70, minDeg: 20, maxDeg: 85 };
+      const guess = measured ? null : Math.round(isNum(d.angleDeg) ? Math.max(lim.minDeg, Math.min(lim.maxDeg, d.angleDeg)) : lim.defaultDeg);
+      const angles = actionsModule.STEEP_ANGLES.slice();
+      if (guess != null && !angles.includes(guess)) { angles.push(guess); angles.sort((a, b) => a - b); }
+      const chips = angles.map((a) => h('button', {
+        type: 'button', class: 'chip angle-chip' + (a === guess ? ' on' : ''), 'aria-pressed': String(a === guess),
+        data: { act: 'steep-angle', id: pl.id, deg: a }, 'aria-label': a + ' degrees from level',
+      }, h('span', null, a + '°')));
+      // The tape fields show what is being typed (kept in local.steep through re-renders), else the stored numbers.
+      const draft = ctx.local && ctx.local.steep && ctx.local.steep.planeId === pl.id ? ctx.local.steep : null;
+      const shown = (ctx.local && ctx.local.steepShown && ctx.local.steepShown[pl.id]) || ['up', 'back'];
+      const stored = measured ? { up: d.pitch.rise, back: d.pitch.run, slope: Math.hypot(d.pitch.rise, d.pitch.run) } : null;
+      const val = (k) => (draft ? draft[k] || '' : stored && shown.includes(k) ? ctx.fmt(stored[k]) : '');
+      const tape = (k, label, ph) => field(label, textInput({ act: 'steep-tape', value: val(k), placeholder: stored && !draft && !shown.includes(k) ? ctx.fmt(stored[k]) : ph, data: { id: pl.id, field: k } }));
+      const angle = sol && sol.pitch && isNum(sol.pitch.angleDeg) ? sol.pitch.angleDeg : null;
+      return h('div', { class: 'sub steep-editor', 'data-key': 'steep' },
+        h('h4', null, 'How steep is it?'),
+        h('p', { class: 'hint' }, 'Pick the closest angle, counted up from level ground. Most mansard faces are near 70°. A picked angle is a guess, so lengths on this face stay rated Low until you measure it.'),
+        h('div', { class: 'angle-row', role: 'group', 'aria-label': 'Typical angles' }, chips),
+        h('h4', null, 'I measured it'),
+        h('p', { class: 'hint' }, 'Tape-measure two of these and LightPlan works out the angle: how far the face goes straight up, how far it leans back, or its sloped height.'),
+        h('div', { class: 'row-3' },
+          tape('up', 'Up', 'e.g. 8\''),
+          tape('back', 'Back', 'e.g. 3\''),
+          tape('slope', 'Sloped height', 'e.g. 8\' 6"')),
+        h('div', { class: 'btn-row' }, button('Use these numbers', { act: 'steep-use', data: { id: pl.id }, icon: 'ruler' })),
+        measured && angle != null
+          ? h('p', { class: 'ok-line', 'data-key': 'steep-result' }, icon('check'), h('span', null, 'Measured: ' + actionsModule.steepAngleText(angle) + ' from level (' + ctx.fmt(stored.up) + ' up, ' + ctx.fmt(stored.back) + ' back, ' + ctx.fmt(stored.slope) + ' along the slope).'))
+          : h('p', { class: 'hint', 'data-key': 'steep-result' }, 'Using ' + guess + '° from level. This is a guess.'));
     }
 
     function rectEditor(ctx, pl) {
@@ -955,10 +1098,20 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
             h('span', { class: 'ref-nums num' },
               ref.kind === 'rect' && !r ? 'Rectangle ' + ctx.fmt(ref.widthFt) + ' × ' + ctx.fmt(ref.heightFt)
                 : 'Expected ' + ctx.fmt(expected) + ' · measured ' + (r ? ctx.fmt(r.measuredFt) : '—'))),
-          err == null ? h('span', { class: 'err-badge none' }, r ? 'sets scale' : '—')
+          err == null ? h('span', { class: 'err-badge none' }, r || (sol && sol.promotedRefId === ref.id) ? 'sets scale' : '—')
             : h('span', { class: 'err-badge ' + cls, title: 'Measured minus expected' }, signedPct(err)),
           iconButton('trash', 'Delete reference ' + label, { act: 'delete-ref', data: { id: ref.id, plane: pl.id }, cls: 'small' }));
       });
+      // The wall's own rectangle, when another one sets the scale: it is checked like a reference (not deletable here).
+      for (const r of arr(sol && sol.refResults).filter((x) => x && x.fromRect)) {
+        const err = isNum(r.errorPct) ? r.errorPct : null;
+        const cls = err == null ? 'none' : Math.abs(err) < 2 ? 'ok' : Math.abs(err) <= warnPct ? 'warn' : 'danger';
+        items.push(h('li', { class: 'ref-item own-rect', 'data-key': 'own-' + hashKey(String(r.label)) },
+          h('div', { class: 'ref-main' },
+            h('span', { class: 'ref-label' }, r.label || 'The wall rectangle'),
+            h('span', { class: 'ref-nums num' }, 'Expected ' + ctx.fmt(r.expectedFt) + ' · measured ' + ctx.fmt(r.measuredFt))),
+          h('span', { class: 'err-badge ' + cls, title: 'Measured minus expected' }, err == null ? 'check' : signedPct(err))));
+      }
       const listKids = items.length ? h('ul', { class: 'ref-list' }, items) : h('p', { class: 'hint' }, 'No references on this wall yet. A door height or a garage door width works well.');
       const out = [h('h4', null, 'Reference lengths'), kids, listKids];
       if (sol && isNum(sol.disagreementPct) && sol.disagreementPct > warnPct) {
@@ -1000,13 +1153,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       return ctx.fmt(m.lengthFt);
     }
 
-    /** "Front yard · ground", but just "Front wall" when the name already says what it is. */
-    function planeOptionLabel(p) {
-      const kind = p.kind === 'roof' ? 'roof' : p.kind === 'ground' ? 'ground' : 'wall';
-      const name = p.name || PLANE_KIND[p.kind] || 'Surface';
-      return name.toLowerCase().indexOf(kind) >= 0 ? name : name + ' · ' + kind;
-    }
-
     function stepTrace(ctx) {
       const { ui, planes, features, plan, image } = ctx;
       const kids = [head(3, 'Pick what to light, then tap along it on the photo.')];
@@ -1035,7 +1181,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
             swatch(ft.color), h('span', null, ft.short));
         })),
         h('div', { class: 'row-auto' },
-          field('Surface to trace on', selectInput({ act: 'active-plane', value: ctx.activePlane ? ctx.activePlane.id : '', options: planes.map((p) => [p.id, planeOptionLabel(p)]) })),
+          field('Surface to trace on', selectInput({ act: 'active-plane', value: ctx.activePlane ? ctx.activePlane.id : '', options: planes.map((p) => [p.id, surfaceOptionLabel(ctx.project, p)]) })),
           toggle('Snap', { act: 'view-toggle', data: { key: 'snap' }, checked: ui.view.snap })),
         h('p', { class: 'hint' }, 'Lines: tap each corner, then Finish or double-tap. Windows and bushes: tap around and tap the first point to close. Trees and columns: tap the base, then the top.'),
         h('p', { class: 'hint', 'data-key': 'rake-note' }, RAKE_NOTE),
@@ -1071,11 +1217,22 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       kids.push(h('div', { class: 'row-2' },
         field('Label', textInput({ act: 'feature-field', value: f.label, data: { id: f.id, field: 'label' }, maxlength: 80 })),
         field('Type', selectInput({ act: 'feature-type', value: f.type, options: TYPE_ORDER.map((t) => [t, FEATURE_TYPES[t].short]), data: { id: f.id } }))));
-      kids.push(field('Surface', selectInput({ act: 'feature-plane', value: f.planeId || '', options: [['', 'None']].concat(ctx.planes.map((p) => [p.id, p.name])), data: { id: f.id } })));
+      kids.push(field('Surface', selectInput({ act: 'feature-plane', value: f.planeId || '', options: [['', 'None']].concat(ctx.planes.map((p) => [p.id, surfaceOptionLabel(ctx.project, p)])), data: { id: f.id } })));
       const fpl = byId(ctx.planes, f.planeId);
       const kinds = actionsModule.KINDS_FOR_TYPE && actionsModule.KINDS_FOR_TYPE[f.type];
-      if (fpl && kinds && !kinds.includes(fpl.kind)) {
-        kids.push(callout('warn', 'This ' + (ft.short || 'item').toLowerCase() + ' is measured on \'' + fpl.name + '\' (' + (PLANE_KIND[fpl.kind] || fpl.kind).toLowerCase() +
+      // A ridge drawn on a wall comes out too short: offer the two fixes right on its card while that stands.
+      if (needsRoof(f, m)) {
+        const item = ctx.misplaced()[f.id] || null;
+        kids.push(callout('warn', wrongSurfaceWhy(item) || 'A ridge sits on the roof, behind the wall. Measured on the wall it comes out too short.', {
+          key: 'ws-' + f.id,
+          after: [h('div', { class: 'btn-row wrap' },
+            button('Put it on the roof', { act: 'put-on-roof', data: { id: f.id }, cls: 'small primary' }),
+            button('Type its length', { act: 'type-length', data: { id: f.id }, cls: 'small' })),
+          h('p', { class: 'hint' }, roofFixNote(ctx.project, f, item))],
+        }));
+      }
+      if (fpl && kinds && !actionsModule.typeFitsSurface(ctx.project, f.type, fpl)) {
+        kids.push(callout('warn', 'This ' + (ft.short || 'item').toLowerCase() + ' is measured on \'' + fpl.name + '\' (' + (SURFACE_LABEL[surfaceKind(ctx.project, fpl)] || fpl.kind).toLowerCase() +
           '), so its length is likely wrong. Pick the ' + (kinds[0] === 'ground' ? 'ground' : kinds[0] === 'roof' ? 'roof slope' : 'wall') + ' it is on.', { key: 'fk-' + f.id }));
       }
       // Points: the one last pressed on the photo can be deleted; tap a + between two points on the photo to add one.
@@ -1656,7 +1813,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
             h('summary', null, h('span', null, 'More about this outlet'), icon('chevronDown', 'chev')),
             h('div', { class: 'row-2' },
               field('Breaker it is on', selectInput({ act: 'outlet-circuit', value: o.circuitId || '', options: circuitOpts, data: { id: o.id } })),
-              field('Wall it is on', selectInput({ act: 'outlet-plane', value: o.planeId || '', options: [['', 'None']].concat(ctx.planes.map((p) => [p.id, planeOptionLabel(p)])), data: { id: o.id } })))));
+              field('Wall it is on', selectInput({ act: 'outlet-plane', value: o.planeId || '', options: [['', 'None']].concat(ctx.planes.map((p) => [p.id, surfaceOptionLabel(ctx.project, p)])), data: { id: o.id } })))));
       });
       kids.push(section('Outlets', [
         h('div', { class: 'btn-row' }, button(placing ? 'Tap the photo to place it' : 'Place outlet', { act: 'place-outlet', icon: 'plug', cls: placing ? 'on' : 'primary', pressed: placing })),
@@ -1852,9 +2009,17 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
             field('Tape height', textInput({ act: 'feature-len', value: params.overrideHeightFt ? ctx.fmt(params.overrideHeightFt) : '', placeholder: 'e.g. 3\'', data: { id: it.featureId, field: 'overrideHeightFt' } })))
           : field(it.kind === 'height' ? 'Tape-measured height' : 'Tape-measured length',
             textInput({ act: 'feature-len', value: f.overrideFt ? ctx.fmt(f.overrideFt) : '', placeholder: 'e.g. ' + ctx.fmt(it.lengthFt), data: { id: it.featureId, field: 'overrideFt' } }));
+        // A ridge drawn on a wall: the same two fixes as on its card in step 3.
+        const m = ctx.plan.measured.features[it.featureId];
+        const wrong = needsRoof(f, m) ? ctx.misplaced()[it.featureId] || {} : null;
         return h('li', { class: 'rough-item', 'data-key': 'rough-' + it.featureId },
           h('p', { class: 'rough-title' }, swatch(ft.color, 'dot'), h('strong', null, it.label), pill(it.level)),
           h('p', { class: 'rough-text' }, capFirst(it.text) + '.'),
+          wrong ? h('div', { class: 'rough-fix', 'data-key': 'fix' },
+            h('p', { class: 'rough-text' }, wrongSurfaceWhy(wrong) || 'A ridge sits on the roof, behind the wall. Measured on the wall it comes out too short.'),
+            h('div', { class: 'btn-row wrap' },
+              button('Put it on the roof', { act: 'put-on-roof', data: { id: it.featureId }, cls: 'small primary' }),
+              button('Type its length', { act: 'type-length', data: { id: it.featureId }, cls: 'small' }))) : null,
           h('div', { class: 'rough-row' }, tape,
             button('Show it', { act: 'show-feature', data: { id: it.featureId }, icon: 'arrowRight', cls: 'small ghost', aria: 'Show ' + it.label + ' on the photo in step 3' })));
       });
@@ -2077,6 +2242,9 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         productDraft: null, productMsg: null, configDraft: null, configMsg: null, exporting: null,
         checks: {}, checksProjectId: null,
         copy: null,   // {key, text, ok, multiline, select}: the last "Copy" pressed; ok false = shown selected to copy by hand
+        steep: null,        // {planeId, up, back, slope}: tape numbers being typed for a steep roof face
+        steepShown: {},     // plane id → which two tape fields were typed (shown again after they are stored)
+        focusN: 0,          // the last ui.focusTape request that was carried out
       };
       let scheduled = false;
       let destroyed = false;
@@ -2135,6 +2303,21 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         if (focusKey && (!document.activeElement || !root.contains(document.activeElement))) {
           const el = root.querySelector('[data-fk="' + (window.CSS && CSS.escape ? CSS.escape(focusKey) : focusKey) + '"]');
           if (el) { try { el.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
+        }
+        // "Type its length": put the cursor in that item's tape-measured length field, once per request.
+        const want = store.ui().focusTape;
+        if (want && want.n !== local.focusN) {
+          const esc = (v) => (window.CSS && CSS.escape ? CSS.escape(v) : v);
+          const el = root.querySelector('[data-act="feature-len"][data-field="overrideFt"][data-id="' + esc(String(want.featureId)) + '"]');
+          if (el) {
+            local.focusN = want.n;
+            const folded = el.closest('details');
+            if (folded && !folded.open) folded.open = true;
+            const show = () => { try { el.scrollIntoView({ block: 'center' }); } catch (e) { /* ignore */ } };
+            try { show(); el.focus({ preventScroll: true }); if (el.select) el.select(); } catch (e) { /* ignore */ }
+            // On a phone the sheet may still be rising from its collapsed size: bring the field into view again after.
+            setTimeout(() => { if (!destroyed && document.activeElement === el) show(); }, 350);
+          }
         }
         // Text that could not be copied is shown in a read-only field: select it once so it can be copied by hand.
         if (local.copy && local.copy.select) {
@@ -2197,6 +2380,40 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         };
         writeClipboard(String(text)).then(finish, () => finish(false));
       }
+      /** The three tape fields of a steep roof face, as typed: {up, back, slope} (strings), read from the page. */
+      function steepFields(planeId) {
+        const out = { planeId, up: '', back: '', slope: '' };
+        for (const f of Array.from(root.querySelectorAll('[data-act="steep-tape"]'))) {
+          if (f.dataset.id === planeId && Object.prototype.hasOwnProperty.call(out, f.dataset.field)) out[f.dataset.field] = f.value.trim();
+        }
+        return out;
+      }
+      /**
+       * Store the tape numbers typed for a steep roof face. loud: say what is wrong (the button); quiet (leaving a
+       * field) stores them only when two or three good numbers are there.
+       */
+      function applySteepTape(planeId, loud) {
+        const typed = steepFields(planeId);
+        const nums = {};
+        const keys = [];
+        for (const k of ['up', 'back', 'slope']) {
+          if (!typed[k]) continue;
+          const v = parseLength(typed[k]);
+          if (v == null) {
+            if (loud) badLength(root.querySelector('[data-act="steep-tape"][data-field="' + k + '"]') || { value: typed[k] });
+            return false;
+          }
+          nums[k + 'Ft'] = v;
+          keys.push(k);
+        }
+        if (!loud && (keys.length < 2 || !measure.steepFromTape(nums).ok)) return false;
+        const res = actions.setSteepMeasured(planeId, nums);
+        if (!res || !res.ok) { schedule(); return false; }
+        local.steep = null;
+        local.steepShown[planeId] = keys.length === 2 ? keys : ['up', 'back'];
+        schedule();
+        return true;
+      }
       function editConfig(path, value) {
         const over = catalog.deepClone((P().library && P().library.config) || {});
         const def = getPath(catalog.DEFAULT_CONFIG, path);
@@ -2258,7 +2475,17 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         pick: (el) => pickFile(actions, el.dataset.kind),
         'load-sample': (el) => actions.loadSample({ traced: el.dataset.traced !== '0' }),
         'select-plane': (el) => actions.select({ kind: 'plane', id: el.dataset.id }),
-        'add-plane': (el) => actions.addPlane(el.dataset.kind),
+        'add-plane': (el) => actions.addPlane(el.dataset.kind, el.dataset.parent ? { parentId: el.dataset.parent } : undefined),
+        // A typical angle for a steep roof face (a guess). It replaces tape numbers, so those fields are cleared.
+        'steep-angle': (el) => {
+          local.steep = null;
+          delete local.steepShown[el.dataset.id];
+          actions.setSteepAngle(el.dataset.id, Number(el.dataset.deg));
+          schedule();
+        },
+        'steep-use': (el) => applySteepTape(el.dataset.id, true),
+        'put-on-roof': (el) => actions.putOnRoof(el.dataset.id),
+        'type-length': (el) => actions.typeLength(el.dataset.id),
         'delete-plane': (el) => actions.deletePlane(el.dataset.id),
         'mark-rect': (el) => actions.startPlaneRect(el.dataset.id),
         'remove-rect': (el) => actions.removePlaneRect(el.dataset.id),
@@ -2443,6 +2670,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           const m = el.value.match(/^(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)$/);
           actions.updateSettings({ roofPitch: m ? { rise: Number(m[1]), run: Number(m[2]) } : null });
         },
+        'steep-tape': (el) => { local.steep = steepFields(el.dataset.id); applySteepTape(el.dataset.id, false); },
         'active-plane': (el) => actions.setActivePlane(el.value),
         'view-toggle': (el) => actions.setView({ [el.dataset.key]: !!el.checked }),
         'feature-field': (el) => {
@@ -2571,6 +2799,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const INPUT = {
         'product-json': (el) => { local.productDraft = el.value; },
         'config-json': (el) => { local.configDraft = el.value; },
+        'steep-tape': (el) => { local.steep = steepFields(el.dataset.id); },
       };
 
       function onClick(e) {
@@ -2615,5 +2844,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       powerVerdict, outletSummaryText, roughList, planProgress, nextAction, runNextAction, lensWords, zoomedOutReason,
       productGroups, productOptionText, productsToSave, bushRuleText, supplierOfUrl, writeClipboard,
       parseMoney, tapeMismatch, strayOverrides, CALIBRATE_SENTENCE,
+      scaleLine, steepSlopeText, storedSteepPitch, needsRoof, wrongSurfaceWhy, roofFixNote,
     };
   });

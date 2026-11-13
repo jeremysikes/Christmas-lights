@@ -46,6 +46,9 @@
  *    finger, 1.5 for a mouse or pen; s = CSS px per image px, times the loupe's 2.5 when the press was held at least
  *    300 ms, long enough to aim with the loupe: a quick tap does not get the loupe's benefit). A point snapped onto
  *    an existing vertex takes that vertex's stored value instead (none when it has none).
+ *  - A steep roof face (a mansard) is only a few feet tall, so in step 2 its grid stops where the face ends
+ *    (overlayExtent): at the line of the upper roof drawn on it, else at its tape-measured sloped height, else just
+ *    past what is traced on it, else 10 ft. Other planes keep the box measure.js gives them.
  *  - Module extras for tests: selectionHandles(project, sel), snapCandidates(project, imageId), layersFor(step, mode),
  *    cordLabelText(feed), cordPieces(feed), tapMarkers(power), cordLabelSpots(screenPath, w, h), clipSegment,
  *    tapErrorPx.
@@ -441,6 +444,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     let occl = { t: -1e9, list: [] }; // boxes of the buttons and bars that float over the canvas (labels keep clear)
     let occlTimer = 0;
     const gridMemo = new WeakMap();
+    const extentMemo = new WeakMap();   // plane solution → the box its grid is drawn over (null = the solution's own)
 
     // ---------------- coordinate transforms
     function imageToScreen(p) { return [p[0] * view.scale + view.tx, p[1] * view.scale + view.ty]; }
@@ -1364,17 +1368,63 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
     function gridLines(sol, step) {
       let m = gridMemo.get(sol);
       if (!m) { m = new Map(); gridMemo.set(sol, m); }
-      if (!m.has(step)) m.set(step, measure.planeGridLines(sol, step));
+      if (!m.has(step)) m.set(step, measure.planeGridLines(sol, step, extentMemo.get(sol) || undefined));
       return m.get(step);
     }
+    /**
+     * The box a plane's grid is drawn over. A steep roof face (a mansard) is only a few feet tall, so its grid
+     * stops where the face ends instead of running 20 ft up into the sky: at the line of the upper roof drawn on
+     * it, else at its tape-measured sloped height, else just past what is traced on it, else 10 ft. Every other
+     * plane keeps the box measure.js gives it. Memoized per solution (a new plan brings new solutions).
+     */
+    function overlayExtent(prj, plan, pl, sol) {
+      if (extentMemo.has(sol)) return extentMemo.get(sol);
+      let e = null;
+      try { e = steepExtent(prj, plan, pl, sol); } catch (err) { e = null; }
+      extentMemo.set(sol, e);
+      return e;
+    }
+    function steepExtent(prj, plan, pl, sol) {
+      const base = sol.gridExtent;
+      if (!sol.steep || sol.mode !== 'roof-3d' || !isObj(base)) return null;
+      const vOf = (p) => { const q = measure.imageToPlane(sol, p); return q && isNum(q[1]) ? q : null; };
+      let top = null;
+      // Where the upper roof starts is where this face ends.
+      for (const child of arr(prj.planes)) {
+        if (!child || !isObj(child.derived) || child.derived.parentPlaneId !== pl.id) continue;
+        for (const p of validPts(child.derived.line)) { const q = vOf(p); if (q && q[1] > 0) top = Math.max(top || 0, q[1]); }
+      }
+      const d = isObj(pl.derived) ? pl.derived : {};
+      // Tape numbers are in feet: how far up and how far back give the sloped height.
+      if (top === null && isObj(d.pitch) && d.pitch.rise > 0 && d.pitch.run > 0) {
+        const h = Math.hypot(d.pitch.rise, d.pitch.run);
+        if (h >= 2 && h <= 40) top = h;
+      }
+      let minU = base.minU, maxU = base.maxU, reach = 0;
+      for (const f of arr(prj.features)) {
+        if (!f || f.planeId !== pl.id) continue;
+        for (const p of validPts(f.points)) {
+          const q = vOf(p);
+          if (!q || !isNum(q[0])) continue;
+          reach = Math.max(reach, q[1]);
+          minU = Math.min(minU, q[0]);
+          maxU = Math.max(maxU, q[0]);
+        }
+      }
+      if (top === null) top = reach > 0 ? reach + 1 : Math.min(base.maxV, 10);
+      top = Math.max(top, reach, 2);
+      // Never wider than a few feet past the line the face starts on, however far a stray point lies.
+      const pad = Math.max(2, (base.maxU - base.minU) * 0.25);
+      return { minU: Math.max(minU, base.minU - pad), minV: base.minV, maxU: Math.min(maxU, base.maxU + pad), maxV: Math.min(top, 40) };
+    }
     function cssPxPerFt(sol) {
-      const e = sol.gridExtent || sol.extent;
+      const e = extentMemo.get(sol) || sol.gridExtent || sol.extent;
       const c = e ? [(e.minU + e.maxU) / 2, (e.minV + e.maxV) / 2] : [0, 0];
       const ls = g.localScale(sol.Hplane2img, c);
       return ls && ls.scale > 0 ? ls.scale * view.scale : 0;
     }
     function extentPolygon(sol) {
-      const e = sol.gridExtent || sol.extent;
+      const e = extentMemo.get(sol) || sol.gridExtent || sol.extent;
       if (!e) return null;
       const H = sol.Hplane2img;
       const corners = [[e.minU, e.minV], [e.maxU, e.minV], [e.maxU, e.maxV], [e.minU, e.maxV]];
@@ -1419,6 +1469,7 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
         const sol = planeSolution(plan, pl.id);
         const active = pl.id === ui.activePlaneId;
         if (!faint && sol && flags.grid) {
+          overlayExtent(prj, plan, pl, sol);
           if (pl.kind !== 'wall') {
             const poly = extentPolygon(sol);
             if (poly) {

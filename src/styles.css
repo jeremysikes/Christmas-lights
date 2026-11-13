@@ -1166,3 +1166,22 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
 .stray-name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
 /* The hint bar keeps its height while points are added: the count never wraps away from its text. */
 .hint-count { display: inline-block; }
+
+/* ---------------------------------------------------------------- mansard roofs, the scale line, items on the wrong surface */
+.scale-line { display: flex; gap: 8px; align-items: flex-start; margin: 0; font-size: 14px; }
+.scale-line > .ic { flex: none; margin-top: 2px; color: var(--ok-ink); }
+.ref-item.own-rect { padding-right: 10px; border-style: dashed; }
+.ref-item.own-rect > .ref-main { cursor: default; }
+.row-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; align-items: end; }
+.angle-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.angle-chip { justify-content: center; min-width: 58px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.steep-editor > h4 + .hint { margin-top: -4px; }
+.rough-fix { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 10px; background: var(--warn-soft); }
+.callout-body > .btn-row { align-self: stretch; }
+.hint-fix .btn { flex: 0 1 auto; }
+.hint-fix #hint-fix-later { margin-left: auto; }
+@media (max-width: 480px) {
+  /* The three buttons of the notice fit one row on a phone. */
+  .hint-fix { gap: 4px; }
+  .hint-fix .btn { padding-left: 9px; padding-right: 9px; }
+}

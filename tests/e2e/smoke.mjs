@@ -5,7 +5,7 @@
 //                                        blocked storage)
 //   node tests/e2e/smoke.mjs             run against the existing dist/lightplan.html
 //   node tests/e2e/smoke.mjs --only=phone        one pass: phone | desktop | dark | storage | inputs | measure |
-//                                                review | landscape | v11-phone | v11-desktop | sup-phone | sup-desktop | fixes
+//                                                review | landscape | v11-phone | v11-desktop | sup-phone | sup-desktop | fixes | mansard
 //                                                (storage = localStorage and IndexedDB blocked;
 //                                                inputs = safe share, tax, file version, damaged photo;
 //                                                review = UI review findings on a phone; landscape = 844x390;
@@ -17,7 +17,11 @@
 //                                                numbers and links, order sheets, cost basis, exports. They write
 //                                                ui-suppliers-<phone|desktop>-step<4|6>-<cle|1000bulbs>*.png;
 //                                                fixes = the Phase 1.1 review findings that show on the page, at
-//                                                390x844, 360x640 and 1280x800 (fixes-*.png))
+//                                                390x844, 360x640 and 1280x800 (fixes-*.png);
+//                                                mansard = a real project with a mansard roof, at 390x844 and
+//                                                1280x800: the best rectangle sets the scale, a steep roof face
+//                                                and its upper roof, and a ridge drawn on a wall
+//                                                (mansard-<size>-*.png, with -dark copies))
 //   LP_APP=/path/to/lightplan.html node tests/e2e/smoke.mjs   run against another build
 //   LP_SECTIONS='UX-0[45]' node tests/e2e/smoke.mjs --only=review   run only the matching review sections
 //
@@ -49,7 +53,7 @@ const PASSES = {
 };
 
 const onlyArg = process.argv.find((a) => a.startsWith('--only='));
-const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES).concat('storage', 'inputs', 'measure', 'review', 'landscape', 'v11-phone', 'v11-desktop', 'sup-phone', 'sup-desktop', 'fixes');
+const selected = onlyArg ? onlyArg.slice(7).split(',') : Object.keys(PASSES).concat('storage', 'inputs', 'measure', 'review', 'landscape', 'v11-phone', 'v11-desktop', 'sup-phone', 'sup-desktop', 'fixes', 'mansard');
 
 if (!fs.existsSync(APP)) {
   console.error('dist/lightplan.html is missing. Run "node build.js" first (npm run e2e does both).');
@@ -2813,6 +2817,515 @@ async function runFixes(browser) {
   return t;
 }
 
+// ------------------------------------------------------------------ mansard: best rectangle, steep faces, the wrong surface
+// A real project that exposed three problems (tests/fixtures/mansard-house.json, geometry only): the wall's own
+// rectangle is a small window, a garage door is a known-size reference, and a ridge is drawn on the wall. The pass
+// attaches a drawn 2048x1152 photo, opens the file like a person would, and walks the three fixes at 390x844 and
+// 1280x800. It writes mansard-<width>x<height>-*.png (light) and -dark.png copies of the main screens.
+
+/** The mansard fixture as a saved project file with a drawn photo of the same shape. Returns the file's path. */
+async function makeMansardFile(page) {
+  const b64 = await page.evaluate(() => {
+    const c = document.createElement('canvas');
+    c.width = 2048; c.height = 1152;
+    const g = c.getContext('2d');
+    const poly = (pts, fill) => { g.fillStyle = fill; g.beginPath(); pts.forEach((p, i) => (i ? g.lineTo(p[0], p[1]) : g.moveTo(p[0], p[1]))); g.closePath(); g.fill(); };
+    g.fillStyle = '#a9c9e8'; g.fillRect(0, 0, 2048, 1152);
+    g.fillStyle = '#6f8f55'; g.fillRect(0, 720, 2048, 432);
+    g.fillStyle = '#8d8d8d'; g.fillRect(1330, 720, 330, 432);                                  // driveway
+    poly([[400, 440], [1290, 440], [1290, 722], [400, 722]], '#a8553f');                      // brick wall
+    poly([[400, 440], [1290, 440], [1250, 310], [440, 310]], '#4b4f57');                      // steep shingled face
+    poly([[440, 310], [1250, 310], [1256, 257], [460, 257]], '#5d626b');                      // shallow upper roof
+    g.fillStyle = '#f4f4f0'; g.fillRect(438, 304, 814, 9);                                    // white trim line
+    g.fillStyle = '#e9e9e4'; g.fillRect(398, 436, 894, 8);                                    // gutter
+    for (const x of [560, 800, 1040]) { poly([[x, 420], [x + 90, 420], [x + 90, 345], [x + 45, 322], [x, 345]], '#6a6f78'); g.fillStyle = '#cfe3f3'; g.fillRect(x + 18, 352, 54, 58); }
+    g.fillStyle = '#cfe3f3'; g.fillRect(678, 508, 63, 101); g.fillRect(900, 508, 63, 101); g.fillRect(1120, 508, 63, 101);   // windows
+    g.fillStyle = '#5a4030'; g.fillRect(500, 560, 70, 162);                                    // front door
+    poly([[1290, 540], [1640, 540], [1640, 722], [1290, 722]], '#a8553f');                    // garage wing
+    poly([[1280, 545], [1650, 545], [1600, 470], [1300, 470]], '#4b4f57');                    // its roof
+    g.fillStyle = '#e6e2d8'; g.fillRect(1367, 571, 155, 140);                                  // garage door
+    return c.toDataURL('image/jpeg', 0.85);
+  });
+  const project = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests/fixtures/mansard-house.json'), 'utf8'));
+  project.name = 'Mansard house';
+  const key = project.images[0].storageKey;
+  project.images[0].name = 'mansard.jpg';
+  project.images[0].exif = null;
+  const file = path.join(OUT, 'mansard-project.json');
+  fs.writeFileSync(file, JSON.stringify({ schema: 'lightplan/export', version: 1, exportedAt: null, project, images: { [key]: b64 }, derived: null }));
+  return file;
+}
+
+async function runMansard(browser) {
+  const t = new Check('mansard');
+  for (const size of [{ viewport: { width: 390, height: 844 }, touch: true }, { viewport: { width: 1280, height: 800 }, touch: false }]) {
+    const tag = size.viewport.width + 'x' + size.viewport.height;
+    const phone = size.touch;
+    const cfg = { hasTouch: size.touch };
+    console.log('\n== mansard ' + tag);
+    const context = await browser.newContext({ viewport: size.viewport, isMobile: size.touch, hasTouch: size.touch, colorScheme: 'light', deviceScaleFactor: 1, acceptDownloads: true, reducedMotion: 'reduce' });
+    await context.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.fulfill({ status: 200, contentType: 'text/css', body: '' }));
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push('page error: ' + e.message));
+    page.on('console', (m) => { if (m.type() === 'error') errors.push('console error: ' + m.text()); });
+    const shot = async (label, dark, sel) => {
+      // Bring the part of the panel the shot is about into view first.
+      if (sel) { await page.evaluate((q) => { const el = document.querySelector(q); if (el) el.scrollIntoView({ block: 'center' }); }, sel); await sleep(200); }
+      await page.screenshot({ path: path.join(OUT, 'mansard-' + tag + '-' + label + '.png') });
+      if (dark) {
+        await page.emulateMedia({ colorScheme: 'dark' });
+        await sleep(250);
+        await page.screenshot({ path: path.join(OUT, 'mansard-' + tag + '-' + label + '-dark.png') });
+        await page.emulateMedia({ colorScheme: 'light' });
+        await sleep(150);
+      }
+    };
+    const act = (fn, arg) => page.evaluate(fn, arg);
+    const goStep = async (n) => { await page.click('button.step[data-step="' + n + '"]'); await sleep(350); };
+    const toast = () => act(() => { const u = window.LightPlanApp.store.ui(); return u.toast ? u.toast.message : ''; });
+    /** Project and plan facts the checks read. */
+    const state = () => act(() => {
+      const s = window.LightPlanApp.store; const p = s.project(); const plan = s.plan(); const M = LP.require('ui.actions');
+      const mp = plan.measured.planes; const mf = plan.measured.features;
+      return {
+        step: s.ui().step, mode: s.ui().mode, sheet: document.getElementById('lp-app').getAttribute('data-sheet'), active: s.ui().activePlaneId,
+        sel: s.ui().selection, undo: s.undoLabel(), redo: s.redoLabel(),
+        planes: p.planes.map((pl) => ({ id: pl.id, name: pl.name, kind: pl.kind, sk: M.surfaceKind(p, pl), derived: pl.derived, ok: !!(mp[pl.id] && mp[pl.id].ok), mode: mp[pl.id] && mp[pl.id].mode,
+          level: mp[pl.id] && mp[pl.id].confidence ? mp[pl.id].confidence.level : null, pitch: mp[pl.id] ? mp[pl.id].pitch : null, calib: mp[pl.id] && mp[pl.id].calib ? { rectFrom: mp[pl.id].calib.rectFrom, rectAuto: mp[pl.id].calib.rectAuto } : null })),
+        features: p.features.map((f) => ({ id: f.id, label: f.label, type: f.type, planeId: f.planeId, overrideFt: f.overrideFt, ok: !!(mf[f.id] && mf[f.id].ok), ft: mf[f.id] ? mf[f.id].lengthFt : null,
+          measuredFt: mf[f.id] ? mf[f.id].measuredFt : null, method: mf[f.id] ? mf[f.id].method : null, level: mf[f.id] && mf[f.id].confidence ? mf[f.id].confidence.level : null, wrong: mf[f.id] ? mf[f.id].wrongSurface : null })),
+      };
+    });
+    /** The hint bar: its text, which of its groups show, and where it is. */
+    const hint = () => act(() => {
+      const shown = (id) => { const el = document.getElementById(id); return !!el && !el.hidden && el.getBoundingClientRect().height > 0; };
+      const sel = document.getElementById('hint-plane');
+      return { up: shown('hintbar'), text: document.getElementById('hint-text').textContent, fix: shown('hint-fix'), next: shown('hint-next'), actions: shown('hint-actions'),
+        planes: shown('hint-plane') ? Array.from(sel.options).map((o) => o.textContent) : [], fixButtons: Array.from(document.querySelectorAll('#hint-fix button')).filter((b) => b.getBoundingClientRect().height > 0).map((b) => b.textContent.trim()) };
+    });
+    /** Layout: nothing wider than the window or the panel, and the pinned button whole, on top and clear of the hint bar. */
+    const layout = () => act(() => {
+      const root = document.getElementById('panel-root');
+      const b = document.getElementById('action-btn');
+      const r = b.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      const hb = document.getElementById('hintbar');
+      const hr = hb.hidden ? null : hb.getBoundingClientRect();
+      const pr = root.getBoundingClientRect();
+      const clipped = [];
+      for (const el of Array.from(root.querySelectorAll('button, input, select, .callout, .status-card, .ref-item, .rough-item, h4, p'))) {
+        const q = el.getBoundingClientRect();
+        if (!q.width || !q.height) continue;
+        if (q.left < pr.left - 0.5 || q.right > pr.right + 0.5) clipped.push((el.textContent || el.getAttribute('data-act') || el.tagName).trim().slice(0, 30));
+        else if ((el.tagName === 'BUTTON' || el.tagName === 'INPUT' || el.tagName === 'SELECT') && el.scrollWidth > el.clientWidth + 1 && el.tagName === 'BUTTON') clipped.push('cut: ' + el.textContent.trim().slice(0, 30));
+      }
+      // No two buttons of the panel on top of each other.
+      const btns = Array.from(root.querySelectorAll('button')).map((el) => ({ el, q: el.getBoundingClientRect() })).filter((x) => x.q.width && x.q.height);
+      let stacked = 0;
+      for (let i = 0; i < btns.length; i++) for (let j = i + 1; j < btns.length; j++) {
+        const a = btns[i].q, c = btns[j].q;
+        if (!btns[i].el.contains(btns[j].el) && !btns[j].el.contains(btns[i].el) && a.left < c.right - 1 && c.left < a.right - 1 && a.top < c.bottom - 1 && c.top < a.bottom - 1) stacked += 1;
+      }
+      return {
+        pageWide: document.documentElement.scrollWidth > window.innerWidth + 1, panelWide: root.scrollWidth > root.clientWidth + 1, clipped, stacked,
+        pinned: r.height >= 40 && r.top >= 0 && r.bottom <= window.innerHeight + 0.5 && r.left >= 0 && r.right <= window.innerWidth + 0.5 && !!top && b.contains(top),
+        hintOverPinned: !!hr && hr.left < r.right && r.left < hr.right && hr.top < r.bottom && r.top < hr.bottom,
+        hintWide: !!hr && (hr.left < -0.5 || hr.right > window.innerWidth + 0.5),
+        small: Array.from(root.querySelectorAll('.angle-chip, [data-act="put-on-roof"], [data-act="type-length"], [data-act="steep-use"], [data-act="add-plane"]')).map((el) => el.getBoundingClientRect()).filter((q) => q.height > 0 && q.height < 40).length,
+      };
+    });
+    const layoutOk = async (where) => {
+      const L = await layout();
+      t.ok(!L.pageWide && !L.panelWide && L.clipped.length === 0 && L.stacked === 0 && L.pinned && !L.hintOverPinned && !L.hintWide && L.small === 0,
+        tag + ' ' + where + ': nothing is clipped or stacked, touch targets are 40 px or more, and the pinned button is whole and clear' +
+        (L.clipped.length ? ' (clipped: ' + L.clipped.slice(0, 3).join(' | ') + ')' : '') + (L.pinned ? '' : ' (pinned button covered)') + (L.stacked ? ' (' + L.stacked + ' stacked)' : '') + (L.small ? ' (' + L.small + ' small)' : '') + (L.panelWide ? ' (panel scrolls sideways)' : ''));
+    };
+    /** Tap image points on the photo (they must be on the canvas, not under a bar or the sheet). */
+    const tapImage = async (pts) => {
+      for (const p of pts) {
+        const q = await imagePointToPage(page, p);
+        if (!q.onCanvas) { t.ok(false, tag + ': image point ' + JSON.stringify(p) + ' is covered, so it cannot be tapped'); continue; }
+        await tapAt(page, cfg, q.x, q.y);
+      }
+      await sleep(250);
+    };
+    const setField = async (selector, value) => {
+      const loc = page.locator(selector).first();
+      await loc.scrollIntoViewIfNeeded().catch(() => {});
+      await loc.fill(value);
+      await loc.evaluate((el) => { el.dispatchEvent(new Event('change', { bubbles: true })); el.blur(); });
+      await sleep(300);
+    };
+    const clickIn = async (selector) => {
+      const loc = page.locator(selector).first();
+      await loc.scrollIntoViewIfNeeded().catch(() => {});
+      await loc.click({ timeout: 5000 });
+      await sleep(350);
+    };
+
+    try {
+      await page.goto(URL);
+      await waitForApp(page);
+      const file = await makeMansardFile(page);
+      await page.setInputFiles('#json-input', file);
+      await page.waitForFunction(() => !window.LightPlanApp.store.ui().busy && window.LightPlanApp.store.project().name === 'Mansard house', null, { timeout: 15000 });
+      await sleep(600);
+
+      // ---- A. The scale comes from the best measured rectangle, and the wall's card says so.
+      let st = await state();
+      const wall = st.planes[0];
+      const ridge1 = st.features[0];
+      t.ok(/^Opened 'Mansard house'\.$/.test(await toast()) && st.step === 6, tag + ': the project opens with its photo, on Review (' + (await toast()) + ')');
+      t.ok(wall.level === 'medium' && wall.calib.rectAuto === true && /^ref_/.test(wall.calib.rectFrom), tag + ' A: the wall is rated Medium with no re-tapping, its scale taken from the garage door reference (' + wall.level + ', ' + wall.calib.rectFrom + ')');
+      t.ok(JSON.stringify(st.planes[0].derived) === 'null' && st.planes.length === 1, tag + ' A: the stored surfaces are untouched');
+      await goStep(2);
+      const line = await act(() => {
+        const el = document.querySelector('.status-card .scale-line');
+        const notes = Array.from(document.querySelectorAll('.plane-editor .callout.info')).map((c) => c.textContent);
+        const own = Array.from(document.querySelectorAll('.ref-item.own-rect')).map((li) => li.textContent);
+        const sets = Array.from(document.querySelectorAll('.ref-item:not(.own-rect) .err-badge')).map((b) => b.textContent);
+        return { text: el ? el.textContent : '', lines: document.querySelectorAll('.scale-line').length, dup: notes.filter((n) => /^Scale taken from/.test(n)).length, own, sets, pill: document.querySelector('.plane-row .pill').textContent };
+      });
+      t.ok(/^Scale taken from 'Custom rectangle \(8′ 0″ × 7′ 2″\)' \(the largest measured rectangle\)\. 'Rectangle \(3′ 0″ × 5′ 0″\)' is used as a check\.$/.test(line.text) && line.lines === 1 && line.dup === 0,
+        tag + ' A: the status card says in one line where the scale comes from (' + line.text + ')');
+      t.ok(line.pill === 'Medium' && line.own.length === 2 && line.own.every((x) => /Expected .* measured .*[+-]?\d+(\.\d+)?%/.test(x)) && line.sets.join() === 'sets scale',
+        tag + ' A: the window is listed as a check (width and height) and the garage door as what sets the scale (' + line.own.join(' | ') + ')');
+      await shot('a-refs', false, '.ref-list');
+      await layoutOk('step 2, wall');
+      await shot('a-scale-line', true, '.status-card');
+
+      // ---- C. A ridge on the wall: the fix on its card, in Review, and at the moment it is traced.
+      await goStep(3);
+      await clickIn('[data-act="select-feature"][data-id="' + ridge1.id + '"]');
+      const card = await act(() => {
+        const c = document.querySelector('.feat-editor .callout.warn');
+        return c ? { text: c.querySelector('p').textContent, buttons: Array.from(c.querySelectorAll('button')).map((b) => b.textContent.trim()), note: (c.querySelector('.hint') || {}).textContent || '' } : null;
+      });
+      t.ok(card && /^A ridge sits on the roof, behind the wall\. Measured on the wall it comes out too short\.$/.test(card.text) && card.buttons.join('|') === 'Put it on the roof|Type its length' && /No roof is marked above this wall yet/.test(card.note),
+        tag + ' C: the ridge\'s card says what is wrong and offers "Put it on the roof" and "Type its length" (' + (card ? card.buttons.join(', ') + ' / ' + card.note : 'no callout') + ')');
+      await layoutOk('step 3, ridge card');
+      await shot('c-card', true, '.feat-editor .callout.warn');
+
+      // "Type its length" on the card puts the cursor in the tape field; a typed length ends the problem. One undo step.
+      await clickIn('.feat-editor [data-act="type-length"]');
+      const focused = await act(() => { const a = document.activeElement; return a ? [a.getAttribute('data-act'), a.getAttribute('data-field'), a.getAttribute('data-id')].join(':') : ''; });
+      t.ok(focused === 'feature-len:overrideFt:' + ridge1.id, tag + ' C: "Type its length" on the card puts the cursor in the tape-measured length field (' + focused + ')');
+      await setField('.feat-editor [data-act="feature-len"][data-field="overrideFt"]', '66\' 6"');
+      st = await state();
+      const typed = st.features.find((f) => f.id === ridge1.id);
+      t.ok(Math.abs(typed.overrideFt - 66.5) < 1e-9 && Math.abs(typed.ft - 66.5) < 1e-9 && await page.locator('.feat-editor [data-act="put-on-roof"]').count() === 0,
+        tag + ' C: a typed length is used (' + typed.ft + ' ft) and the two actions leave the card');
+      await act(() => window.LightPlanApp.actions.undo());
+      await sleep(300);
+      st = await state();
+      t.ok(st.features.find((f) => f.id === ridge1.id).overrideFt == null && await page.locator('.feat-editor [data-act="put-on-roof"]').count() === 1, tag + ' C: one undo takes the typed length away and the actions are back');
+
+      // Trace a second ridge. No roof exists yet, so it lands on the wall, and the hint bar says so at once.
+      await act(() => window.LightPlanApp.actions.select(null));
+      await clickIn('[data-act="trace-type"][data-type="ridge"]');
+      await tapImage([[1310, 470], [1596, 470]]);
+      // Finish in the hint bar on the desktop; on the phone the pinned "Done tracing" button, which keeps the item too.
+      if (phone) await page.locator('#action-btn').click(); else await page.click('#hint-finish');
+      await sleep(450);
+      st = await state();
+      const ridge2 = st.features[st.features.length - 1];
+      let hb = await hint();
+      t.ok(ridge2.type === 'ridge' && ridge2.planeId === wall.id && ridge2.wrong === 'roof' && ridge2.level === 'low', tag + ' C: with no roof surface a new ridge is measured on the wall, rated Low and flagged');
+      t.ok(hb.up && hb.fix && !hb.next && /^Ridge 2 measures \d+′( \d+″)? on the wall, which is too short\. A ridge sits on the roof, behind the wall\.$/.test(hb.text) && hb.fixButtons.join('|') === 'Put it on the roof|Type its length|Later',
+        tag + ' C: the notice shows at once with the two actions (' + hb.text + ' [' + hb.fixButtons.join(', ') + '])');
+      await layoutOk('the notice after a ridge on the wall');
+      await shot('c-notice', true);
+
+      // "Put it on the roof" with no roof yet: mark the eave, and the roof and the move are one undo step.
+      const planesBefore = st.planes.length;
+      await page.click('#hint-fix-roof');
+      await sleep(400);
+      st = await state();
+      hb = await hint();
+      t.ok(st.mode.name === 'line' && st.mode.opts.purpose === 'roofEave' && st.mode.opts.thenMove === ridge2.id && /^A ridge sits on the roof, so mark the roof first: tap both ends of the eave where the roof slope meets 'Front wall'\.$/.test(hb.text),
+        tag + ' C: with no roof surface, "Put it on the roof" asks for the eave line first (' + hb.text + ')');
+      await shot('c-mark-roof');
+      await tapImage([[1284, 545], [1648, 545]]);
+      await sleep(400);
+      st = await state();
+      const garageRoof = st.planes.find((p) => p.kind === 'roof');
+      let moved = st.features.find((f) => f.id === ridge2.id);
+      t.ok(st.planes.length === planesBefore + 1 && garageRoof && garageRoof.name === 'Roof slope 1' && garageRoof.sk === 'roof' && garageRoof.derived.parentPlaneId === wall.id && garageRoof.ok && moved.planeId === garageRoof.id && moved.wrong == null && moved.ok && moved.method === 'roof-3d',
+        tag + ' C: the roof is made and the ridge is measured on it (' + (moved.ft ? moved.ft.toFixed(1) + ' ft, was ' + ridge2.ft.toFixed(1) + ' ft on the wall' : 'not measured') + ')');
+      hb = await hint();
+      t.ok(/is now measured on 'Roof slope 1'/.test(await toast()) && hb.up && !hb.fix && /^Ridge 2: /.test(hb.text), tag + ' C: a message says where it went, and the hint bar shows its new length (' + hb.text + ')');
+      t.ok(st.undo === 'Put Ridge 2 on a new roof slope', tag + ' C: it is one undo step (' + st.undo + ')');
+      await act(() => window.LightPlanApp.actions.undo());
+      await sleep(300);
+      st = await state();
+      t.ok(st.planes.length === planesBefore && st.features.find((f) => f.id === ridge2.id).planeId === wall.id, tag + ' C: undo removes the roof and puts the ridge back on the wall');
+      await act(() => window.LightPlanApp.store.redo());
+      await sleep(300);
+      st = await state();
+      t.ok(st.planes.length === planesBefore + 1 && st.features.find((f) => f.id === ridge2.id).planeId === garageRoof.id, tag + ' C: redo brings both back');
+      await act(() => window.LightPlanApp.actions.finishTracing());
+      await sleep(300);
+
+      // Review: the first ridge is in "Measurements to double-check" with the same two actions.
+      await goStep(6);
+      const rough = await act((id) => {
+        const li = document.querySelector('.rough-item[data-key="rough-' + id + '"]');
+        return li ? { buttons: Array.from(li.querySelectorAll('.rough-fix button')).map((b) => b.textContent.trim()), why: (li.querySelector('.rough-fix .rough-text') || {}).textContent || '' } : null;
+      }, ridge1.id);
+      t.ok(rough && rough.buttons.join('|') === 'Put it on the roof|Type its length' && /^A ridge sits on the roof/.test(rough.why), tag + ' C: Review\'s double-check entry for the ridge has both actions (' + (rough ? rough.buttons.join(', ') : 'missing') + ')');
+      await layoutOk('step 6');
+      await shot('c-review', true, '.rough-fix');
+      await clickIn('.rough-item[data-key="rough-' + ridge1.id + '"] [data-act="type-length"]');
+      const rf = await act(() => { const a = document.activeElement; return { key: a ? [a.getAttribute('data-act'), a.getAttribute('data-id')].join(':') : '', inRough: !!(a && a.closest('.rough-item')), step: window.LightPlanApp.store.ui().step }; });
+      t.ok(rf.key === 'feature-len:' + ridge1.id && rf.inRough && rf.step === 6, tag + ' C: in Review "Type its length" puts the cursor in that entry\'s tape field (' + rf.key + ')');
+      await act(() => { if (document.activeElement) document.activeElement.blur(); });
+      // A roof surface exists now, so "Put it on the roof" moves the item straight away, in one undo step.
+      await clickIn('.rough-item[data-key="rough-' + ridge1.id + '"] [data-act="put-on-roof"]');
+      st = await state();
+      moved = st.features.find((f) => f.id === ridge1.id);
+      t.ok(moved.planeId === garageRoof.id && moved.wrong == null && st.step === 6 && st.undo === "Move Ridge 1 to 'Roof slope 1'" && /Ridge 1 is now measured on 'Roof slope 1'\./.test(await toast()),
+        tag + ' C: with a roof surface there, "Put it on the roof" moves the ridge to it (' + st.undo + ')');
+      await act(() => window.LightPlanApp.actions.undo());
+      await sleep(300);
+      st = await state();
+      t.ok(st.features.find((f) => f.id === ridge1.id).planeId === wall.id, tag + ' C: and one undo puts it back on the wall');
+
+      // ---- B. A steep roof face: add it, set how steep it is, add the upper roof.
+      await goStep(2);
+      await clickIn('[data-act="select-plane"][data-id="' + wall.id + '"]');
+      const addButtons = await act(() => Array.from(document.querySelectorAll('[data-act="add-plane"]')).map((b) => b.textContent.trim()));
+      t.ok(addButtons.join('|') === 'Wall|Roof slope|Ground|Steep roof face (mansard)', tag + ' B: adding a surface offers a steep roof face beside wall, roof slope and ground (' + addButtons.join(', ') + ')');
+      await clickIn('[data-act="add-plane"][data-kind="steep"]');
+      hb = await hint();
+      st = await state();
+      t.ok(st.mode.name === 'line' && st.mode.opts.steep === true && /^Tap both ends of the line where the steep roof face starts on 'Front wall'\. This is the eave or gutter line at its bottom\.$/.test(hb.text), tag + ' B: the hint asks for the line where the steep face starts (' + hb.text + ')');
+      await shot('b-draw-steep');
+      await tapImage([[400, 440], [1290, 440]]);
+      await sleep(400);
+      st = await state();
+      let steep = st.planes.find((p) => p.sk === 'steep');
+      t.ok(steep && steep.name === 'Steep roof face 1' && steep.kind === 'roof' && steep.derived.steep === true && steep.derived.angleDeg === 70 && steep.derived.pitch === null && steep.derived.parentPlaneId === wall.id && st.undo === 'Add steep roof face',
+        tag + ' B: the steep face is stored as a roof with steep true and a 70 degree guess');
+      t.ok(steep.ok && steep.mode === 'roof-3d' && steep.pitch.source === 'guess' && Math.round(steep.pitch.angleDeg) === 70 && steep.level === 'low', tag + ' B: it is measured in 3D at 70 degrees and rated Low while the angle is a guess');
+      if (phone) { await act(() => window.LightPlanApp.actions.setSheet('full')); await sleep(350); }
+      let ed = await act(() => ({
+        chips: Array.from(document.querySelectorAll('.angle-chip')).map((b) => b.textContent.trim() + (b.getAttribute('aria-pressed') === 'true' ? '*' : '')),
+        slope: Array.from(document.querySelectorAll('.status-card .fact')).map((f) => f.textContent).find((x) => /^Slope/.test(x)) || '',
+        pitchRow: Array.from(document.querySelectorAll('.status-card .fact')).some((f) => /^Pitch/.test(f.textContent)),
+        result: (document.querySelector('[data-key="steep-result"]') || {}).textContent || '',
+        kinds: Array.from(document.querySelectorAll('.plane-row')).map((r) => r.querySelector('.plane-name').textContent + '=' + r.querySelector('.plane-kind').textContent),
+        offer: !!document.querySelector('[data-act="add-plane"][data-kind="upper"]'),
+      }));
+      t.ok(ed.chips.join(' ') === '60° 65° 70°* 75° 80°' && /^Slope70° from level \(a typical angle, not measured\)$/.test(ed.slope) && !ed.pitchRow && /^Using 70° from level\. This is a guess\.$/.test(ed.result),
+        tag + ' B: typical angles are offered with 70 picked, and the slope reads in degrees (' + ed.chips.join(' ') + ' / ' + ed.slope + ')');
+      t.ok(ed.kinds.join('|') === 'Front wall=Wall|Roof slope 1=Roof slope|Steep roof face 1=Steep roof face' && ed.offer, tag + ' B: the surface list tells the kinds apart, and the upper roof is offered (' + ed.kinds.join(', ') + ')');
+      await layoutOk('step 2, steep face');
+      await shot('b-steep-editor', true, '.steep-editor');
+
+      await clickIn('.angle-chip[data-deg="75"]');
+      st = await state();
+      steep = st.planes.find((p) => p.sk === 'steep');
+      t.ok(steep.derived.angleDeg === 75 && steep.derived.pitch === null && Math.round(steep.pitch.angleDeg) === 75 && steep.pitch.source === 'guess' && st.undo === 'Set how steep the roof face is', tag + ' B: picking 75 degrees stores it as a guess, in one undo step');
+
+      // Measured numbers: a sloped height shorter than the rise is refused in plain words; good numbers are stored.
+      await page.locator('[data-act="steep-tape"][data-field="up"]').fill('8');
+      await page.locator('[data-act="steep-tape"][data-field="slope"]').fill('5');
+      await clickIn('[data-act="steep-use"]');
+      st = await state();
+      t.ok(/^The sloped height must be longer than how far the face goes up\.$/.test(await toast()) && st.planes.find((p) => p.sk === 'steep').derived.pitch === null, tag + ' B: tape numbers that cannot be right are refused and nothing is stored (' + (await toast()) + ')');
+      const kept = await act(() => Array.from(document.querySelectorAll('[data-act="steep-tape"]')).map((f) => f.value).join('|'));
+      t.ok(kept === '8||5', tag + ' B: what was typed stays in the fields (' + kept + ')');
+      await page.locator('[data-act="steep-tape"][data-field="slope"]').fill('8\' 6"');
+      await clickIn('[data-act="steep-use"]');
+      st = await state();
+      steep = st.planes.find((p) => p.sk === 'steep');
+      ed = await act(() => ({
+        chips: Array.from(document.querySelectorAll('.angle-chip')).filter((b) => b.getAttribute('aria-pressed') === 'true').length,
+        slope: Array.from(document.querySelectorAll('.status-card .fact')).map((f) => f.textContent).find((x) => /^Slope/.test(x)) || '',
+        result: (document.querySelector('[data-key="steep-result"]') || {}).textContent || '',
+        fields: Array.from(document.querySelectorAll('[data-act="steep-tape"]')).map((f) => f.value).join('|'),
+      }));
+      t.ok(steep.derived.pitch && Math.abs(steep.derived.pitch.rise - 8) < 1e-6 && Math.abs(steep.derived.pitch.run - Math.sqrt(8.5 * 8.5 - 64)) < 1e-3 && steep.pitch.source === 'user' && Math.abs(steep.pitch.angleDeg - 70.25) < 0.1 && st.undo === 'Measure how steep the roof face is',
+        tag + ' B: 8 ft up and 8 ft 6 in along the slope are stored as measured: ' + (steep.pitch ? steep.pitch.angleDeg.toFixed(1) : '?') + ' degrees');
+      t.ok(ed.chips === 0 && /^Slope70° from level \(measured\)$/.test(ed.slope) && /^Measured: 70° from level \(8′ 0″ up, 2′ 10½?″ back, 8′ 6″ along the slope\)\.$/.test(ed.result.replace(/ (\d)\/(\d)″/, '½″')) && ed.fields === '8′ 0″||8′ 6″',
+        tag + ' B: the panel shows the resulting angle and the numbers again (' + ed.result + ' / ' + ed.fields + ')');
+      await layoutOk('step 2, steep face measured');
+      await shot('b-steep-measured', false, '.steep-editor');
+
+      // The upper roof: its line is drawn on the steep face.
+      await clickIn('[data-act="add-plane"][data-kind="upper"]');
+      hb = await hint();
+      st = await state();
+      t.ok(st.mode.name === 'line' && st.mode.opts.planeId === steep.id && st.mode.opts.upper === true && /^Tap both ends of the line where 'Steep roof face 1' ends and the upper roof starts\. This is the trim line at its top\.$/.test(hb.text), tag + ' B: "Add the upper roof" asks for the trim line on the steep face (' + hb.text + ')');
+      await tapImage([[440, 310], [1250, 310]]);
+      await sleep(400);
+      st = await state();
+      const upper = st.planes.find((p) => p.sk === 'upper');
+      t.ok(upper && upper.name === 'Upper roof 1' && upper.kind === 'roof' && upper.derived.parentPlaneId === steep.id && upper.derived.steep === undefined && upper.ok && upper.mode === 'roof-3d' && st.undo === 'Add upper roof',
+        tag + ' B: the upper roof is a roof whose parent is the steep face, measured in 3D');
+      if (phone) { await act(() => window.LightPlanApp.actions.setSheet('full')); await sleep(350); }
+      const up = await act(() => ({
+        kinds: Array.from(document.querySelectorAll('.plane-row')).map((r) => r.querySelector('.plane-kind').textContent).join('|'),
+        how: (Array.from(document.querySelectorAll('.status-card .fact')).map((f) => f.textContent).find((x) => /^How/.test(x)) || ''),
+        hintText: Array.from(document.querySelectorAll('.plane-editor > .hint')).map((p) => p.textContent).join(' '),
+        redraw: (document.querySelector('[data-act="redraw-line"]') || {}).textContent || '',
+      }));
+      t.ok(up.kinds === 'Wall|Roof slope|Steep roof face|Upper roof' && /Worked out in 3D from 'Steep roof face 1' below it\./.test(up.how) && /seen almost edge-on/.test(up.hintText) && /Redraw the trim line/.test(up.redraw),
+        tag + ' B: the list shows the three roof kinds apart, and the upper roof says what it is built from (' + up.kinds + ')');
+      await layoutOk('step 2, upper roof');
+      await shot('b-upper-roof', true, '.plane-editor .status-card');
+      // The grid of the steep face stops where the face ends (the upper roof's line), not 20 ft up in the sky.
+      if (phone) { await act(() => window.LightPlanApp.actions.setSheet('min')); await sleep(350); }
+      await clickIn('[data-act="select-plane"][data-id="' + steep.id + '"]').catch(() => act((id) => window.LightPlanApp.actions.select({ kind: 'plane', id }), steep.id));
+      if (phone) { await act(() => window.LightPlanApp.actions.setSheet('min')); await sleep(350); }
+      const grid = await act((id) => {
+        const sol = window.LightPlanApp.store.plan().measured.planes[id];
+        const M = LP.require('measure');
+        const upperLine = window.LightPlanApp.store.project().planes.find((p) => p.derived && p.derived.parentPlaneId === id).derived.line;
+        return { coreTop: sol.gridExtent.maxV, faceTop: Math.max.apply(null, upperLine.map((p) => M.imageToPlane(sol, p)[1])) };
+      }, steep.id);
+      t.ok(grid.faceTop > 4 && grid.faceTop < 12 && grid.coreTop > grid.faceTop + 3, tag + ' B: the steep face is ' + grid.faceTop.toFixed(1) + ' ft along its slope, so its grid is cut there instead of at ' + grid.coreTop + ' ft');
+      await act(() => window.LightPlanApp.store.setUI({ toast: null }));
+      await sleep(200);
+      await shot('b-grids', true);
+
+      // ---- Trace on the new surfaces: the hint bar's picker lists them, and the items measure in those planes.
+      await goStep(3);
+      await act((id) => window.LightPlanApp.actions.setActivePlane(id), steep.id);
+      await sleep(200);
+      await clickIn('[data-act="trace-type"][data-type="roofline"]');
+      hb = await hint();
+      st = await state();
+      t.ok(st.mode.name === 'trace' && st.mode.opts.planeId === steep.id && hb.planes.join('|') === 'Front wall|Roof slope 1|Steep roof face 1|Upper roof 1', tag + ' B: an eave traced with the steep face picked goes on it, and the picker lists every surface (' + hb.planes.join(', ') + ')');
+      await layoutOk('tracing on the steep face');
+      await shot('b-trace-steep');
+      await tapImage([[440, 310], [1250, 310]]);
+      await page.click('#hint-finish');
+      await sleep(450);
+      st = await state();
+      const trim = st.features[st.features.length - 1];
+      t.ok(trim.type === 'roofline' && trim.planeId === steep.id && trim.ok && trim.method === 'roof-3d' && trim.ft > 30 && trim.ft < 110 && trim.wrong == null,
+        tag + ' B: the trim line is measured in the plane of the steep face (' + (trim.ft ? trim.ft.toFixed(1) : '?') + ' ft, ' + trim.level + ')');
+      // The top edge, on the upper roof, chosen with the picker in the hint bar.
+      await act(() => window.LightPlanApp.actions.startTrace('roofline'));
+      await sleep(300);
+      await page.selectOption('#hint-plane', upper.id);
+      await sleep(300);
+      st = await state();
+      t.ok(st.mode.name === 'trace' && st.mode.opts.planeId === upper.id, tag + ' B: the picker in the hint bar moves the trace to the upper roof');
+      await tapImage([[462, 258], [1254, 258]]);
+      await page.click('#hint-finish');
+      await sleep(450);
+      st = await state();
+      const topEdge = st.features[st.features.length - 1];
+      t.ok(topEdge.planeId === upper.id && topEdge.ok && topEdge.method === 'roof-3d' && topEdge.ft > 30 && topEdge.ft < 130, tag + ' B: the top edge is measured on the upper roof (' + (topEdge.ft ? topEdge.ft.toFixed(1) : '?') + ' ft, ' + topEdge.level + ')');
+      await act(() => window.LightPlanApp.actions.finishTracing());
+      await sleep(250);
+      // No "wrong surface" warning for an eave on a steep face or an upper roof.
+      await clickIn('[data-act="select-feature"][data-id="' + trim.id + '"]');
+      const trimCard = await act(() => ({ warn: Array.from(document.querySelectorAll('.feat-editor .callout.warn p')).map((p) => p.textContent).filter((x) => /likely wrong|sits on the roof/.test(x)).length,
+        surface: (() => { const s = document.querySelector('.feat-editor [data-act="feature-plane"]'); return s ? s.options[s.selectedIndex].textContent : ''; })() }));
+      t.ok(trimCard.warn === 0 && trimCard.surface === 'Steep roof face 1', tag + ' B: the trim line\'s card names its surface and raises no wrong-surface warning');
+      await layoutOk('step 3, trim line card');
+      await shot('b-traced', true, '.feat-editor');
+
+      // ---- C again, now that roofs exist: a new ridge goes to a roof by itself; forced onto the wall, both notice actions work.
+      await act(() => window.LightPlanApp.actions.select(null));
+      await act((id) => window.LightPlanApp.actions.setActivePlane(id), wall.id);
+      await clickIn('[data-act="trace-type"][data-type="ridge"]');
+      st = await state();
+      t.ok(st.mode.name === 'trace' && st.mode.opts.planeId !== wall.id && st.planes.find((p) => p.id === st.mode.opts.planeId).kind === 'roof', tag + ' C: with a roof above the wall, a new ridge starts on a roof surface, not on the wall');
+      await page.selectOption('#hint-plane', wall.id);
+      await sleep(300);
+      await tapImage([[470, 262], [1240, 262]]);
+      await page.click('#hint-finish');
+      await sleep(450);
+      st = await state();
+      const ridge3 = st.features[st.features.length - 1];
+      hb = await hint();
+      t.ok(ridge3.planeId === wall.id && ridge3.wrong === 'roof' && hb.fix && /^Ridge 3 measures/.test(hb.text), tag + ' C: a ridge forced onto the wall brings the notice up at once (' + hb.text + ')');
+      const L1 = await layout();
+      t.ok(L1.pinned && !L1.hintOverPinned && !L1.hintWide, tag + ' C: the notice stays inside the photo area and clear of the pinned button');
+      await shot('c-notice-roofs', true);
+      // "Type its length" from the notice: step 3, the item's card open, the cursor in its tape field.
+      await page.click('#hint-fix-tape');
+      await sleep(600);
+      const tf = await act(() => { const a = document.activeElement; const r = a ? a.getBoundingClientRect() : null; const pr = document.getElementById('panel-root').getBoundingClientRect();
+        return { key: a ? [a.getAttribute('data-act'), a.getAttribute('data-field'), a.getAttribute('data-id')].join(':') : '', sheet: document.getElementById('lp-app').getAttribute('data-sheet'), step: window.LightPlanApp.store.ui().step,
+          seen: !!r && r.top >= pr.top - 1 && r.bottom <= Math.min(pr.bottom, window.innerHeight) + 1, hint: !document.getElementById('hintbar').hidden }; });
+      t.ok(tf.key === 'feature-len:overrideFt:' + ridge3.id && tf.step === 3 && tf.seen && (!phone || tf.sheet !== 'min') && !tf.hint,
+        tag + ' C: "Type its length" opens the item\'s tape-measured length field, in view' + (phone ? ' with the sheet raised (' + tf.sheet + ')' : '') + ' (' + tf.key + ')');
+      await shot('c-type-length');
+      await page.keyboard.type('66 ft');
+      await page.keyboard.press('Enter');
+      await act(() => { if (document.activeElement) document.activeElement.blur(); });
+      await sleep(400);
+      st = await state();
+      let r3 = st.features.find((f) => f.id === ridge3.id);
+      t.ok(r3.overrideFt === 66 && r3.ft === 66 && st.undo === 'Edit item', tag + ' C: the typed length is used, as one undo step (' + r3.ft + ' ft)');
+      await act(() => window.LightPlanApp.actions.undo());
+      await sleep(300);
+      // "Put it on the roof" from the card, with several roofs: the one under the item is chosen, and it can be changed.
+      st = await state();
+      t.ok(st.features.find((f) => f.id === ridge3.id).overrideFt == null, tag + ' C: undo clears the typed length');
+      await clickIn('[data-act="select-feature"][data-id="' + ridge3.id + '"]').catch(() => {});
+      if (!(await page.locator('.feat-editor [data-act="put-on-roof"]').count())) await clickIn('[data-act="select-feature"][data-id="' + ridge3.id + '"]');
+      const note = await act(() => (document.querySelector('.feat-editor .callout.warn .hint') || {}).textContent || '');
+      await clickIn('.feat-editor [data-act="put-on-roof"]');
+      st = await state();
+      r3 = st.features.find((f) => f.id === ridge3.id);
+      t.ok(/moves it to 'Upper roof 1'\. You can pick another surface after\./.test(note) && r3.planeId === upper.id && r3.wrong == null && r3.ok && /If it belongs on another roof surface, change Surface on its card\./.test(await toast()) && st.undo === "Move Ridge 3 to 'Upper roof 1'",
+        tag + ' C: of three roof surfaces the one above the ridge is chosen (Upper roof 1), and the message says it can be changed (' + (r3.ft ? r3.ft.toFixed(1) + ' ft' : '?') + ')');
+      await page.selectOption('.feat-editor [data-act="feature-plane"]', garageRoof.id);
+      await sleep(300);
+      st = await state();
+      t.ok(st.features.find((f) => f.id === ridge3.id).planeId === garageRoof.id, tag + ' C: the Surface picker on the card changes it');
+      await act(() => window.LightPlanApp.actions.undo());
+      await sleep(250);
+
+      // ---- Undo and redo across the whole walk, then a reload.
+      const before = await state();
+      const labels = [];
+      for (let i = 0; i < 6; i++) { labels.push(await act(() => window.LightPlanApp.store.undoLabel())); await act(() => window.LightPlanApp.actions.undo()); await sleep(120); }
+      st = await state();
+      t.ok(labels.join(' < ') === "Move Ridge 3 to 'Upper roof 1' < Trace ridge < Trace eave < Trace eave < Add upper roof < Measure how steep the roof face is" && st.planes.length === before.planes.length - 1 && st.planes.find((p) => p.sk === 'steep').derived.pitch === null && st.features.length === before.features.length - 3,
+        tag + ': six undos walk back through the ridge, both eaves, the upper roof and the measured slope (' + labels.join(' < ') + ')');
+      for (let i = 0; i < 6; i++) { await act(() => window.LightPlanApp.store.redo()); await sleep(120); }
+      st = await state();
+      const sorted = (v) => (Array.isArray(v) ? v.map(sorted) : v && typeof v === 'object' ? Object.keys(v).sort().reduce((o, k) => { o[k] = sorted(v[k]); return o; }, {}) : v);   // key order is not part of the data
+      const same = (a, b) => JSON.stringify(sorted(a.planes.map((p) => [p.id, p.derived]))) === JSON.stringify(sorted(b.planes.map((p) => [p.id, p.derived]))) && JSON.stringify(a.features.map((f) => [f.id, f.planeId, f.overrideFt])) === JSON.stringify(b.features.map((f) => [f.id, f.planeId, f.overrideFt]));
+      t.ok(same(st, before), tag + ': six redos bring everything back exactly');
+      await sleep(1200);   // let the autosave run
+      await page.reload();
+      await waitForApp(page);
+      await sleep(500);
+      st = await state();
+      t.ok(same(st, before) && st.planes.find((p) => p.sk === 'steep').pitch.source === 'user' && st.planes.find((p) => p.sk === 'upper').ok && st.planes[0].level === 'medium',
+        tag + ': a reload keeps the surfaces, the measured slope, the upper roof and every item where it was');
+      const photo = await act(() => { const s = window.LightPlanApp.store; const im = s.project().images[0]; const el = s.getImage(im.id); return !!el && (el.naturalWidth || el.width) === 2048; });
+      t.ok(photo, tag + ': and the photo is back');
+      await goStep(2);
+      const again = await act(() => (document.querySelector('.status-card .scale-line') || {}).textContent || '');
+      t.ok(/^Scale taken from /.test(again), tag + ': after the reload the wall still says where its scale comes from');
+      // Design and Power open without trouble with the new surfaces in the plan (a failed panel logs an error).
+      await goStep(4);
+      await goStep(5);
+      const panelsOk = await act(() => !document.querySelector('#panel-root .callout.danger') || !/could not be shown/.test(document.querySelector('#panel-root').textContent));
+      t.ok(panelsOk, tag + ': the Design and Power steps open with a steep face and an upper roof in the plan');
+      await goStep(6);
+      await layoutOk('step 6 at the end');
+      await shot('end-review');
+    } catch (e) {
+      t.ok(false, tag + ': unexpected error: ' + (e && e.message ? e.message.split('\n')[0] : e));
+      await shot('error').catch(() => {});
+    }
+    t.ok(errors.length === 0, tag + ': no console or page errors' + (errors.length ? ': ' + errors.slice(0, 4).join(' | ') : ''));
+    await context.close();
+  }
+  return t;
+}
+
 // ------------------------------------------------------------------ main
 
 const browser = await chromium.launch();
@@ -2826,6 +3339,7 @@ for (const name of selected) {
   if (name === 'v11-phone' || name === 'v11-desktop') { results.push(await runPhase11(browser, name)); continue; }
   if (name === 'sup-phone' || name === 'sup-desktop') { results.push(await runSuppliers(browser, name)); continue; }
   if (name === 'fixes') { results.push(await runFixes(browser)); continue; }
+  if (name === 'mansard') { results.push(await runMansard(browser)); continue; }
   if (!PASSES[name]) { console.error('unknown pass ' + name); process.exitCode = 2; continue; }
   results.push(await runPass(browser, name));
 }

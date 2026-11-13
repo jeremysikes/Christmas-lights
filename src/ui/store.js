@@ -50,6 +50,7 @@ LP.define('ui.store', ['catalog', 'plan', 'ui.persist'], function (catalog, plan
       activeVertex: null,
       notice: null,          // persistent note: {kind:'storage'|'unreadable'|'foreign', ...}
       afterTrace: null,      // {featureId, type} right after a trace is finished: the hint bar offers what to trace next
+      focusTape: null,       // {featureId, n}: the panels put the cursor in this item's tape-measured length field (once per n)
     };
   }
 
