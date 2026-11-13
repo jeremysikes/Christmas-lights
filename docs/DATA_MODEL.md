@@ -146,18 +146,36 @@ The slope is resolved `pitch` (measured) → `angleDeg` (a guess) → 70° (assu
 the gable-rake estimate are never used for a steep face, and a rake that starts on its eave line does not feed
 the house-wide pitch estimate. Lengths on a face whose slope is a guess or assumed are rated Low. A measured
 slope steeper than 85° is measured as 85°. Files written before steep faces have neither key and load and
-save unchanged.
+save unchanged. On a steep face `normalizeProject` keeps `pitch` only when both `rise` and `run` are numbers
+above 0: a missing run is not read as "per 12" there (the pitch is two tape numbers), so such a face loads as
+not measured. `steepFromTape` refuses numbers that give less than 20° (not a steep face) and marks a slope
+below 45° as a likely swap of Up and Back (`swapLikely`).
 
 **Upper roof.** `derived.parentPlaneId` of a roof may name another roof plane (normally a steep face). `line`
 is then drawn along the top edge of that face, and the roof is built in 3D from the face's frame and the
 wall's camera pose. It needs a perspective rectangle on the wall at the bottom of the chain. A ground plane
-always hangs off a wall.
+always hangs off a wall. An upper roof with `pitch` null does not take the project `roofPitch` as measured:
+the top of a mansard is usually flatter than the rest of the house, so the project pitch is only borrowed
+(`measured.planes[id].pitch.source` is `'house'`) and every length on it is rated Low until its own pitch is
+stored. `validateProject` reports planes that hang off each other in a circle, a ground area built from a
+roof and a roof built from a ground area.
+
+**Items below a roof's starting line (derived, not stored).** An item on a roof plane whose points lie below
+the line where that roof starts in the photo cannot be on that roof. `measure` marks it
+(`measured.features[id].wrongSurface` is `'below'`), rates it Low, and `misplacedFeatures` lists the surfaces
+under that roof as places to move it to.
 
 **Best rectangle for scale (derived, not stored).** When a wall has a known-size `rect` and known-size
 rectangle `refs`, `measure` solves the wall from the one that gives the lowest expected error and uses the
-others as checks; the wall's own rectangle stays unless another one is better by a quarter or more. The
-stored `rect` and `refs` are never rewritten: the choice is reported as `measured.planes[id].calib.rectFrom`
-(`'rect'` or a reference id) with `rectLabel`, `rectAuto`, `rectWhy` and `rectCandidates`.
+others as checks. The wall's own rectangle stays unless another one is better by a quarter or more **and**
+agrees with it: the wall's own rectangle, measured with the other one, must match its stated size within what
+tap noise explains. A larger rectangle that fails that test (a garage door on a set-back wing, a mistyped
+size) stays a check and is reported in `calib.rectRejected` (`{from, label, pct}`). When another rectangle
+does set the scale, `calib.rectCheckPct` says how far the wall's own rectangle is from its stated size with
+it; 3% or more caps every rating on that wall at Medium, 6% or more at Low. The stored `rect` and `refs` are
+never rewritten: the choice is reported as `measured.planes[id].calib.rectFrom` (`'rect'` or a reference id)
+with `rectLabel`, `rectAuto`, `rectWhy` and `rectCandidates`. A reference whose id is the string `'rect'`
+never competes (that id means "the wall's own rectangle").
 
 **Tap precision (`tapErr`, optional, Phase 1.1).** Beside any tapped point list there may be a `tapErr`
 array, index for index with the points: `rect.tapErr` (4 numbers, beside `rect.corners`), `ref.tapErr`

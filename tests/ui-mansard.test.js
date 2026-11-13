@@ -57,7 +57,8 @@ test('A: the wall of the mansard project is Medium and its card says where the s
   assert.equal(sol.confidence.level, 'medium');
   assert.equal(sol.calib.rectAuto, true);
   const line = panels.scaleLine(sol);
-  assert.match(line, /^Scale taken from 'Custom rectangle \(8′ 0″ × 7′ 2″\)' \(the largest measured rectangle\)\. 'Rectangle \(3′ 0″ × 5′ 0″\)' is used as a check\.$/);
+  // Review F10: rectangles are named by their size, not by the preset they were marked with.
+  assert.equal(line, "Scale taken from the 8′ 0″ × 7′ 2″ rectangle (the largest measured rectangle). The 3′ 0″ × 5′ 0″ rectangle you marked as this wall's corners is used as a check.");
   assert.ok(!/—/.test(line), 'no em dash');
   // The stored project is not rewritten to say so.
   assert.equal(wall.rect.widthFt, 3);
@@ -70,9 +71,9 @@ test('A: no scale line when the wall uses its own rectangle, has no scale, or is
   for (const pl of p.planes) assert.equal(panels.scaleLine(m.planes[pl.id]), null, pl.name);
   assert.equal(panels.scaleLine(null), null);
   assert.equal(panels.scaleLine({ ok: false, calib: { rectAuto: true } }), null);
-  // Without core's note the line is still built from the label and the reason.
+  // The line is built from the label and the reason; a preset keeps its name.
   assert.equal(panels.scaleLine({ ok: true, notes: [], calib: { rectAuto: true, rectLabel: 'Double garage door (16 × 7 ft)', rectWhy: 'steadiest' } }),
-    "Scale taken from 'Double garage door (16 × 7 ft)' (the measured rectangle that gives the steadiest scale). The rectangle you marked on the wall is used as a check.");
+    "Scale taken from the double garage door (16 × 7 ft) (the measured rectangle that gives the steadiest scale). The rectangle you marked as this wall's corners is used as a check.");
 });
 
 // ---------------------------------------------------------------- B. kinds of surface
@@ -317,11 +318,11 @@ test('C: needsRoof follows core, and a typed length ends it', () => {
   const item = measure.misplacedFeatures(store.project(), measured(store))[0];
   assert.equal(panels.wrongSurfaceWhy(item), 'A ridge sits on the roof, behind the wall. Measured on the wall it comes out too short.');
   assert.equal(panels.wrongSurfaceWhy(null), '');
-  assert.equal(panels.roofFixNote(store.project(), f, item), 'No roof is marked above this wall yet. Put it on the roof has you mark where the roof starts, then moves the item.');
+  assert.equal(panels.roofFixNote(store.project(), f, item), 'No roof is marked above this wall yet. Put it on the roof asks what kind of roof it is, has you mark where it starts, then moves the item.');
   // The hint bar right after such a trace: the length, why it is wrong, and the fix instead of "Trace next".
   store.setUI({ afterTrace: { featureId: f.id, type: 'ridge' }, selection: { kind: 'feature', id: f.id } });
   let hint = app.hintFor(store.ui(), store.project(), store.plan());
-  assert.deepEqual(hint.fix, { featureId: f.id });
+  assert.deepEqual(hint.fix, { featureId: f.id, buttons: ['roof:primary', 'tape', 'later'] });
   assert.equal(hint.text, 'Ridge 1 measures 38′ 5″ on the wall, which is too short. A ridge sits on the roof, behind the wall.');
   actions.updateFeature(f.id, { overrideFt: 66 });
   hint = app.hintFor(store.ui(), store.project(), store.plan());
@@ -331,15 +332,19 @@ test('C: needsRoof follows core, and a typed length ends it', () => {
   for (const s of [item.message, panels.roofFixNote(store.project(), f, item)]) assert.ok(!/—/.test(s));
 });
 
-test('C: "Put it on the roof" with no roof yet draws the eave, then moves the item: one undo step', () => {
+test('C: "Put it on the roof" with no roof yet asks what kind of roof it is, draws its line, then moves the item: one undo step', () => {
   const { store, actions } = setup();
   const wall = store.project().planes[0];
   const f = store.project().features[0];
   store.setUI({ step: 6 });
-  assert.equal(actions.putOnRoof(f.id), 'draw');
+  // Review F1: the kind of roof is asked first, so a mansard owner is not led to an ordinary eave line.
+  assert.equal(actions.putOnRoof(f.id), 'ask');
   let ui = store.ui();
   assert.equal(ui.step, 3, 'the line is drawn in the Trace step');
-  assert.deepEqual([ui.mode.name, ui.mode.opts.purpose, ui.mode.opts.planeId, ui.mode.opts.thenMove], ['line', 'roofEave', wall.id, f.id]);
+  assert.deepEqual(ui.roofAsk, { featureId: f.id, planeId: wall.id, returnStep: 6 });
+  assert.equal(actions.drawRoofFor(f.id, 'roof'), true);
+  ui = store.ui();
+  assert.deepEqual([ui.mode.name, ui.mode.opts.purpose, ui.mode.opts.planeId, ui.mode.opts.thenMove, ui.mode.opts.steep], ['line', 'roofEave', wall.id, f.id, undefined]);
   assert.equal(app.hintFor(ui, store.project(), store.plan()).text, "A ridge sits on the roof, so mark the roof first: tap both ends of the eave where the roof slope meets 'Front wall'.");
   const before = store.project();
   drawLine(actions, [400, 440], [1290, 440]);
@@ -352,18 +357,33 @@ test('C: "Put it on the roof" with no roof yet draws the eave, then moves the it
   assert.equal(measured(store).features[f.id].wrongSurface, null);
   ui = store.ui();
   assert.deepEqual(ui.selection, { kind: 'feature', id: f.id });
-  assert.deepEqual(ui.afterTrace, { featureId: f.id, type: 'ridge' });
-  assert.match(ui.toast.message, /^Ridge 1 is now measured on 'Roof slope 1'\./);
-  assert.match(app.hintFor(ui, store.project(), store.plan()).text, /^Ridge 1: /);
+  // Review F1: an ordinary roof drawn along the gutter of this mansard makes the ridge about three times too
+  // long. That is reported as looking wrong, with the way out, and never as a success. (This used to be a green
+  // "is now measured on" message.)
+  assert.ok(measured(store).features[f.id].measuredFt > 100);
+  assert.equal(ui.toast, null);
+  assert.equal(ui.afterTrace, null);
+  assert.deepEqual([ui.moveNote.featureId, ui.moveNote.planeId, ui.moveNote.kind, ui.moveNote.canSteep], [f.id, roof.id, 'wrong', true]);
+  assert.match(ui.moveNote.text, /^Ridge 1 now reads 115′ \d+″ on 'Roof slope 1'\. On the wall it read 38′ 5″, so this looks too long\. If this is a mansard roof, use a steep roof face\. Or type its length\.$/);
+  const hint = app.hintFor(ui, store.project(), store.plan());
+  assert.equal(hint.text, ui.moveNote.text);
+  assert.deepEqual(hint.fix, { featureId: f.id, buttons: ['usesteep', 'tape', 'undo'] });
   actions.undo();
   assert.equal(store.project(), before, 'one undo removes the roof and puts the ridge back');
   store.redo();
   assert.equal(feat(store, f.id).planeId, roof.id);
-  // Cancelling the line leaves everything alone.
+  // Cancelling the question or the line leaves everything alone and goes back to Review.
   actions.undo();
+  store.setUI({ step: 6 });
   actions.putOnRoof(f.id);
   actions.cancelDraft();
   assert.equal(store.project(), before);
+  assert.deepEqual([store.ui().step, store.ui().roofAsk], [6, null]);
+  actions.putOnRoof(f.id);
+  actions.drawRoofFor(f.id, 'steep');
+  actions.cancelDraft();
+  assert.equal(store.project(), before);
+  assert.equal(store.ui().step, 6, 'review F10: cancelling the line returns to the step it was started from');
   // Nothing to do for an item that is not misplaced, or that is tape-measured.
   actions.updateFeature(f.id, { overrideFt: 66 });
   assert.equal(actions.putOnRoof(f.id), false);
@@ -377,8 +397,12 @@ test('C: "Put it on the roof" with roofs there moves the item to the one above i
   assert.deepEqual(item.candidates.map((c) => c.planeId).sort(), [steep.id, upper.id, garage.id].sort());
   // Ordinary roofs come before the steep face; of the two, the one whose line lies under the ridge.
   assert.equal(A.pickRoofCandidate(store.project(), f, item.candidates).planeId, upper.id);
-  const overGarage = Object.assign({}, f, { points: [[1310, 470], [1596, 470]] });
-  assert.equal(A.pickRoofCandidate(store.project(), overGarage, item.candidates).planeId, garage.id);
+  // A ridge over the garage: its candidates come from core for that item (review F1: each one says whether its
+  // line lies under the item, so the same list cannot be reused for another item).
+  const moved = JSON.parse(JSON.stringify(store.project()));
+  moved.features[0].points = [[1310, 470], [1596, 470]];
+  const overGarage = moved.features[0];
+  assert.equal(A.pickRoofCandidate(moved, overGarage, measure.misplacedFeatures(moved)[0].candidates).planeId, garage.id);
   assert.equal(A.pickRoofCandidate(store.project(), f, []), null);
   assert.equal(A.pickRoofCandidate(store.project(), f, [{ planeId: steep.id, ok: true, steep: true }]).planeId, steep.id);
   assert.equal(panels.roofFixNote(store.project(), f, item), "Put it on the roof moves it to 'Upper roof 1'. You can pick another surface after.");
@@ -388,7 +412,10 @@ test('C: "Put it on the roof" with roofs there moves the item to the one above i
   assert.equal(feat(store, f.id).planeId, upper.id);
   assert.equal(store.undoLabel(), "Move Ridge 1 to 'Upper roof 1'");
   assert.equal(store.ui().step, 6, 'Review stays open');
-  assert.equal(store.ui().toast.message, "Ridge 1 is now measured on 'Upper roof 1'. If it belongs on another roof surface, change Surface on its card.");
+  // Review F3: an upper roof is seen almost edge-on, so the result is reported as rough with a warning, not as
+  // done. (This used to be a green "is now measured on" message.)
+  assert.equal(store.ui().toast.message, "Ridge 1 now reads 64′ 2″ on 'Upper roof 1'. This roof is seen almost edge-on, so this length is rough. Type a tape-measured length.");
+  assert.equal(store.ui().toast.kind, 'warn');
   assert.equal(measure.misplacedFeatures(store.project(), measured(store)).length, 0);
   actions.undo();
   assert.equal(feat(store, f.id).planeId, wall.id);

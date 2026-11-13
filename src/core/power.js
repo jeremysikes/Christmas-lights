@@ -592,8 +592,26 @@ LP.define('power', ['geometry', 'catalog', 'suppliers'], function (geometry, cat
       locs.set(key, loc);
       return loc;
     }
-    /** A point on a roof plane: the eave point on the parent wall under it and the way up the slope from there. */
-    function roofLoc(img, planeId, s, uv, plane, parentId) {
+    /**
+     * A point on a roof plane: the eave point on the wall under it and the way up the slope from there. For an
+     * upper roof (its parent is a roof face) the slope adds up over both roofs, down to the face's eave on the wall.
+     */
+    function roofLoc(img, planeId, s, uv, plane, parentId, depth) {
+      // An upper roof starts at the top of a roof face (a mansard): a cord to it runs down this roof to that line,
+      // then down the face below to its eave on the wall. The point where it meets the face is located on the face.
+      const below = parentId ? space.sol(parentId) : null;
+      if (below && below.kind === 'roof') {
+        if ((depth || 0) >= 4 || !(s.frame && isV3(s.frame.origin) && isV3(s.frame.e1))) return null;
+        const edge = space.toImage(s, [uv[0], 0]);
+        const puv = finite(edge) ? space.toPlane(below, edge) : null;
+        if (!finite(puv)) return null;
+        const pplane = planeById.get(parentId);
+        const grand = below.parentPlaneId || (pplane && isObj(pplane.derived) ? pplane.derived.parentPlaneId : null);
+        const face = roofLoc(edge, parentId, below, puv, pplane, grand, (depth || 0) + 1);
+        if (!face) return null;
+        return { kind: 'roof', img, planeId, w: face.w, u: face.u, v: face.v,
+          roof: { slope: Math.abs(uv[1]) + face.roof.slope, along: face.roof.along, corner: face.roof.corner, eaveImg: face.roof.eaveImg } };
+      }
       const w = parentId ? wallInfo(parentId) : null;
       if (!w) return null;
       const line = (plane && isObj(plane.derived) && Array.isArray(plane.derived.line) ? plane.derived.line : [])

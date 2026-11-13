@@ -101,7 +101,8 @@
  *    capped at Low (the top of a mansard is usually flatter than the house pitch).
  *    Issue codes: 'steep-angle-assumed', 'steep-angle-guess' (info), 'derived-parent-no-3d'.
  *  - FeatureMeasurement also has `wrongSurface`: 'roof' (a ridge drawn on a wall), 'ground' (a tree or column
- *    drawn on a wall) or null. misplacedFeatures(project, measured?) lists those items with the surfaces they
+ *    drawn on a wall), 'below' (drawn on a roof but below the line where that roof starts; also `belowLine`
+ *    true, capped at Low) or null. misplacedFeatures(project, measured?) lists those items with the surfaces they
  *    could move to. steepFromTape({upFt, backFt, slopeFt}) turns two tape numbers into a steep face's pitch.
  *    STEEP = {defaultDeg: 70, minDeg: 20, maxDeg: 85}.
  */
@@ -889,7 +890,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
    * (upFt, vertical), how far it goes back (backFt, level) and its sloped height (slopeFt). Any two are enough;
    * with all three they must agree within 5%.
    * Returns {ok: true, angleDeg, pitch: {rise, run}, upFt, backFt, slopeFt} (store `pitch` as derived.pitch), or
-   * {ok: false, reason}. Angles above 85° are refused (measure such a face as a wall).
+   * {ok: false, reason}. Angles above 85° are refused (measure such a face as a wall), and so are angles below 20°
+   * (not a steep face). swapLikely is true below 45°: Up is shorter than Back, which is usually a mix-up.
    */
   function steepFromTape(input) {
     const o = isObj(input) ? input : {};
@@ -908,7 +910,9 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     const angleDeg = pitchAngleDeg(up, back);
     if (!isNum(angleDeg) || !(up > 0) || !(back > 0)) return fail('These numbers do not give a slope. Check them.');
     if (angleDeg > STEEP.maxDeg) return fail('This face is almost straight up (more than ' + STEEP.maxDeg + '°). Measure it as a wall.');
-    return { ok: true, angleDeg, pitch: { rise: up, run: back }, upFt: up, backFt: back, slopeFt: Math.hypot(up, back) };
+    if (angleDeg < STEEP.minDeg) return fail('This is not a steep face: it rises less than ' + STEEP.minDeg + '° from level. Check that Up and Back are not swapped, or add it as a Roof slope.');
+    // Below 45° the face leans back further than it rises: possible, but more often the two numbers are swapped.
+    return { ok: true, angleDeg, pitch: { rise: up, run: back }, upFt: up, backFt: back, slopeFt: Math.hypot(up, back), swapLikely: angleDeg < 45 };
   }
 
   // The wall's own 3D frame (camera.js: u right, v up, w toward the camera).
@@ -1062,6 +1066,13 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     // A plane point is in front of the camera when w has the same sign as at the eave/base line.
     const mid = g.applyH(sol.Himg2plane, [(dl.line[0][0] + dl.line[dl.line.length - 1][0]) / 2, (dl.line[0][1] + dl.line[dl.line.length - 1][1]) / 2]);
     sol.frontSign = mid ? Math.sign(wOf(sol.Hplane2img, mid)) || 1 : 1;
+    // The starting line in the photo, and which way the surface runs from it (roof-3d: up the slope), so that an
+    // item drawn below a roof's starting line can be told apart from one that is on the roof.
+    sol.lineImg = [dl.line[0].slice(), dl.line[dl.line.length - 1].slice()];
+    if (sol.mode === 'roof-3d') {
+      const p0 = g.applyH(sol.Hplane2img, [len / 2, 0]), p1 = g.applyH(sol.Hplane2img, [len / 2, 1]);
+      sol.upImg = p0 && p1 ? [p1[0] - p0[0], p1[1] - p0[1]] : null;
+    }
     return sol;
   }
 
@@ -1692,6 +1703,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     const canMeasure = !geomProblem && !!sol && !planeProblem;
     // Drawn on a wall, but it belongs on another kind of surface: 'roof' (a ridge) or 'ground' (tree, column).
     if (planeSol && planeSol.kind === 'wall') out.wrongSurface = wantedSurface(type);
+    // Drawn on a roof, but most of it lies below the line where that roof starts: it sits on the surface below.
+    else if (!geomProblem && isBelowStartLine(f, sol)) { out.wrongSurface = 'below'; out.belowLine = true; }
     const typeConf = type.id === 'tree' ? config.tree : type.id === 'column' ? config.column : null;
 
     // ---- geometric measurement
@@ -1837,6 +1850,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       refsBothDirections: !!(sol && sol.calib && sol.calib.refsBothDirections),
       anisotropic: !!(sol && sol.scale && sol.scale.anisotropic),
       scaleFrom: sol && sol.calib ? sol.calib.scaleFrom : null,
+      belowLine: out.belowLine === true,
       offPlane: offPlaneOnWall ? type.id : null,
       offPlaneBiasPct,
       assumedDiameterIn,
@@ -1857,6 +1871,49 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
   }
 
   /**
+   * How an item (image points) lies against the starting line of a 3D roof solution: {below, above, total,
+   * overlap}. below counts the points on the far side of the line from the roof (by more than tolPx), above the
+   * ones on the roof's side; overlap is the share
+   * of the item's width in the photo that lies over the line's span (0..1). null when the roof has no line.
+   */
+  function againstStartLine(points, sol, tolPx) {
+    const pts = cleanPts(points);
+    const L = sol && Array.isArray(sol.lineImg) ? sol.lineImg : null;
+    if (!pts || !pts.length || !L) return null;
+    const dx = L[1][0] - L[0][0], dy = L[1][1] - L[0][1];
+    const ll = Math.hypot(dx, dy);
+    if (!(ll > 0)) return null;
+    let n = [-dy / ll, dx / ll];
+    // Toward the roof: up the slope as the photo shows it; straight up in the photo when that is unclear.
+    const up = Array.isArray(sol.upImg) && Math.hypot(sol.upImg[0], sol.upImg[1]) > 1e-9 ? sol.upImg : [0, -1];
+    let side = n[0] * up[0] + n[1] * up[1];
+    if (Math.abs(side) < 0.05 * Math.hypot(up[0], up[1])) side = -n[1]; // seen edge-on: the roof is above its line
+    if (side < 0) n = [-n[0], -n[1]];
+    let below = 0, above = 0;
+    for (const q of pts) {
+      const d = (q[0] - L[0][0]) * n[0] + (q[1] - L[0][1]) * n[1];
+      if (d < -tolPx) below++; else if (d > tolPx) above++;
+    }
+    const xs = pts.map((q) => q[0]);
+    const f0 = Math.min.apply(null, xs), f1 = Math.max.apply(null, xs);
+    const l0 = Math.min(L[0][0], L[1][0]), l1 = Math.max(L[0][0], L[1][0]);
+    const width = Math.max(1, f1 - f0);
+    const overlap = g.clamp((Math.min(f1, l1) - Math.max(f0, l0) + (f1 === f0 ? 1 : 0)) / width, 0, 1);
+    return { below, above, total: pts.length, overlap };
+  }
+
+  /**
+   * Is this item drawn below the line where its roof starts (so it cannot be on that roof)? Yes when most of its
+   * points are below the line, or when some are and none is above it (an edge that only reaches up to the line).
+   */
+  function isBelowStartLine(feature, sol) {
+    if (!sol || !sol.ok || sol.kind !== 'roof' || sol.mode !== 'roof-3d') return false;
+    const tol = Math.max(10, 4 * featureTapSigma(feature), 4 * (isNum(sol.tapSigmaPx) ? sol.tapSigmaPx : SIGMA_TAP_PX));
+    const r = againstStartLine(isObj(feature) ? feature.points : null, sol, tol);
+    return !!r && r.below > 0 && (r.above === 0 || r.below * 2 > r.total);
+  }
+
+  /**
    * The kind of surface an item belongs on when a wall is the wrong place for it: 'roof' (a ridge), 'ground' (a
    * tree or a column) or null. These are the items a wall caps at Low.
    */
@@ -1873,6 +1930,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
   const SURFACE_MESSAGE = {
     roof: 'A ridge sits on the roof, behind the wall. Measured on the wall it comes out too short. Move it to a roof surface, or type a tape-measured length.',
     ground: 'This item stands in front of the wall. Measured on the wall it comes out too large. Move it to a ground surface, or type a tape-measured height.',
+    below: 'This item is drawn below the line where this roof starts, so it is not on this roof. Move it to the surface it sits on, or type a tape-measured length.',
   };
 
   /**
@@ -1880,8 +1938,13 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
    * surface; a tree or column drawn on a wall belongs on a ground surface. Items whose size is tape-measured
    * (overrideFt) are left out: that fix is already made.
    * measured (optional): the measureProject result for this project; worked out when missing.
-   * Returns [{featureId, type, label, planeId, wants: 'roof' | 'ground', message, lengthFt (as measured now, or
-   *   null), candidates: [{planeId, name, kind, steep, parentPlaneId, ok, lengthFt}], canCreate: true}].
+   * An item on a roof most of whose points lie below the line where that roof starts (wants 'below') belongs
+   * on a surface under it; its candidates are the surfaces that roof hangs off, nearest first.
+   * Returns [{featureId, type, label, planeId, wants: 'roof' | 'ground' | 'below', message, lengthFt (as measured
+   *   now, or null), candidates: [{planeId, name, kind, steep, upper, parentPlaneId, ok, lengthFt, below, under,
+   *   expectedPct}], canCreate}]. For a roof candidate, `under` says whether its starting line lies under the
+   *   item in the photo (false: it is probably another roof), `below` whether the item lies below that line, and
+   *   expectedPct is the surface's expected error from tap precision (above about 50 the length is only rough).
    * candidates are the existing surfaces of the wanted kind that hang off that wall (directly, or through a roof
    * face), best first: ones the item can be measured on, ordinary roofs before steep faces. lengthFt is what the
    * item would measure there (null when it cannot be measured there). To apply: set feature.planeId to the
@@ -1906,32 +1969,63 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       };
       const cfg = catalog.getLibrary(proj).config;
       const out = [];
+      const solOf = (id) => (Object.prototype.hasOwnProperty.call(res.planes, id) ? res.planes[id] : null);
+      const tryOn = (f, pl) => {
+        const sol = solOf(pl.id);
+        let m = null;
+        if (sol && sol.ok) { try { m = measureFeature(Object.assign({}, f, { planeId: pl.id }), sol, { config: cfg }); } catch (e) { m = null; }
+        }
+        const ok = !!(m && m.ok && isNum(m.measuredFt));
+        const parentSol = isObj(pl.derived) && pl.derived.parentPlaneId != null ? solOf(pl.derived.parentPlaneId) : null;
+        const fit = sol && sol.ok && pl.kind === 'roof' ? againstStartLine(f.points, sol, 10) : null;
+        const below = pl.kind === 'roof' && isBelowStartLine(f, sol);
+        return {
+          planeId: pl.id, name: typeof pl.name === 'string' ? pl.name : '', kind: pl.kind == null ? 'wall' : pl.kind, steep: isSteepPlane(pl),
+          parentPlaneId: isObj(pl.derived) ? pl.derived.parentPlaneId : null, ok, lengthFt: ok ? m.measuredFt : null,
+          upper: !!(parentSol && parentSol.kind === 'roof'), below,
+          // Does the surface's starting line lie under the item in the photo (at least half of the item's width)?
+          under: fit ? !below && fit.overlap >= 0.5 : null,
+          expectedPct: sol && isNum(sol.uncertaintyPct) ? sol.uncertaintyPct : null,
+        };
+      };
       arr(proj.features).forEach((f, idx) => {
         if (!isObj(f)) return;
         const type = typeof f.type === 'string' && Object.prototype.hasOwnProperty.call(catalog.FEATURE_TYPES, f.type) ? catalog.FEATURE_TYPES[f.type] : null;
-        const wants = wantedSurface(type);
-        const wall = f.planeId != null ? byId[f.planeId] : null;
-        if (!wants || !wall || !(wall.kind == null || wall.kind === 'wall') || tapeMeasured(f)) return;
+        const on = f.planeId != null ? byId[f.planeId] : null;
+        if (!type || !on || tapeMeasured(f)) return;
         const id = f.id != null ? String(f.id) : 'feature_' + idx;
         const now = Object.prototype.hasOwnProperty.call(res.features, id) ? res.features[id] : null;
+        const label = typeof f.label === 'string' && f.label.trim() ? f.label.trim() : type.label;
+        const lengthFt = now && now.ok && isNum(now.measuredFt) ? now.measuredFt : null;
+        if (on.kind === 'roof') {
+          // On a roof, but below the line where that roof starts: the surfaces under it, nearest first.
+          if (!now || now.wrongSurface !== 'below') return;
+          const candidates = [];
+          const seen = new Set([on.id]);
+          for (let cur = on; cur && isObj(cur.derived) && cur.derived.parentPlaneId != null;) {
+            const up = byId[cur.derived.parentPlaneId];
+            if (!up || seen.has(up.id)) break;
+            seen.add(up.id);
+            candidates.push(tryOn(f, up));
+            cur = up;
+          }
+          out.push({ featureId: id, type: type.id, label, planeId: on.id, wants: 'below', message: SURFACE_MESSAGE.below, lengthFt, candidates, canCreate: false });
+          return;
+        }
+        const wants = wantedSurface(type);
+        const wall = on;
+        if (!wants || !(wall.kind == null || wall.kind === 'wall')) return;
         const candidates = [];
         for (const pl of planes) {
           if (pl.kind !== wants || !hangsOff(pl, wall.id)) continue;
-          const sol = Object.prototype.hasOwnProperty.call(res.planes, pl.id) ? res.planes[pl.id] : null;
-          let m = null;
-          if (sol && sol.ok) { try { m = measureFeature(Object.assign({}, f, { planeId: pl.id }), sol, { config: cfg }); } catch (e) { m = null; } }
-          const ok = !!(m && m.ok && isNum(m.measuredFt));
-          candidates.push({
-            planeId: pl.id, name: typeof pl.name === 'string' ? pl.name : '', kind: pl.kind, steep: isSteepPlane(pl),
-            parentPlaneId: pl.derived.parentPlaneId, ok, lengthFt: ok ? m.measuredFt : null,
-          });
+          candidates.push(tryOn(f, pl));
         }
         const rank = (c) => (c.ok ? 0 : 2) + (c.steep ? 1 : 0);
         candidates.sort((a, b) => rank(a) - rank(b)); // stable: stored order within a rank
         out.push({
-          featureId: id, type: type.id, label: typeof f.label === 'string' && f.label.trim() ? f.label.trim() : type.label,
+          featureId: id, type: type.id, label,
           planeId: wall.id, wants, message: SURFACE_MESSAGE[wants],
-          lengthFt: now && now.ok && isNum(now.measuredFt) ? now.measuredFt : null,
+          lengthFt,
           candidates, canCreate: true,
         });
       });
@@ -1967,7 +2061,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
    *           viewAngleDeg, focalSource, focalRelStd, focalMismatchPct, poseConsistencyPct, poseTolerancePct,
    *           pitchSource ('user' | 'estimated' | 'default' | 'guess' | 'house'), pitchOnEave, pitchSpread, steep, steepAngleDeg,
    *           slopeBelow (an unmeasured slope under an upper roof), rectProblem, rectCheckPct, refsBothDirections, anisotropic, scaleFrom,
-   *           offPlane (type id or bool), offPlaneBiasPct, assumedDiameterIn, extrapolation, pixelLength,
+   *           offPlane (type id or bool), offPlaneBiasPct, belowLine (drawn below its roof's starting line), assumedDiameterIn, extrapolation, pixelLength,
    *           uncertaintyPct, uncertaintyBasePct, tapPx, tapWhat, ownTapPx, tapsFine, extraReasons,
    *           thresholds: {highMin, mediumMin}, reason}
    * ownTapPx: precision of the item's own points; when they were tapped zoomed out and that is not already the
@@ -2098,6 +2192,10 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
         if (fx.offPlane === 'bush') cap('medium', 'Items in front of the wall measure too large' + bias + '.' + steer);
         else cap('low', 'Items in front of the wall measure too large' + bias + '.' + steer);
       }
+    }
+    if (fx.belowLine) {
+      take(15, 'This item is drawn below the line where this roof starts.');
+      cap('low', 'This item lies below the line where this roof starts, so it is not on this roof and its length is wrong. Move it to the surface it sits on.');
     }
     if (diameterReason) cap('low', diameterReason);
     if (fx.extrapolation) take(10, 'This item reaches far beyond the measured rectangle, so small errors grow.');

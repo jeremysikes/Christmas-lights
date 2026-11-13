@@ -49,6 +49,43 @@ Do not crop or edit the photos. Upload the originals so LightPlan can read the l
 2. **Linked runs.** The list under "How the power runs" shows which runs hang off which with jumper cords. Walk one tree and check that each jumper is a route you would really use.
 3. **Supplier.** Step 4, "Buy from": pick the supplier you order from. In step 6, open one "Open" link per kind of item and compare the part number and price on the supplier's page with the shopping list. Note any price that has changed since the "as of" date, and type your account price over the line.
 
+## 4b. Mansard roof (15 minutes, only for a house that has one)
+
+A mansard has a steep lower roof face with a shallow roof on top. You need the same photos as before.
+
+Tape-measure (from a ladder at one corner, or from a dormer window):
+
+| # | What | Why |
+|---|---|---|
+| M1 | **Up**: how far the steep face goes straight up, from the gutter line to the trim line at its top. Hold the tape plumb. | one of the two slope numbers |
+| M2 | **Back**: how far the top of the steep face sits behind the gutter line, measured level. A plumb line dropped from the trim line makes this easy. If you cannot reach, measure the **sloped height** along the shingles instead. | the other slope number |
+| M3 | Length of the trim line along the front (or count shingle courses of known width) | check |
+| M4 | Length of one leaning corner edge, from the gutter corner up to the trim line | check |
+| M5 | Width and height of one dormer face | check |
+| M6 | Length of the top edge of the house, if you can reach it safely. Otherwise skip it. | check |
+
+Then in LightPlan:
+
+1. **Scale.** Step 2. If the wall has more than one measured rectangle, read the line on the wall's card: "Scale taken from …". It should name the largest one, and the other should check within a few percent. If a note says a rectangle "does not agree", check its size and that it sits flat on this wall.
+2. **Steep face.** Press "Steep roof face (mansard)" and tap both ends of the line where the steep face starts (the gutter line). Under "I measured it" type M1 in Up and M2 in Back (or the sloped height), then "Use these numbers". The panel shows the angle. Most mansards come out between 60° and 75°. If it asks whether the two numbers are swapped, they probably are.
+3. **Upper roof.** Press "Add the upper roof" and tap both ends of the trim line. Pick the pitch of the upper roof if you know it.
+4. **Trace.** Step 3. Trace the trim line (Eave), one corner edge (Rake), one dormer (Window) and the top edge (Ridge). Watch "On" above the photo: it should say the steep roof face for the first three and the upper roof for the top edge.
+5. **Record** each length and its rating in the table below, next to M3 to M6.
+
+| # | Item | Tape | LightPlan | Error % | Confidence |
+|---|---|---|---|---|---|
+| M3 | Trim line | | | | |
+| M4 | Corner edge | | | | |
+| M5 | Dormer outline (2 × width + 2 × height) | | | | |
+| M6 | Top edge | | | | |
+
+What to expect:
+
+- With M1 and M2 typed in, items on the steep face are rated from how well the wall is measured. A wall rated Medium usually gives Medium or Low on the steep face. A small rectangle on the wall gives Low: mark the wall's own corners with its tape-measured size to lift it.
+- With a picked angle and no tape numbers, everything on the steep face is Low. Expect corner edges and dormers to be 5 to 10% off if the real angle is 10° away from the picked one; the trim line moves less (about 3%).
+- The top edge (M6) is usually Low and can be far off, because the upper roof is seen almost edge-on. Use the tape number for it.
+- A ridge traced on the wall instead of the roof reads too short. LightPlan says so and offers "Put it on the roof". If the result looks wrong (much longer than on the wall), it says that too.
+
 ## 5. Results table
 
 | # | Item | Tape | LightPlan (straight) | Error % | Confidence | LightPlan (angled) | Error % |

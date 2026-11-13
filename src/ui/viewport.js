@@ -1544,7 +1544,9 @@ LP.define('ui.viewport', ['geometry', 'catalog', 'measure', 'ui.preview'], funct
             mine.forEach((r) => { if (isNum(r.errorPct)) worst = Math.max(worst || 0, Math.abs(r.errorPct)); });
           } else {
             const exp = isRect ? fmtLen(prj, ref.widthFt) + ' × ' + fmtLen(prj, ref.heightFt) : fmtLen(prj, ref.lengthFt);
-            text = exp + ' / —';
+            // Nothing to compare with: this reference sets the scale itself, or the wall has no scale yet.
+            const setsScale = !!(raw && raw.ok && (raw.promotedRefId === ref.id || (raw.calib && raw.calib.scaleFrom === 'refs')));
+            text = setsScale ? exp + ' · sets scale' : exp;
           }
           const S = shape.map(imageToScreen);
           let at;

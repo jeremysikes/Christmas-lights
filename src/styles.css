@@ -1069,7 +1069,7 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
 /* ---------------------------------------------------------------- hint bar surface picker, notices */
 .hint-plane { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; color: #cfd8e2; }
 .hint-plane select {
-  min-height: 36px;
+  min-height: 44px;
   max-width: 190px;
   padding: 4px 8px;
   border: 1px solid rgba(255, 255, 255, 0.3);
@@ -1179,9 +1179,17 @@ textarea.copy-field { min-height: 120px; resize: vertical; white-space: pre; ove
 .rough-fix { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 10px; background: var(--warn-soft); }
 .callout-body > .btn-row { align-self: stretch; }
 .hint-fix .btn { flex: 0 1 auto; }
-.hint-fix #hint-fix-later { margin-left: auto; }
+.hint-fix .btn:last-child { margin-left: auto; }
 @media (max-width: 480px) {
-  /* The three buttons of the notice fit one row on a phone. */
+  /* The three buttons of the notice fit one row on a phone (below 380 px they also get shorter labels). */
   .hint-fix { gap: 4px; }
   .hint-fix .btn { padding-left: 9px; padding-right: 9px; }
 }
+@media (max-width: 379px) {
+  .hint-fix .btn { padding-left: 7px; padding-right: 7px; }
+  /* The taller surface picker (44 px) must not push the bar over the photo on a small phone: tighter rows. */
+  .hintbar { gap: 4px 12px; padding-top: 5px; padding-bottom: 5px; }
+}
+/* The five angle chips share one row down to the narrowest phone. */
+.angle-row .angle-chip { flex: 1 1 0; min-width: 46px; padding-left: 4px; padding-right: 4px; }
+.swap-fix { display: flex; flex-direction: column; gap: 6px; }

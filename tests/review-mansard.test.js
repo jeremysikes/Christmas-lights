@@ -273,3 +273,91 @@ test('S1: the validator reports parent loops, a ground area on a roof and a roof
   assert.ok(e3.some((e) => /a roof cannot be built from a ground area/.test(e)), e3.join(' | '));
   for (const e of e1.concat(e2, e3)) noDashes(e);
 });
+
+test('F2: an item drawn below the line where its roof starts is flagged, rated Low, and offered the surfaces under it', () => {
+  const h = man.mansardHouse({ deg: 70 });
+  const proj = man.mansardProject(h, {});
+  // In the right place nothing is flagged (the corner edges start exactly on the steep face's line).
+  const good = measure.measureProject(proj);
+  for (const id of Object.keys(good.features)) assert.equal(good.features[id].wrongSurface, null, id);
+  assert.deepEqual(measure.misplacedFeatures(proj, good), []);
+  // The left corner edge, the dormer and a gutter along the wall's eave, all put on the upper roof by mistake.
+  const bad = clone(proj);
+  for (const f of bad.features) if (f.id === 'cornerLeft' || f.id === 'dormer') f.planeId = 'pl_u';
+  bad.features.push({ id: 'gutter', imageId: 'img', planeId: 'pl_u', type: 'gutter', label: 'Gutter 1', points: clone(h.px.eave), closed: false, overrideFt: null, productId: null, color: null, params: {} });
+  const r = measure.measureProject(bad);
+  for (const id of ['cornerLeft', 'dormer', 'gutter']) {
+    const m = r.features[id];
+    assert.deepEqual([m.wrongSurface, m.belowLine, m.confidence.level], ['below', true, 'low'], id);
+    const why = m.confidence.reasons.find((x) => /below the line where this roof starts/.test(x));
+    assert.ok(why, id + ': ' + m.confidence.reasons.join(' | '));
+    noDashes(why);
+  }
+  assert.equal(r.features.topEdge.wrongSurface, null, 'the top edge is on the upper roof');
+  const list = measure.misplacedFeatures(bad, r);
+  assert.deepEqual(list.map((x) => [x.featureId, x.wants, x.planeId, x.canCreate]).sort(), [['cornerLeft', 'below', 'pl_u', false], ['dormer', 'below', 'pl_u', false], ['gutter', 'below', 'pl_u', false]]);
+  const corner = list.find((x) => x.featureId === 'cornerLeft');
+  assert.deepEqual(corner.candidates.map((c) => [c.planeId, c.kind, c.steep, c.below]), [['pl_s', 'roof', true, false], ['pl_w', 'wall', false, false]], 'nearest surface first');
+  assert.ok(Math.abs(corner.candidates[0].lengthFt / h.truth.cornerLeft - 1) < 1e-6, 'on the steep face it measures true');
+  noDashes(corner.message);
+  // The gutter along the wall's eave is not below the steep face's line (it is on it), and it measures true there.
+  const gutter = list.find((x) => x.featureId === 'gutter');
+  assert.equal(gutter.candidates[0].below, false);
+  assert.ok(Math.abs(gutter.candidates[0].lengthFt / h.truth.eave - 1) < 1e-6);
+  // A tape-measured length ends the matter.
+  bad.features.find((f) => f.id === 'gutter').overrideFt = 44;
+  assert.ok(!measure.misplacedFeatures(bad).some((x) => x.featureId === 'gutter'));
+});
+
+test('F1 F3: roof candidates for a ridge on a wall say whether their line lies under it and how rough they are', () => {
+  const h = man.mansardHouse({ deg: 70 });
+  const proj = man.mansardProject(h, {});
+  // The top edge drawn on the wall, plus an ordinary roof over the right-hand third of the wall only.
+  const top = proj.features.find((f) => f.id === 'topEdge');
+  top.planeId = 'pl_w';
+  const eave = h.px.eave;
+  const part = [[eave[0][0] + 0.8 * (eave[1][0] - eave[0][0]), eave[0][1] + 0.8 * (eave[1][1] - eave[0][1])], eave[1].slice()];
+  proj.planes.push({ id: 'pl_side', imageId: 'img', name: 'Side roof', kind: 'roof', rect: null, refs: [], derived: { parentPlaneId: 'pl_w', line: part, pitch: { rise: 6, run: 12 } } });
+  const r = measure.measureProject(proj);
+  const item = measure.misplacedFeatures(proj, r).find((x) => x.featureId === 'topEdge');
+  assert.equal(item.wants, 'roof');
+  const by = {};
+  for (const c of item.candidates) by[c.planeId] = c;
+  assert.deepEqual([by.pl_u.under, by.pl_u.upper, by.pl_u.below], [true, true, false]);
+  assert.deepEqual([by.pl_s.under, by.pl_s.upper], [true, false]);
+  assert.equal(by.pl_side.under, false, 'the side roof starts beside the item, not under it');
+  for (const c of item.candidates) assert.ok(c.expectedPct > 0, c.planeId + ' reports its expected error');
+});
+
+test('F6: tape numbers for a face that is not steep are refused, and a likely swap is reported', () => {
+  const flat = measure.steepFromTape({ upFt: 1, backFt: 8 });
+  assert.equal(flat.ok, false);
+  assert.match(flat.reason, /not a steep face/);
+  assert.match(flat.reason, /Roof slope/);
+  noDashes(flat.reason);
+  const leaning = measure.steepFromTape({ upFt: 3, backFt: 8 }); // 20.6°: allowed, but probably swapped
+  assert.deepEqual([leaning.ok, leaning.swapLikely, Math.round(leaning.angleDeg)], [true, true, 21]);
+  const fine = measure.steepFromTape({ upFt: 8, backFt: 3 });
+  assert.deepEqual([fine.ok, fine.swapLikely], [true, false]);
+  assert.equal(measure.steepFromTape({ upFt: 5, backFt: 5 }).swapLikely, false, '45° is not flagged');
+});
+
+test('open issue (power): a cord to an item on an upper roof runs down both roofs to the wall, not a photo-based guess', () => {
+  const plan = LP.require('plan');
+  const h = man.mansardHouse({ deg: 70 });
+  const proj = man.mansardProject(h, {});
+  proj.features = proj.features.filter((f) => f.id === 'topEdge');
+  proj.outlets = [{ id: 'out_1', imageId: 'img', planeId: 'pl_w', point: sim.project3(h.cam, [4, 1.5, 0]), label: 'Outlet 1', type: 'exteriorGfci', gfci: true, circuitId: null }];
+  const loaded = schema.normalizeProject(proj);
+  const out = plan.computePlan(loaded);
+  const cords = [];
+  for (const f of out.power.feeds || []) if (f.cord && Array.isArray(f.cord.route)) cords.push(f.cord);
+  assert.ok(cords.length >= 1, 'the top edge gets a cord');
+  const route = cords[0].route;
+  const slope = route.filter((s) => s.kind === 'roof').reduce((t, s) => t + s.lengthFt, 0);
+  // Down the upper roof to the trim line and down the steep face (8.5 ft of slope) to the eave, then down the wall.
+  assert.ok(slope >= h.slope - 0.2, 'the cord follows the slope of both roofs: ' + slope.toFixed(1) + ' ft, steep face alone ' + h.slope.toFixed(1));
+  assert.ok(!route.some((s) => s.kind === 'direct'), 'no straight-line guess across the photo: ' + route.map((s) => s.kind).join(' > '));
+  assert.ok(route.some((s) => s.kind === 'rise' && Math.abs(s.lengthFt - h.Hw) < 0.5), 'and it goes up the wall to the eave: ' + JSON.stringify(route.map((s) => [s.kind, s.lengthFt])));
+  assert.match(cords[0].routeText, /up the roof/);
+});

@@ -49,8 +49,18 @@
  *    wall to a roof surface that hangs off that wall, or starts the eave line (opts.thenMove) and moves the item when
  *    the roof exists, as one undo step. typeLength(featureId) opens the item's tape-measured length field
  *    (ui.focusTape, which the panels follow).
+ *    A roof whose starting line does not lie under the item is never picked for it. With nothing to pick,
+ *    putOnRoof asks what kind of roof it is (ui.roofAsk; drawRoofFor(featureId, 'roof' | 'steep') then draws its
+ *    line). After a move the result is checked (moveVerdict): a length much longer than on the wall, or an item
+ *    below the roof's starting line, is reported as looking wrong, and a roof seen almost edge-on as rough
+ *    (ui.moveNote in step 3, a warning message elsewhere), never as a success. useSteepInstead(featureId) undoes
+ *    such a move and draws a steep roof face for the item. putOnPlane(featureId, planeId) moves an item that was
+ *    drawn below its roof's starting line to a surface under it.
+ *  - On a mansard the surface follows where the item is traced (mansardSurfaceFor): between the bottom line and
+ *    the trim line of a steep face it goes on that face, above the trim line on the upper roof, at or below the
+ *    bottom line back on the wall. A surface picked by hand for the trace (opts.planePicked) is kept.
  *  - Module exports also surfaceKind, SURFACE_LABEL, surfaceOptionLabel, wallOfPlane, typeFitsSurface,
- *    pickRoofCandidate, steepAngleText and STEEP_ANGLES.
+ *    pickRoofCandidate, mansardSurfaceFor, steepAngleText and STEEP_ANGLES.
  *  - goStep clears the toast (a message about one step does not follow the user to the next), and starting a
  *    walkway with no ground plane no longer toasts what the hint bar already says.
  */
@@ -244,6 +254,40 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       const extra = MANSARD_TYPES[surfaceKind(project, plane)];
       return !!extra && extra.includes(type);
     }
+    /**
+     * The surface a traced item belongs on when it is drawn over a mansard, from where its points are in the photo:
+     * between the bottom line and the trim line of a steep face → that face; above the trim line → its upper roof;
+     * at or below the bottom line → the wall, but only when `current` is one of that mansard's roof surfaces (an
+     * item on the wall or the ground stays where the user put it). null when no steep face lies under the points,
+     * or the type cannot be measured on that surface.
+     */
+    function mansardSurfaceFor(project, imageId, points, type, current) {
+      const pts = arr(points).filter(isPt);
+      if (!pts.length || !project) return null;
+      const cx = pts.reduce((t, q) => t + q[0], 0) / pts.length, cy = pts.reduce((t, q) => t + q[1], 0) / pts.length;
+      const lineOf = (pl) => { const l = pl && pl.derived ? arr(pl.derived.line).filter(isPt) : []; return l.length >= 2 ? l : null; };
+      const yAt = (l, x) => (Math.abs(l[1][0] - l[0][0]) < 1e-9 ? (l[0][1] + l[1][1]) / 2 : l[0][1] + ((x - l[0][0]) / (l[1][0] - l[0][0])) * (l[1][1] - l[0][1]));
+      for (const face of arr(project.planes)) {
+        if (!face || surfaceKind(project, face) !== 'steep' || (imageId && face.imageId !== imageId)) continue;
+        const bottom = lineOf(face);
+        if (!bottom) continue;
+        const l0 = Math.min(bottom[0][0], bottom[1][0]), l1 = Math.max(bottom[0][0], bottom[1][0]);
+        const margin = 0.1 * (l1 - l0);
+        if (cx < l0 - margin || cx > l1 + margin) continue;
+        const upper = arr(project.planes).find((x) => x && x.kind === 'roof' && x.derived && x.derived.parentPlaneId === face.id && lineOf(x)) || null;
+        const yBottom = yAt(bottom, cx);
+        const yTrim = upper ? yAt(lineOf(upper), cx) : null;
+        const tol = Math.max(8, yTrim != null ? 0.15 * Math.abs(yBottom - yTrim) : 12);
+        let plane;
+        if (cy > yBottom - tol) {
+          const mine = current && (current.id === face.id || (upper && current.id === upper.id));
+          plane = mine ? wallOfPlane(project, face) : null;
+        } else if (yTrim != null && cy < yTrim - tol) plane = upper;
+        else plane = face;
+        return plane && typeFitsSurface(project, type, plane) ? plane : null;
+      }
+      return null;
+    }
     /** Typical slopes of a steep roof face, in degrees from level, for the picker (70 is the default). */
     const STEEP_ANGLES = [60, 65, 70, 75, 80];
     /** "70°" for a steep face's slope, from its solution (sol.pitch.angleDeg) or its stored data. */
@@ -253,10 +297,12 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
     /**
      * The roof surface an item moves to, from measure.misplacedFeatures' candidates (best first): among the ones
      * that rank the same as the first (measurable, ordinary roofs before steep faces), the one whose starting line
-     * lies most under the item on the photo, so a ridge over the garage goes to the garage roof.
+     * lies most under the item on the photo, so a ridge over the garage goes to the garage roof. null when no
+     * roof starts under the item (candidate.under false) or the item lies below every roof's line.
      */
     function pickRoofCandidate(project, feature, candidates) {
-      const list = arr(candidates);
+      // A roof that starts beside the item, or above it, is another roof: it is never picked (the caller asks).
+      const list = arr(candidates).filter((c) => c && c.under !== false && !c.below);
       if (!list.length) return null;
       const top = list.filter((c) => c.ok === list[0].ok && !!c.steep === !!list[0].steep);
       const xs = arr(feature && feature.points).filter(isPt).map((q) => q[0]);
@@ -340,8 +386,9 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       let toastSeq = 0;
       let pendingConfirm = null;
       let focusSeq = 0;
+      let scrollSeq = 0;
 
-      const SELECT = () => ({ mode: { name: 'select', opts: {} }, draft: { points: [] }, afterTrace: null });
+      const SELECT = () => ({ mode: { name: 'select', opts: {} }, draft: { points: [] }, afterTrace: null, moveNote: null, roofAsk: null });
 
       const actions = {};
 
@@ -408,7 +455,8 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
         const ui = U();
         const patch = { activePlaneId: id };
         if (ui.mode.name === 'trace' || ui.mode.name === 'outlet') {
-          patch.mode = { name: ui.mode.name, opts: Object.assign({}, ui.mode.opts, { planeId: id }) };
+          // Picked by hand for this trace: the mansard rule (mansardSurfaceFor) leaves it alone.
+          patch.mode = { name: ui.mode.name, opts: Object.assign({}, ui.mode.opts, { planeId: id, planePicked: true }) };
         }
         store.setUI(patch);
       };
@@ -419,11 +467,17 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
 
       // ------------------------------------------------------------ tools and drafts
       actions.setMode = (name, opts) => {
-        const patch = { mode: { name: name || 'select', opts: Object.assign({}, opts || {}) }, draft: { points: [] }, afterTrace: null };
+        const patch = { mode: { name: name || 'select', opts: Object.assign({}, opts || {}) }, draft: { points: [] }, afterTrace: null, moveNote: null, roofAsk: null };
         if (name && name !== 'select' && name !== 'pan') patch.selection = null;
         store.setUI(patch);
       };
-      actions.cancelDraft = () => store.setUI(SELECT());
+      actions.cancelDraft = () => {
+        // A line started from another step (Review's "Put it on the roof") goes back there when it is cancelled.
+        const back = U().mode && U().mode.opts ? U().mode.opts.returnStep : null;
+        const ask = U().roofAsk;
+        const step = Number.isInteger(back) ? back : ask && Number.isInteger(ask.returnStep) ? ask.returnStep : null;
+        store.setUI(step != null && step !== U().step ? Object.assign(SELECT(), { step }) : SELECT());
+      };
 
       /**
        * Add a tapped point to the tool in use. meta.tapErr (optional): the point's expected tap error in image px
@@ -447,7 +501,19 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
         const errs = arr(ui.draft && ui.draft.tapErr).slice(0, pts.length);
         while (errs.length < pts.length) errs.push(null);
         errs.push(meta && isTapErr(meta.tapErr) ? fitTapErr(meta.tapErr) : null);
-        store.setUI({ draft: { points: next, tapErr: errs } });
+        const patch = { draft: { points: next, tapErr: errs } };
+        if (mode.name === 'trace' && mode.opts && !mode.opts.planePicked) {
+          // On a mansard the surface follows where the item is drawn, unless one was picked by hand for this trace.
+          const proj = P();
+          const img = activeImage();
+          const cur = findPlane(proj, mode.opts.planeId);
+          const auto = mansardSurfaceFor(proj, img ? img.id : null, next, mode.opts.type, cur);
+          if (auto && auto.id !== mode.opts.planeId) {
+            patch.mode = { name: 'trace', opts: Object.assign({}, mode.opts, { planeId: auto.id }) };
+            patch.activePlaneId = auto.id;
+          }
+        }
+        store.setUI(patch);
         if (mode.name === 'rect' && next.length >= 4) actions.completeDraft();
         else if (mode.name === 'line' && next.length >= 2) actions.completeDraft();
         else if (mode.name === 'trace') {
@@ -529,18 +595,24 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
             // Made to hold an item that was drawn on the wall (putOnRoof): the roof and the move are one undo step.
             const moved = o.thenMove ? byId(p.features, o.thenMove) : null;
             if (moved) {
-              store.commit('Put ' + (moved.label || 'item') + ' on a new roof slope', (d) => {
+              const before = lengthNow(moved.id);
+              store.commit('Put ' + (moved.label || 'item') + ' on a new ' + (sk === 'steep' ? 'steep roof face' : 'roof slope'), (d) => {
                 d.planes.push(np);
                 const f = byId(d.features, moved.id);
                 if (f) f.planeId = np.id;
               });
-              store.setUI(Object.assign(SELECT(), { activePlaneId: np.id, selection: { kind: 'feature', id: moved.id }, afterTrace: { featureId: moved.id, type: moved.type } }));
-              actions.toast((moved.label || 'The item') + " is now measured on '" + np.name + "'. Check the pitch of that roof in step 2.", 'ok');
+              store.setUI(Object.assign(SELECT(), { activePlaneId: np.id, selection: { kind: 'feature', id: moved.id } }));
+              reportMove(moved.id, np.id, before, true);
               return true;
             }
             const label = { roof: 'Add roof slope', steep: 'Add steep roof face', upper: 'Add upper roof', ground: 'Add ground plane' }[sk];
             store.commit(label, (d) => { d.planes.push(np); });
-            store.setUI(Object.assign(SELECT(), { activePlaneId: np.id, selection: { kind: 'plane', id: np.id } }));
+            scrollSeq += 1;
+            store.setUI(Object.assign(SELECT(), { activePlaneId: np.id, selection: { kind: 'plane', id: np.id } },
+              sk === 'steep' || sk === 'upper' ? { scrollTo: { key: sk === 'steep' ? 'steep' : 'upper-pitch', planeId: np.id, n: scrollSeq } } : {}));
+            // What comes next is further down the panel: say so (the panels scroll to it, ui.scrollTo).
+            if (sk === 'steep') actions.toast('Steep roof face added. Now say how steep it is, then add the upper roof.', 'ok');
+            else if (sk === 'upper') actions.toast('Upper roof added. Now pick its pitch. The top of a mansard is usually flatter than the rest of the house.', 'ok');
             // Made on the way to tracing a walkway (startTrace): carry on with that trace on the new ground.
             if (o.thenTrace && FEATURE_TYPES[o.thenTrace]) actions.startTrace(o.thenTrace);
             return true;
@@ -1163,10 +1235,70 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
       };
 
       // ------------------------------------------------------------ items drawn on the wrong surface
+      /** What an item measures right now (ft), or null. */
+      function lengthNow(featureId) {
+        try {
+          const m = store.plan().measured.features[featureId];
+          return m && m.ok && Number.isFinite(m.measuredFt) ? m.measuredFt : null;
+        } catch (e) { return null; }
+      }
+      // A roof length this much longer than the same item read on the wall is not believable: the roof behind a
+      // wall is further from the camera, but only by its run (a ridge 15 ft back, seen from 30 ft, reads 1.5 times).
+      const MOVE_TOO_LONG = 1.6;
+      // Above this expected error a surface gives only a rough number (an upper roof seen almost edge-on).
+      const ROUGH_PCT = 50;
+      /**
+       * How a move to a roof surface turned out: {kind: 'ok' | 'rough' | 'wrong' | 'noscale', text, canSteep}.
+       * 'wrong': the item lies below the line where that roof starts, or reads much longer than it did on the wall.
+       * 'rough': the roof is an upper roof or is only roughly measured. Never throws.
+       */
+      function moveVerdict(featureId, planeId, beforeFt, created) {
+        const p = P();
+        const f = byId(p.features, featureId) || {};
+        const pl = findPlane(p, planeId);
+        const name = "'" + ((pl && pl.name) || 'the roof') + "'";
+        const label = f.label || 'The item';
+        let m = null, sol = null;
+        try { const meas = store.plan().measured; m = meas.features[featureId]; sol = meas.planes[planeId]; } catch (e) { m = null; sol = null; }
+        const fmt = (v) => measure.formatLength(v, p.settings && p.settings.lengthFormat);
+        const now = m && m.ok && Number.isFinite(m.measuredFt) ? m.measuredFt : null;
+        const sk = surfaceKind(p, pl);
+        const reads = now != null ? label + ' now reads ' + fmt(now) + ' on ' + name + '. ' : label + ' is now on ' + name + '. ';
+        const steepTip = sk === 'roof' ? ' If this is a mansard roof, use a steep roof face.' : '';
+        if (m && m.wrongSurface === 'below') {
+          return { kind: 'wrong', canSteep: sk === 'roof', text: label + ' lies below the line where ' + name + ' starts, so it is not on that roof.' + steepTip + ' Or type its length.' };
+        }
+        if (now != null && beforeFt > 0 && now > MOVE_TOO_LONG * beforeFt && sk !== 'upper') {
+          return { kind: 'wrong', canSteep: sk === 'roof', text: reads + 'On the wall it read ' + fmt(beforeFt) + ', so this looks too long.' + steepTip + ' Or type its length.' };
+        }
+        if (!sol || !sol.ok) return { kind: 'noscale', canSteep: false, text: label + ' is now on ' + name + '. That surface has no scale yet: finish it in step 2.' };
+        if (sk === 'upper' || (Number.isFinite(sol.uncertaintyPct) && sol.uncertaintyPct > ROUGH_PCT)) {
+          const why = sk === 'upper' ? 'This roof is seen almost edge-on, so this length is rough.' : 'This surface is only roughly measured, so this length is rough.';
+          return { kind: 'rough', canSteep: false, text: reads + why + ' Type a tape-measured length.' };
+        }
+        const next = sk === 'steep' ? ' Say how steep that face is in step 2.' : created ? ' Check the pitch of that roof in step 2.' : '';
+        return { kind: 'ok', canSteep: false, text: label + ' is now measured on ' + name + '.' + next };
+      }
+      /** Say how a move turned out: a green message when it is fine, else a note with what to do (never green). */
+      function reportMove(featureId, planeId, beforeFt, created, others) {
+        const v = moveVerdict(featureId, planeId, beforeFt, created);
+        if (v.kind === 'ok' || v.kind === 'noscale') {
+          const tail = others ? ' If it belongs on another roof surface, change Surface on its card.' : '';
+          actions.toast(v.text + tail, v.kind === 'ok' ? 'ok' : 'warn');
+          if (created && U().step === 3) store.setUI({ afterTrace: { featureId, type: (byId(P().features, featureId) || {}).type } });
+          return v;
+        }
+        // In step 3 the note sits in the hint bar with its buttons; elsewhere (Review) it is a warning message.
+        if (U().step === 3) store.setUI({ toast: null, moveNote: { featureId, planeId, kind: v.kind, text: v.text, canSteep: v.canSteep } });
+        else actions.toast(v.text, 'warn');
+        return v;
+      }
+
       /**
        * "Put it on the roof": move an item that belongs on a roof (a ridge drawn on a wall) to a roof surface that
-       * hangs off that wall: the given one, else the best fit. With no roof yet, the eave line is drawn first and
-       * the item moves when the roof exists. One undo step either way. Returns 'moved', 'draw' or false.
+       * hangs off that wall: the given one, else the one that starts under the item. With no such roof, the hint
+       * bar first asks what kind of roof it is (ui.roofAsk), then its line is drawn (drawRoofFor) and the item
+       * moves when the roof exists. One undo step either way. Returns 'moved', 'ask' or false.
        */
       actions.putOnRoof = (featureId, planeId) => {
         const p = P();
@@ -1177,9 +1309,9 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
         const item = arr(measure.misplacedFeatures(p, measured)).find((x) => x.featureId === featureId && x.wants === 'roof');
         if (!item) return false;
         const target = planeId ? item.candidates.find((c) => c.planeId === planeId) : pickRoofCandidate(p, f, item.candidates);
-        const label = f.label || 'The item';
         if (target) {
           const name = target.name || 'the roof';
+          const before = lengthNow(featureId);
           store.commit('Move ' + (f.label || 'item') + " to '" + name + "'", (d) => {
             const g = byId(d.features, featureId);
             if (!g) return false;
@@ -1187,18 +1319,78 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
             return undefined;
           });
           const ui = U();
-          const patch = { activePlaneId: target.planeId };
+          const patch = { activePlaneId: target.planeId, moveNote: null, roofAsk: null };
           if (ui.step === 3 && !(ui.selection && ui.selection.kind === 'feature' && ui.selection.id === featureId)) patch.selection = { kind: 'feature', id: featureId };
           store.setUI(patch);
-          const others = item.candidates.length > 1 ? ' If it belongs on another roof surface, change Surface on its card.' : '';
-          actions.toast(label + " is now measured on '" + name + "'." + (target.ok ? '' : ' That surface has no scale yet: finish it in step 2.') + others, target.ok ? 'ok' : 'warn');
+          reportMove(featureId, target.planeId, before, false, item.candidates.length > 1);
           return 'moved';
         }
-        // No roof hangs off that wall yet: draw its eave first (the hint bar says why), then the item moves.
+        // No roof starts under the item yet. Ask what kind of roof it is before its line is drawn: an ordinary
+        // eave line on a mansard would put the item on the wrong slope.
+        const from = U().step;
+        store.setUI(Object.assign(SELECT(), { step: 3, toast: null, activePlaneId: item.planeId, selection: { kind: 'feature', id: featureId },
+          roofAsk: { featureId, planeId: item.planeId, returnStep: from !== 3 ? from : null } }));
+        return 'ask';
+      };
+      /**
+       * The answer to "what kind of roof is it?" (ui.roofAsk): draw the line where an ordinary roof ('roof') or a
+       * steep roof face ('steep') starts on the item's wall; the item moves to the new surface when the line is in.
+       */
+      actions.drawRoofFor = (featureId, kind) => {
+        const p = P();
+        const f = byId(p.features, featureId);
+        const wall = f ? wallOfPlane(p, findPlane(p, f.planeId)) : null;
+        if (!f || !wall) { store.setUI({ roofAsk: null }); return false; }
+        const ask = U().roofAsk;
+        const returnStep = ask && Number.isInteger(ask.returnStep) ? ask.returnStep : null;
         if (U().step !== 3) store.setUI({ step: 3, toast: null });
-        store.setUI({ activePlaneId: item.planeId });
-        actions.setMode('line', { purpose: 'roofEave', planeId: item.planeId, pitch: null, thenMove: featureId });
-        return 'draw';
+        store.setUI({ activePlaneId: wall.id });
+        const opts = { purpose: 'roofEave', planeId: wall.id, pitch: null, thenMove: featureId };
+        if (kind === 'steep') opts.steep = true;
+        if (returnStep != null) opts.returnStep = returnStep;
+        actions.setMode('line', opts);
+        return true;
+      };
+      /** "Use a steep roof face" after a move that looks wrong: undo that move, then draw a steep face for the item. */
+      actions.useSteepInstead = (featureId) => {
+        const note = U().moveNote;
+        if (!note || note.featureId !== featureId || !note.canSteep) return false;
+        store.undo();
+        store.setUI({ moveNote: null, toast: null });
+        return actions.drawRoofFor(featureId, 'steep');
+      };
+      /** "Undo" on the note after a move: take the move back. */
+      actions.undoMove = () => {
+        if (!U().moveNote) return false;
+        store.undo();
+        store.setUI({ moveNote: null, toast: null });
+        return true;
+      };
+      actions.dismissMoveNote = () => store.setUI({ moveNote: null });
+      /**
+       * Move an item that was drawn below the line where its roof starts to a surface under it (the given one, else
+       * the nearest one it can be measured on). Returns true when it moved.
+       */
+      actions.putOnPlane = (featureId, planeId) => {
+        const p = P();
+        const f = byId(p.features, featureId);
+        if (!f) return false;
+        let measured = null;
+        try { measured = store.plan().measured; } catch (e) { measured = null; }
+        const item = arr(measure.misplacedFeatures(p, measured)).find((x) => x.featureId === featureId && x.wants === 'below');
+        const fits = (c) => !c.below && typeFitsSurface(p, f.type, findPlane(p, c.planeId));
+        const target = item ? (planeId ? item.candidates.find((c) => c.planeId === planeId) : item.candidates.find(fits)) : null;
+        if (!target) return false;
+        const name = target.name || 'the surface below';
+        store.commit('Move ' + (f.label || 'item') + " to '" + name + "'", (d) => {
+          const g = byId(d.features, featureId);
+          if (!g) return false;
+          g.planeId = target.planeId;
+          return undefined;
+        });
+        store.setUI({ activePlaneId: target.planeId, moveNote: null });
+        actions.toast((f.label || 'The item') + " is now measured on '" + name + "'.", 'ok');
+        return true;
       };
       /**
        * "Type its length": open the item's tape-measured length field. In Review the field is in the item's
@@ -1475,6 +1667,6 @@ LP.define('ui.actions', ['catalog', 'schema', 'measure', 'sample', 'ui.imagesour
 
     return {
       createActions, parseLength, nextFeatureLabel, nextOutletLabel, wallForPoint, KINDS_FOR_TYPE, isSmallPhoto, SMALL_PHOTO_PX, replannedText,
-      surfaceKind, SURFACE_LABEL, surfaceOptionLabel, wallOfPlane, typeFitsSurface, pickRoofCandidate, steepAngleText, STEEP_ANGLES,
+      surfaceKind, SURFACE_LABEL, surfaceOptionLabel, wallOfPlane, typeFitsSurface, pickRoofCandidate, mansardSurfaceFor, steepAngleText, STEEP_ANGLES,
     };
   });

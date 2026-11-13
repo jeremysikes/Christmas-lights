@@ -2902,7 +2902,8 @@ async function runMansard(browser) {
       const shown = (id) => { const el = document.getElementById(id); return !!el && !el.hidden && el.getBoundingClientRect().height > 0; };
       const sel = document.getElementById('hint-plane');
       return { up: shown('hintbar'), text: document.getElementById('hint-text').textContent, fix: shown('hint-fix'), next: shown('hint-next'), actions: shown('hint-actions'),
-        planes: shown('hint-plane') ? Array.from(sel.options).map((o) => o.textContent) : [], fixButtons: Array.from(document.querySelectorAll('#hint-fix button')).filter((b) => b.getBoundingClientRect().height > 0).map((b) => b.textContent.trim()) };
+        planes: shown('hint-plane') ? Array.from(sel.options).map((o) => o.textContent) : [], fixButtons: Array.from(document.querySelectorAll('#hint-fix button')).filter((b) => b.getBoundingClientRect().height > 0).map((b) => b.getAttribute('aria-label') || b.textContent.trim()),
+        fixRows: new Set(Array.from(document.querySelectorAll('#hint-fix button')).filter((b) => b.getBoundingClientRect().height > 0).map((b) => Math.round(b.getBoundingClientRect().top))).size };
     });
     /** Layout: nothing wider than the window or the panel, and the pinned button whole, on top and clear of the hint bar. */
     const layout = () => act(() => {
@@ -2987,8 +2988,18 @@ async function runMansard(browser) {
         const sets = Array.from(document.querySelectorAll('.ref-item:not(.own-rect) .err-badge')).map((b) => b.textContent);
         return { text: el ? el.textContent : '', lines: document.querySelectorAll('.scale-line').length, dup: notes.filter((n) => /^Scale taken from/.test(n)).length, own, sets, pill: document.querySelector('.plane-row .pill').textContent };
       });
-      t.ok(/^Scale taken from 'Custom rectangle \(8′ 0″ × 7′ 2″\)' \(the largest measured rectangle\)\. 'Rectangle \(3′ 0″ × 5′ 0″\)' is used as a check\.$/.test(line.text) && line.lines === 1 && line.dup === 0,
-        tag + ' A: the status card says in one line where the scale comes from (' + line.text + ')');
+      t.ok(line.text === "Scale taken from the 8′ 0″ × 7′ 2″ rectangle (the largest measured rectangle). The 3′ 0″ × 5′ 0″ rectangle you marked as this wall's corners is used as a check." && line.lines === 1 && line.dup === 0,
+        tag + ' A / F10: the status card says in one line where the scale comes from, naming the rectangles by size (' + line.text + ')');
+      // F10: the rectangle editor says its rectangle is now only a check, and no label on the photo ends in a dash.
+      const f10 = await act(() => {
+        const ok = Array.from(document.querySelectorAll('.plane-editor [data-key="rect"] .ok-line')).map((x) => x.textContent).join(' ');
+        const vp = window.LightPlanApp.viewport;
+        const labels = vp.labelBoxes().map((x) => x.text);
+        return { ok, labels };
+      });
+      t.ok(/^Corners marked: 3′ 0″ × 5′ 0″ rectangle\. Used as a check: a larger measured rectangle sets the scale\.$/.test(f10.ok), tag + ' F10: the rectangle editor says its rectangle is used as a check (' + f10.ok + ')');
+      const refLabel = f10.labels.find((x) => /8′ 0″ × 7′ 2″/.test(x)) || '';
+      t.ok(refLabel === '8′ 0″ × 7′ 2″ · sets scale' && !f10.labels.some((x) => /—/.test(x)), tag + ' F10: the garage door\'s label on the photo reads "sets scale", with no dash (' + (refLabel || f10.labels.join(' | ')) + ')');
       t.ok(line.pill === 'Medium' && line.own.length === 2 && line.own.every((x) => /Expected .* measured .*[+-]?\d+(\.\d+)?%/.test(x)) && line.sets.join() === 'sets scale',
         tag + ' A: the window is listed as a check (width and height) and the garage door as what sets the scale (' + line.own.join(' | ') + ')');
       await shot('a-refs', false, '.ref-list');
@@ -3036,15 +3047,42 @@ async function runMansard(browser) {
         tag + ' C: the notice shows at once with the two actions (' + hb.text + ' [' + hb.fixButtons.join(', ') + '])');
       await layoutOk('the notice after a ridge on the wall');
       await shot('c-notice', true);
+      if (phone) {
+        // F8: on a 360 px phone the three buttons still share one row, with shorter labels.
+        await page.setViewportSize({ width: 360, height: 640 });
+        await sleep(500);
+        const narrow = await act(() => {
+          const bs = Array.from(document.querySelectorAll('#hint-fix button')).map((b) => ({ text: b.textContent.trim(), aria: b.getAttribute('aria-label'), r: b.getBoundingClientRect() }));
+          const hb2 = document.getElementById('hintbar').getBoundingClientRect();
+          return { texts: bs.map((b) => b.text).join('|'), arias: bs.map((b) => b.aria).join('|'), rows: new Set(bs.map((b) => Math.round(b.r.top))).size, minH: Math.min.apply(null, bs.map((b) => b.r.height)),
+            inside: bs.every((b) => b.r.left >= hb2.left - 0.5 && b.r.right <= hb2.right + 0.5), wide: document.documentElement.scrollWidth > window.innerWidth + 1 };
+        });
+        t.ok(narrow.rows === 1 && narrow.texts === 'Put on roof|Type length|Later' && narrow.arias === 'Put it on the roof|Type its length|Later' && narrow.inside && !narrow.wide && narrow.minH >= 36,
+          tag + ' F8: at 360 px wide the three buttons of the notice share one row, with shorter labels (' + narrow.texts + ', ' + narrow.rows + ' row)');
+        await page.screenshot({ path: path.join(OUT, 'mansard-360x640-f8-notice.png') });
+        await page.setViewportSize(size.viewport);
+        await sleep(500);
+        const wideAgain = await act(() => Array.from(document.querySelectorAll('#hint-fix button')).map((b) => b.textContent.trim()).join('|'));
+        t.ok(wideAgain === 'Put it on the roof|Type its length|Later', tag + ' F8: and the full labels come back at 390 px (' + wideAgain + ')');
+      }
 
-      // "Put it on the roof" with no roof yet: mark the eave, and the roof and the move are one undo step.
+      // "Put it on the roof" with no roof yet: say what kind of roof it is, mark its line, and the roof and the move are one undo step.
       const planesBefore = st.planes.length;
       await page.click('#hint-fix-roof');
       await sleep(400);
       st = await state();
       hb = await hint();
-      t.ok(st.mode.name === 'line' && st.mode.opts.purpose === 'roofEave' && st.mode.opts.thenMove === ridge2.id && /^A ridge sits on the roof, so mark the roof first: tap both ends of the eave where the roof slope meets 'Front wall'\.$/.test(hb.text),
-        tag + ' C: with no roof surface, "Put it on the roof" asks for the eave line first (' + hb.text + ')');
+      t.ok(st.mode.name === 'select' && hb.fix && /^What kind of roof is above 'Front wall'\? An ordinary roof slopes back from the eave\. A mansard goes up steeply first, then turns shallow\.$/.test(hb.text) && hb.fixButtons.join('|') === 'Ordinary roof|Steep roof (mansard)|Cancel',
+        tag + ' F1: with no roof surface, "Put it on the roof" first asks ordinary or steep (' + hb.text + ' [' + hb.fixButtons.join(', ') + '])');
+      t.ok(hb.fixRows === 1, tag + ' F8: the three answers share one row (' + hb.fixRows + ')');
+      await layoutOk('the question about the kind of roof');
+      await shot('f1-roof-kind', true);
+      await page.click('#hint-fix-ordinary');
+      await sleep(400);
+      st = await state();
+      hb = await hint();
+      t.ok(st.mode.name === 'line' && st.mode.opts.purpose === 'roofEave' && st.mode.opts.thenMove === ridge2.id && !st.mode.opts.steep && /^A ridge sits on the roof, so mark the roof first: tap both ends of the eave where the roof slope meets 'Front wall'\.$/.test(hb.text),
+        tag + ' C: "Ordinary roof" asks for the eave line (' + hb.text + ')');
       await shot('c-mark-roof');
       await tapImage([[1284, 545], [1648, 545]]);
       await sleep(400);
@@ -3054,7 +3092,13 @@ async function runMansard(browser) {
       t.ok(st.planes.length === planesBefore + 1 && garageRoof && garageRoof.name === 'Roof slope 1' && garageRoof.sk === 'roof' && garageRoof.derived.parentPlaneId === wall.id && garageRoof.ok && moved.planeId === garageRoof.id && moved.wrong == null && moved.ok && moved.method === 'roof-3d',
         tag + ' C: the roof is made and the ridge is measured on it (' + (moved.ft ? moved.ft.toFixed(1) + ' ft, was ' + ridge2.ft.toFixed(1) + ' ft on the wall' : 'not measured') + ')');
       hb = await hint();
-      t.ok(/is now measured on 'Roof slope 1'/.test(await toast()) && hb.up && !hb.fix && /^Ridge 2: /.test(hb.text), tag + ' C: a message says where it went, and the hint bar shows its new length (' + hb.text + ')');
+      // The garage roof is only roughly measured on this photo, so the result is a note with the tape first, not a green "done".
+      t.ok((await toast()) === '' && hb.up && hb.fix && /^Ridge 2 now reads \d+′( \d+″)? on 'Roof slope 1'\. This surface is only roughly measured, so this length is rough\. Type a tape-measured length\.$/.test(hb.text) && hb.fixButtons.join('|') === 'Type its length|Undo|OK',
+        tag + ' F3: the hint bar says where it went and that the length is rough, with "Type its length" first (' + hb.text + ' [' + hb.fixButtons.join(', ') + '])');
+      const primary = await act(() => Array.from(document.querySelectorAll('#hint-fix button.primary')).map((b) => b.textContent.trim()).join('|'));
+      t.ok(primary === 'Type its length', tag + ' F3: "Type its length" is the main button of that note (' + primary + ')');
+      await layoutOk('the note after a move to a rough roof');
+      await shot('f3-rough-note', true);
       t.ok(st.undo === 'Put Ridge 2 on a new roof slope', tag + ' C: it is one undo step (' + st.undo + ')');
       await act(() => window.LightPlanApp.actions.undo());
       await sleep(300);
@@ -3080,16 +3124,48 @@ async function runMansard(browser) {
       const rf = await act(() => { const a = document.activeElement; return { key: a ? [a.getAttribute('data-act'), a.getAttribute('data-id')].join(':') : '', inRough: !!(a && a.closest('.rough-item')), step: window.LightPlanApp.store.ui().step }; });
       t.ok(rf.key === 'feature-len:' + ridge1.id && rf.inRough && rf.step === 6, tag + ' C: in Review "Type its length" puts the cursor in that entry\'s tape field (' + rf.key + ')');
       await act(() => { if (document.activeElement) document.activeElement.blur(); });
-      // A roof surface exists now, so "Put it on the roof" moves the item straight away, in one undo step.
+      // F1: the only roof is the garage roof, which starts beside this ridge, not under it. It is not picked: the
+      // app asks what kind of roof the ridge sits on. Cancelling comes back to Review with nothing changed (F10).
+      const undoBefore = st.undo;
       await clickIn('.rough-item[data-key="rough-' + ridge1.id + '"] [data-act="put-on-roof"]');
       st = await state();
-      moved = st.features.find((f) => f.id === ridge1.id);
-      t.ok(moved.planeId === garageRoof.id && moved.wrong == null && st.step === 6 && st.undo === "Move Ridge 1 to 'Roof slope 1'" && /Ridge 1 is now measured on 'Roof slope 1'\./.test(await toast()),
-        tag + ' C: with a roof surface there, "Put it on the roof" moves the ridge to it (' + st.undo + ')');
-      await act(() => window.LightPlanApp.actions.undo());
-      await sleep(300);
+      hb = await hint();
+      t.ok(st.features.find((f) => f.id === ridge1.id).planeId === wall.id && st.step === 3 && hb.fix && /^What kind of roof is above 'Front wall'\?/.test(hb.text),
+        tag + ' F1: a roof that starts beside the ridge is not picked for it; the app asks instead (' + hb.text.slice(0, 44) + ')');
+      await page.click('#hint-fix-steep');
+      await sleep(400);
       st = await state();
-      t.ok(st.features.find((f) => f.id === ridge1.id).planeId === wall.id, tag + ' C: and one undo puts it back on the wall');
+      hb = await hint();
+      t.ok(st.mode.name === 'line' && st.mode.opts.steep === true && st.mode.opts.thenMove === ridge1.id && /where the steep roof face starts/.test(hb.text), tag + ' F1: "Steep roof (mansard)" asks for the line where the steep face starts (' + hb.text + ')');
+      await page.click('#hint-cancel');
+      await sleep(400);
+      st = await state();
+      t.ok(st.step === 6 && st.mode.name === 'select' && st.features.find((f) => f.id === ridge1.id).planeId === wall.id && st.undo === undoBefore && st.planes.length === planesBefore + 1,
+        tag + ' F10: cancelling that line goes back to Review with nothing changed (step ' + st.step + ')');
+      // F1: the ordinary answer on this mansard, with the line along the gutter, makes the ridge about three times
+      // too long. That is reported as looking wrong, with "Use a steep roof face", and never as done.
+      await clickIn('.rough-item[data-key="rough-' + ridge1.id + '"] [data-act="put-on-roof"]');
+      await page.click('#hint-fix-ordinary');
+      await sleep(400);
+      await tapImage([[400, 440], [1290, 440]]);
+      await sleep(400);
+      st = await state();
+      hb = await hint();
+      moved = st.features.find((f) => f.id === ridge1.id);
+      t.ok(moved.measuredFt > 2 * 38.4 && (await toast()) === '' && hb.fix && /^Ridge 1 now reads \d+′( \d+″)? on 'Roof slope 2'\. On the wall it read 38′ 5″, so this looks too long\. If this is a mansard roof, use a steep roof face\. Or type its length\.$/.test(hb.text) && hb.fixButtons.join('|') === 'Use a steep roof face|Type its length|Undo',
+        tag + ' F1: an ordinary roof that makes the ridge ' + Math.round(moved.measuredFt) + ' ft long is reported as looking wrong, never as done (' + hb.text + ' [' + hb.fixButtons.join(', ') + '])');
+      t.ok(hb.fixRows === 1, tag + ' F8: the three buttons of that note share one row (' + hb.fixRows + ')');
+      await layoutOk('the note after a move that looks wrong');
+      await shot('f1-looks-wrong', true);
+      await page.click('#hint-fix-usesteep');
+      await sleep(400);
+      st = await state();
+      t.ok(st.planes.length === planesBefore + 1 && st.features.find((f) => f.id === ridge1.id).planeId === wall.id && st.mode.name === 'line' && st.mode.opts.steep === true && st.mode.opts.thenMove === ridge1.id,
+        tag + ' F1: "Use a steep roof face" takes the ordinary roof back and starts the steep face for the ridge');
+      await page.click('#hint-cancel');
+      await sleep(400);
+      st = await state();
+      t.ok(st.features.find((f) => f.id === ridge1.id).planeId === wall.id && st.undo === undoBefore, tag + ' C: and the ridge is back on the wall, as before');
 
       // ---- B. A steep roof face: add it, set how steep it is, add the upper roof.
       await goStep(2);
@@ -3108,6 +3184,22 @@ async function runMansard(browser) {
       t.ok(steep && steep.name === 'Steep roof face 1' && steep.kind === 'roof' && steep.derived.steep === true && steep.derived.angleDeg === 70 && steep.derived.pitch === null && steep.derived.parentPlaneId === wall.id && st.undo === 'Add steep roof face',
         tag + ' B: the steep face is stored as a roof with steep true and a 70 degree guess');
       t.ok(steep.ok && steep.mode === 'roof-3d' && steep.pitch.source === 'guess' && Math.round(steep.pitch.angleDeg) === 70 && steep.level === 'low', tag + ' B: it is measured in 3D at 70 degrees and rated Low while the angle is a guess');
+      // F5: a message says what comes next, and the panel has moved to "How steep is it?" (on a phone, in the half-height sheet).
+      await sleep(500);
+      const inView = (sel) => act((q) => {
+        const el = document.querySelector(q);
+        if (!el) return { there: false };
+        const r = el.getBoundingClientRect();
+        const pr = document.getElementById('panel-root').getBoundingClientRect();
+        const bar = document.getElementById('action-bar');
+        const br = bar && !bar.hidden ? bar.getBoundingClientRect() : null;
+        const bottom = Math.min(pr.bottom, window.innerHeight, br && br.height ? br.top : Infinity);
+        return { there: true, top: Math.round(r.top), seen: r.top >= pr.top - 1 && r.top + 24 <= bottom, sheet: document.getElementById('lp-app').getAttribute('data-sheet') };
+      }, sel);
+      const f5 = await inView('.steep-editor h4');
+      t.ok((await toast()) === 'Steep roof face added. Now say how steep it is, then add the upper roof.' && f5.there && f5.seen && (!phone || f5.sheet === 'half'),
+        tag + ' F5: after the steep face is made a message says what comes next, and "How steep is it?" is in view' + (phone ? ' in the half-height sheet' : '') + ' (' + (await toast()) + ', top ' + f5.top + ')');
+      await shot('f5-steep-made', true);
       if (phone) { await act(() => window.LightPlanApp.actions.setSheet('full')); await sleep(350); }
       let ed = await act(() => ({
         chips: Array.from(document.querySelectorAll('.angle-chip')).map((b) => b.textContent.trim() + (b.getAttribute('aria-pressed') === 'true' ? '*' : '')),
@@ -3120,8 +3212,22 @@ async function runMansard(browser) {
       t.ok(ed.chips.join(' ') === '60° 65° 70°* 75° 80°' && /^Slope70° from level \(a typical angle, not measured\)$/.test(ed.slope) && !ed.pitchRow && /^Using 70° from level\. This is a guess\.$/.test(ed.result),
         tag + ' B: typical angles are offered with 70 picked, and the slope reads in degrees (' + ed.chips.join(' ') + ' / ' + ed.slope + ')');
       t.ok(ed.kinds.join('|') === 'Front wall=Wall|Roof slope 1=Roof slope|Steep roof face 1=Steep roof face' && ed.offer, tag + ' B: the surface list tells the kinds apart, and the upper roof is offered (' + ed.kinds.join(', ') + ')');
+      const f4a = await act(() => (document.querySelector('.steep-editor .hint') || {}).textContent || '');
+      t.ok(/A picked angle is a guess, so lengths on this face are rated Low\. Measuring it makes them more exact\.$/.test(f4a) && !/until you measure it/.test(f4a), tag + ' F4: the hint no longer promises a better rating for measuring (' + f4a.slice(-78) + ')');
       await layoutOk('step 2, steep face');
       await shot('b-steep-editor', true, '.steep-editor');
+      if (phone) {
+        // F8: the five angle chips share one row down to 360 px.
+        await page.setViewportSize({ width: 360, height: 640 });
+        await sleep(450);
+        const chipRows = await act(() => { const cs = Array.from(document.querySelectorAll('.angle-chip')).map((c) => c.getBoundingClientRect()); return { rows: new Set(cs.map((r) => Math.round(r.top))).size, minH: Math.min.apply(null, cs.map((r) => r.height)), minW: Math.min.apply(null, cs.map((r) => r.width)) }; });
+        t.ok(chipRows.rows === 1 && chipRows.minH >= 40 && chipRows.minW >= 44, tag + ' F8: at 360 px wide the five angle chips share one row (' + chipRows.rows + ' row, ' + Math.round(chipRows.minW) + ' px each)');
+        await page.evaluate(() => { const el = document.querySelector('.steep-editor'); if (el) el.scrollIntoView({ block: 'center' }); });
+        await sleep(200);
+        await page.screenshot({ path: path.join(OUT, 'mansard-360x640-f8-angles.png') });
+        await page.setViewportSize(size.viewport);
+        await sleep(450);
+      }
 
       await clickIn('.angle-chip[data-deg="75"]');
       st = await state();
@@ -3152,6 +3258,49 @@ async function runMansard(browser) {
         tag + ' B: the panel shows the resulting angle and the numbers again (' + ed.result + ' / ' + ed.fields + ')');
       await layoutOk('step 2, steep face measured');
       await shot('b-steep-measured', false, '.steep-editor');
+      // F4: measured, yet still Low on this photo: one line says why (the wall's scale), in place of a promise.
+      const f4b = await act(() => (document.querySelector('[data-key="steep-still-rough"]') || {}).textContent || '');
+      t.ok(steep.level === 'low' && /^Lengths on this face are still rated Low, because the scale of 'Front wall' is rough\. A larger measured rectangle on that wall would lift them\.$/.test(f4b),
+        tag + ' F4: measured but still Low, and the editor says why (' + f4b + ')');
+      // F7: three numbers that do not fit are refused; clearing one and leaving the field must not quietly store the other two.
+      const tapeField = (k) => page.locator('[data-act="steep-tape"][data-field="' + k + '"]');
+      const leave = async (k, value) => { await tapeField(k).fill(value); await tapeField(k).evaluate((el) => { el.dispatchEvent(new Event('change', { bubbles: true })); el.blur(); }); await sleep(300); };
+      const pitchNow = async () => (await state()).planes.find((p) => p.sk === 'steep').derived.pitch;
+      const pitchBefore = await pitchNow();
+      await tapeField('up').fill('8');
+      await tapeField('back').fill('3');
+      await tapeField('slope').fill('20');
+      await clickIn('[data-act="steep-use"]');
+      t.ok(/^These three numbers do not fit together\./.test(await toast()) && JSON.stringify(await pitchNow()) === JSON.stringify(pitchBefore), tag + ' F7: three numbers that do not fit are refused (' + (await toast()) + ')');
+      await leave('back', '');
+      st = await state();
+      t.ok(JSON.stringify(await pitchNow()) === JSON.stringify(pitchBefore) && st.undo === 'Measure how steep the roof face is',
+        tag + ' F7: clearing one field and leaving it does not store a slope from the stale third number (' + JSON.stringify(await pitchNow()) + ')');
+      // F6: numbers that are not a steep face are refused; Up shorter than Back is stored with a question and a swap button.
+      await tapeField('up').fill('1');
+      await tapeField('back').fill('8');
+      await tapeField('slope').fill('');
+      await clickIn('[data-act="steep-use"]');
+      t.ok(/^This is not a steep face: it rises less than 20° from level\. Check that Up and Back are not swapped, or add it as a Roof slope\.$/.test(await toast()) && JSON.stringify(await pitchNow()) === JSON.stringify(pitchBefore),
+        tag + ' F6: 1 ft up and 8 ft back is refused in plain words and nothing is stored (' + (await toast()) + ')');
+      await tapeField('up').fill('3');
+      await clickIn('[data-act="steep-use"]');
+      let swap = await act(() => { const c = document.querySelector('[data-key="steep-swap"]'); return c ? { text: c.querySelector('p').textContent, button: (c.querySelector('button') || {}).textContent || '' } : null; });
+      let pn = await pitchNow();
+      t.ok(pn && pn.rise === 3 && pn.run === 8 && swap && /^Up is shorter than Back, so this face leans back more than it rises\. Are the two numbers swapped\?$/.test(swap.text) && swap.button.trim() === 'Swap Up and Back',
+        tag + ' F6: 3 ft up and 8 ft back is stored, with the question whether the two are swapped (' + (swap ? swap.text : 'no warning') + ')');
+      await layoutOk('step 2, steep face with the swap question');
+      await shot('f6-swap', true, '[data-key="steep-swap"]');
+      await clickIn('[data-act="steep-swap"]');
+      pn = await pitchNow();
+      swap = await act(() => !!document.querySelector('[data-key="steep-swap"]'));
+      t.ok(pn && pn.rise === 8 && pn.run === 3 && !swap, tag + ' F6: "Swap Up and Back" stores 8 up and 3 back, and the question goes away');
+      // Back to the measured slope the rest of the walk uses.
+      await act(() => { window.LightPlanApp.actions.undo(); window.LightPlanApp.actions.undo(); });
+      await sleep(350);
+      st = await state();
+      steep = st.planes.find((p) => p.sk === 'steep');
+      t.ok(JSON.stringify(steep.derived.pitch) === JSON.stringify(pitchBefore) && st.undo === 'Measure how steep the roof face is', tag + ' F6: two undos bring the first measured slope back');
 
       // The upper roof: its line is drawn on the steep face.
       await clickIn('[data-act="add-plane"][data-kind="upper"]');
@@ -3164,6 +3313,15 @@ async function runMansard(browser) {
       const upper = st.planes.find((p) => p.sk === 'upper');
       t.ok(upper && upper.name === 'Upper roof 1' && upper.kind === 'roof' && upper.derived.parentPlaneId === steep.id && upper.derived.steep === undefined && upper.ok && upper.mode === 'roof-3d' && st.undo === 'Add upper roof',
         tag + ' B: the upper roof is a roof whose parent is the steep face, measured in 3D');
+      await sleep(500);
+      const f5u = await inView('[data-key="upper-pitch"]');
+      const upPitch = await act(() => { const box = document.querySelector('[data-key="upper-pitch"]'); const sel = box ? box.querySelector('select') : null;
+        return box ? { label: (box.querySelector('label, .field-label') || {}).textContent || '', first: sel ? sel.options[0].textContent : '', hint: (box.querySelector('.hint') || {}).textContent || '' } : null; });
+      t.ok((await toast()) === 'Upper roof added. Now pick its pitch. The top of a mansard is usually flatter than the rest of the house.' && f5u.there && f5u.seen,
+        tag + ' F5: after the upper roof is made a message says what comes next, and its pitch is in view (' + (await toast()) + ')');
+      t.ok(upPitch && /^Borrow the house pitch \(\d+\/12\)$/.test(upPitch.first) && /^The top of a mansard is usually flatter than the rest of the house\. Pick its own pitch if you know it\. Until then lengths on this roof are rated Low\.$/.test(upPitch.hint) && upper.pitch.source === 'house' && upper.level === 'low',
+        tag + ' F10 / B1: the upper roof only borrows the house pitch, says so, and is rated Low until its own pitch is picked (' + (upPitch ? upPitch.first : 'no picker') + ', ' + upper.pitch.source + ')');
+      await shot('f5-upper-made', true);
       if (phone) { await act(() => window.LightPlanApp.actions.setSheet('full')); await sleep(350); }
       const up = await act(() => ({
         kinds: Array.from(document.querySelectorAll('.plane-row')).map((r) => r.querySelector('.plane-kind').textContent).join('|'),
@@ -3200,6 +3358,12 @@ async function runMansard(browser) {
       t.ok(st.mode.name === 'trace' && st.mode.opts.planeId === steep.id && hb.planes.join('|') === 'Front wall|Roof slope 1|Steep roof face 1|Upper roof 1', tag + ' B: an eave traced with the steep face picked goes on it, and the picker lists every surface (' + hb.planes.join(', ') + ')');
       await layoutOk('tracing on the steep face');
       await shot('b-trace-steep');
+      // F9: the surface picker in the hint bar is a full-size touch target.
+      const pick = await act(() => { const r = document.getElementById('hint-plane').getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; });
+      t.ok(pick.h >= 44, tag + ' F9: the surface picker in the hint bar is ' + pick.h + ' px tall');
+      // F2: step 3 says where mansard items go.
+      const mNote = await act(() => (document.querySelector('[data-key="mansard-note"]') || {}).textContent || '');
+      t.ok(/^On a mansard, trace the trim line, corner edges and dormers on the steep roof face, and the top edge on the upper roof\. Use Rake for the leaning corner edges\./.test(mNote), tag + ' F2: step 3 says which surface mansard items belong on (' + mNote.slice(0, 60) + ')');
       await tapImage([[440, 310], [1250, 310]]);
       await page.click('#hint-finish');
       await sleep(450);
@@ -3221,6 +3385,64 @@ async function runMansard(browser) {
       const topEdge = st.features[st.features.length - 1];
       t.ok(topEdge.planeId === upper.id && topEdge.ok && topEdge.method === 'roof-3d' && topEdge.ft > 30 && topEdge.ft < 130, tag + ' B: the top edge is measured on the upper roof (' + (topEdge.ft ? topEdge.ft.toFixed(1) : '?') + ' ft, ' + topEdge.level + ')');
       await act(() => window.LightPlanApp.actions.finishTracing());
+      await sleep(250);
+      // F2: the upper roof is the active surface now. A corner edge traced with Rake lands on the steep face all the
+      // same, because that is where it is drawn; so does a dormer traced as a window.
+      st = await state();
+      t.ok(st.active === upper.id, tag + ' F2: the upper roof is the active surface after the top edge');
+      await clickIn('[data-act="trace-type"][data-type="rake"]');
+      hb = await hint();
+      t.ok(/^Tap along the gable rake or the leaning corner edge, corner by corner\./.test(hb.text), tag + ' F2: the rake hint names the leaning corner edge (' + hb.text + ')');
+      await tapImage([[400, 440], [440, 310]]);
+      const pickedLive = await act(() => { const s = document.getElementById('hint-plane'); return s.options[s.selectedIndex].textContent; });
+      await page.click('#hint-finish');
+      await sleep(450);
+      st = await state();
+      const corner = st.features[st.features.length - 1];
+      t.ok(corner.type === 'rake' && corner.planeId === steep.id && corner.wrong == null && pickedLive === 'Steep roof face 1' && corner.ft > 3 && corner.ft < 20,
+        tag + ' F2: a corner edge traced with the upper roof active lands on the steep face (' + pickedLive + ', ' + (corner.ft ? corner.ft.toFixed(1) : '?') + ' ft)');
+      await act((id) => { window.LightPlanApp.actions.finishTracing(); window.LightPlanApp.actions.setActivePlane(id); window.LightPlanApp.actions.startTrace('window'); }, upper.id);
+      await sleep(300);
+      await tapImage([[640, 410], [800, 410], [800, 335], [640, 335]]);
+      // On a phone at fit zoom the fourth tap can land on the first point and close the outline by itself.
+      if ((await state()).mode.name === 'trace') await page.click('#hint-finish');
+      await sleep(450);
+      st = await state();
+      const dormer = st.features[st.features.length - 1];
+      t.ok(dormer.type === 'window' && dormer.planeId === steep.id && dormer.wrong == null, tag + ' F2: a dormer traced as a window goes on the steep face, not the wall or the upper roof');
+      // Forced onto the upper roof with the picker, the corner edge is flagged at once, like a ridge on a wall.
+      await act(() => { window.LightPlanApp.actions.finishTracing(); window.LightPlanApp.actions.startTrace('rake'); });
+      await sleep(300);
+      await page.selectOption('#hint-plane', upper.id);
+      await sleep(300);
+      await tapImage([[1290, 440], [1250, 310]]);
+      await page.click('#hint-finish');
+      await sleep(450);
+      st = await state();
+      const forced = st.features[st.features.length - 1];
+      hb = await hint();
+      t.ok(forced.planeId === upper.id && forced.wrong === 'below' && forced.level === 'low' && hb.fix && /^Rake \d is drawn below the line where 'Upper roof 1' starts, so it is not on that roof\.$/.test(hb.text) && hb.fixButtons.join('|') === 'Put it on the surface below|Type its length|Later',
+        tag + ' F2: an item forced onto a roof it lies below is flagged at once (' + hb.text + ' [' + hb.fixButtons.join(', ') + '])');
+      t.ok(hb.fixRows === 1, tag + ' F8: the three buttons of that notice share one row (' + hb.fixRows + ')');
+      await layoutOk('the notice for an item below its roof');
+      await shot('f2-below-notice', true);
+      await page.click('#hint-fix-later');
+      await sleep(300);
+      await clickIn('[data-act="select-feature"][data-id="' + forced.id + '"]');
+      const lowCard = await act(() => { const c = Array.from(document.querySelectorAll('.feat-editor .callout.warn')).find((x) => /below the line/.test(x.textContent)); return c ? { text: c.querySelector('p').textContent, buttons: Array.from(c.querySelectorAll('button')).map((b) => b.textContent.trim()).join('|') } : null; });
+      t.ok(lowCard && /^This item is drawn below the line where 'Upper roof 1' starts, so it is not on that roof and its length is wrong\.$/.test(lowCard.text) && lowCard.buttons === "Put it on 'Steep roof face 1'|Type its length",
+        tag + ' F2: its card says so and offers the surface below (' + (lowCard ? lowCard.buttons : 'no callout') + ')');
+      await layoutOk('step 3, card of an item below its roof');
+      await shot('f2-below-card', true, '.feat-editor .callout.warn');
+      await clickIn('.feat-editor [data-act="put-on-plane"]');
+      st = await state();
+      const fixedF = st.features.find((f) => f.id === forced.id);
+      t.ok(fixedF.planeId === steep.id && fixedF.wrong == null && st.undo === "Move " + forced.label + " to 'Steep roof face 1'", tag + ' F2: the button moves it to the steep face in one undo step (' + st.undo + ')');
+      // Take the three extra items away again, so the rest of the walk is as before.
+      for (let i = 0; i < 4; i++) { await act(() => window.LightPlanApp.actions.undo()); await sleep(120); }
+      st = await state();
+      t.ok(st.features.length === 4 && st.undo === 'Trace eave', tag + ' F2: four undos take the move and the three items back (' + st.features.length + ' items, ' + st.undo + ')');
+      await act(() => window.LightPlanApp.actions.select(null));
       await sleep(250);
       // No "wrong surface" warning for an eave on a steep face or an upper roof.
       await clickIn('[data-act="select-feature"][data-id="' + trim.id + '"]');
@@ -3275,8 +3497,17 @@ async function runMansard(browser) {
       await clickIn('.feat-editor [data-act="put-on-roof"]');
       st = await state();
       r3 = st.features.find((f) => f.id === ridge3.id);
-      t.ok(/moves it to 'Upper roof 1'\. You can pick another surface after\./.test(note) && r3.planeId === upper.id && r3.wrong == null && r3.ok && /If it belongs on another roof surface, change Surface on its card\./.test(await toast()) && st.undo === "Move Ridge 3 to 'Upper roof 1'",
-        tag + ' C: of three roof surfaces the one above the ridge is chosen (Upper roof 1), and the message says it can be changed (' + (r3.ft ? r3.ft.toFixed(1) + ' ft' : '?') + ')');
+      t.ok(/moves it to 'Upper roof 1'\. You can pick another surface after\./.test(note) && r3.planeId === upper.id && r3.wrong == null && r3.ok && st.undo === "Move Ridge 3 to 'Upper roof 1'",
+        tag + ' C: of three roof surfaces the one above the ridge is chosen (Upper roof 1) (' + (r3.ft ? r3.ft.toFixed(1) + ' ft' : '?') + ')');
+      // F3: the upper roof is seen almost edge-on. The result is a note that says so, with the tape first; no green message.
+      hb = await hint();
+      t.ok((await toast()) === '' && hb.fix && /^Ridge 3 now reads \d+′( \d+″)? on 'Upper roof 1'\. This roof is seen almost edge-on, so this length is rough\. Type a tape-measured length\.$/.test(hb.text) && hb.fixButtons.join('|') === 'Type its length|Undo|OK',
+        tag + ' F3: a move to the upper roof is reported as rough, with "Type its length" first (' + hb.text + ')');
+      await shot('f3-upper-rough', true);
+      await page.click('#hint-fix-ok');
+      await sleep(300);
+      hb = await hint();
+      t.ok(!hb.fix && r3.planeId === upper.id, tag + ' F3: OK closes the note and leaves the ridge on the upper roof');
       await page.selectOption('.feat-editor [data-act="feature-plane"]', garageRoof.id);
       await sleep(300);
       st = await state();

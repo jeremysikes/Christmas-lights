@@ -51,6 +51,9 @@ LP.define('ui.store', ['catalog', 'plan', 'ui.persist'], function (catalog, plan
       notice: null,          // persistent note: {kind:'storage'|'unreadable'|'foreign', ...}
       afterTrace: null,      // {featureId, type} right after a trace is finished: the hint bar offers what to trace next
       focusTape: null,       // {featureId, n}: the panels put the cursor in this item's tape-measured length field (once per n)
+      roofAsk: null,         // {featureId, planeId, returnStep}: the hint bar asks what kind of roof the item sits on
+      moveNote: null,        // {featureId, planeId, kind: 'rough' | 'wrong', text, canSteep}: how a move to a roof turned out
+      scrollTo: null,        // {key, planeId, n}: the panels scroll to this part of a surface's editor (once per n)
     };
   }
 

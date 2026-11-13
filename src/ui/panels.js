@@ -574,17 +574,39 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
     function scaleLine(sol) {
       const c = sol && sol.ok && sol.calib;
       if (!c || !c.rectAuto) return null;
-      const note = arr(sol.notes).find((n) => typeof n === 'string' && /^Scale taken from/.test(n));
-      if (note) return note;
       const why = c.rectWhy === 'steadiest' ? 'the measured rectangle that gives the steadiest scale' : 'the largest measured rectangle';
-      return 'Scale taken from ' + (c.rectLabel ? "'" + c.rectLabel + "'" : 'another rectangle') + ' (' + why + '). The rectangle you marked on the wall is used as a check.';
+      const own = arr(c.rectCandidates).find((x) => x && x.from === 'rect');
+      const mine = own && own.label ? rectWords(own.label) + " you marked as this wall's corners" : 'The rectangle you marked as this wall\'s corners';
+      return 'Scale taken from ' + (c.rectLabel ? rectWords(c.rectLabel) : 'another rectangle') + ' (' + why + '). ' + capFirst(mine) + ' is used as a check.';
     }
+    /**
+     * A rectangle by what the homeowner knows of it: "the 8′ 0″ × 7′ 2″ rectangle" for one whose size was typed
+     * (core labels those "Custom rectangle (…)" or "Rectangle (…)"), "the double garage door (16 × 7 ft)" for a preset.
+     */
+    function rectWords(label) {
+      const text = String(label || '').trim();
+      const m = /^(?:Custom rectangle|Rectangle) \((.+)\)$/.exec(text);
+      if (m) return 'the ' + m[1] + ' rectangle';
+      return text ? 'the ' + text.charAt(0).toLowerCase() + text.slice(1) : 'the rectangle';
+    }
+    const isScaleNote = (n) => typeof n === 'string' && /^Scale taken from/.test(n);
     /**
      * Does this item need the "put it on the roof" fix? m is its measurement: a ridge drawn on a wall
      * (m.wrongSurface 'roof') whose length is not tape-measured yet.
      */
     function needsRoof(f, m) {
       return !!(f && m && m.wrongSurface === 'roof' && !(isNum(f.overrideFt) && f.overrideFt > 0));
+    }
+    /**
+     * Does this item need the "put it on the surface below" fix? It is on a roof but drawn below the line where
+     * that roof starts (m.wrongSurface 'below'), and its length is not tape-measured yet.
+     */
+    function needsLower(f, m) {
+      return !!(f && m && m.wrongSurface === 'below' && !(isNum(f.overrideFt) && f.overrideFt > 0));
+    }
+    /** The surface an item drawn below its roof's line would move to (a candidate of misplacedFeatures), or null. */
+    function lowerTarget(project, f, item) {
+      return arr(item && item.candidates).find((c) => !c.below && actionsModule.typeFitsSurface(project, f.type, byId(project.planes, c.planeId))) || null;
     }
     /** The first two sentences of core's message for a misplaced item (what is wrong, without the "do this"). */
     function wrongSurfaceWhy(item) {
@@ -596,7 +618,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
     function roofFixNote(project, f, item) {
       const target = item ? actionsModule.pickRoofCandidate(project, f, item.candidates) : null;
       if (target) return "Put it on the roof moves it to '" + (target.name || 'the roof') + "'" + (item.candidates.length > 1 ? '. You can pick another surface after.' : '.');
-      return 'No roof is marked above this wall yet. Put it on the roof has you mark where the roof starts, then moves the item.';
+      if (item && arr(item.candidates).length) return 'No roof marked so far starts under this item. Put it on the roof asks what kind of roof it is, has you mark where it starts, then moves the item.';
+      return 'No roof is marked above this wall yet. Put it on the roof asks what kind of roof it is, has you mark where it starts, then moves the item.';
     }
     const SOURCE_KIND = { upload: 'Uploaded photo', camera: 'Phone camera', sample: 'Sample house', streetview: 'Street-level screenshot', aerial: 'Aerial view' };
     /**
@@ -625,6 +648,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       'To tap a garage door or the front door instead, choose it under "What is it?" first.';
     const WASTE_NOTE = 'Add 10% for waste, corners and drops to the outlet';
     const RAKE_NOTE = 'A rake is the sloped edge of a gable roof, from the eave up to the peak.';
+    const MANSARD_NOTE = 'On a mansard, trace the trim line, corner edges and dormers on the steep roof face, and the top edge on the upper roof. ' +
+      'Use Rake for the leaning corner edges. LightPlan picks the surface from where you tap, and you can change it with "On" above the photo.';
     const PHOTO_TIPS = [
       'Stand across the street so the whole front of the house fits in the photo.',
       'Hold the phone level at chest height and use the main (1×) lens.',
@@ -764,13 +789,13 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         store, project, ui, plan, image, planes, features,
         config: plan.library.config,
         sols: plan.measured.planes || {},
-        // Items on the wrong kind of surface that have a fix here (a ridge drawn on a wall), by feature id.
+        // Items on the wrong surface that have a fix here (a ridge drawn on a wall, an item below its roof's line), by feature id.
         misplaced: (() => {
           let memo = null;
           return () => {
             if (!memo) {
               memo = {};
-              for (const it of arr(measure.misplacedFeatures(project, plan.measured))) if (it && it.wants === 'roof') memo[it.featureId] = it;
+              for (const it of arr(measure.misplacedFeatures(project, plan.measured))) if (it && (it.wants === 'roof' || it.wants === 'below')) memo[it.featureId] = it;
             }
             return memo;
           };
@@ -939,7 +964,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         const text = steepSlopeText(sol && sol.pitch ? sol.pitch : storedSteepPitch(pl.derived));
         if (text) statusRows.push(['Slope', text]);
       } else if (pl.kind === 'roof' && sol && sol.pitch) {
-        statusRows.push(['Pitch', sol.pitch.rise + '/' + sol.pitch.run + (sol.pitch.source === 'estimated' ? ' (estimated)' : sol.pitch.source === 'default' ? ' (assumed)' : '')]);
+        statusRows.push(['Pitch', sol.pitch.rise + '/' + sol.pitch.run + (sol.pitch.source === 'estimated' ? ' (estimated)' : sol.pitch.source === 'default' ? ' (assumed)' : sol.pitch.source === 'house' ? ' (borrowed from the house, not measured here)' : '')]);
       }
       // The scale came from a measured rectangle other than the one marked as the wall's corners: say so, once.
       const scaleText = pl.kind === 'wall' ? scaleLine(sol) : null;
@@ -950,7 +975,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       if (zoomWhy) kids.push(callout('warn', zoomWhy, { key: 'zoomed-out' }));
 
       if (pl.kind === 'wall') {
-        kids.push(rectEditor(ctx, pl));
+        kids.push(rectEditor(ctx, pl, sol));
         kids.push(refEditor(ctx, pl, sol));
       } else {
         const what = sk === 'steep' ? 'the bottom line' : sk === 'upper' ? 'the trim line' : pl.kind === 'roof' ? 'eave line' : 'wall base line';
@@ -962,7 +987,16 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           const opts = [['', houseText]].concat(pitchOptions());
           const val = pp ? pitchValue(pp) : '';
           if (pp && !opts.some((o) => o[0] === val)) opts.push([val, pp.rise + '/' + pp.run]);
-          kids.push(field('Pitch of this slope', selectInput({ act: 'plane-pitch', value: val, options: opts, data: { id: pl.id } })));
+          if (sk === 'upper') {
+            // The top of a mansard is rarely as steep as the rest of the house, so the house pitch is only borrowed.
+            opts[0] = ['', 'Borrow the house pitch (' + housePitch.rise + '/' + housePitch.run + ')'];
+            kids.push(h('div', { class: 'sub', 'data-key': 'upper-pitch' },
+              field('Pitch of this upper roof', selectInput({ act: 'plane-pitch', value: val, options: opts, data: { id: pl.id } })),
+              h('p', { class: 'hint' }, pp ? 'Lengths on this roof use this pitch.'
+                : 'The top of a mansard is usually flatter than the rest of the house. Pick its own pitch if you know it. Until then lengths on this roof are rated Low.')));
+          } else {
+            kids.push(field('Pitch of this slope', selectInput({ act: 'plane-pitch', value: val, options: opts, data: { id: pl.id } })));
+          }
         }
         kids.push(h('div', { class: 'btn-row' }, button('Redraw ' + what, { act: 'redraw-line', data: { id: pl.id }, icon: 'ruler', cls: 'small' })));
         if (sk === 'steep') {
@@ -985,7 +1019,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const issues = sol ? arr(sol.warnings).filter((w) => !/disagree/i.test(w)) : [];
       for (const w of issues) kids.push(callout('warn', w, { key: 'pw-' + hashKey(w) }));
       // Notes explain how the plane was solved (e.g. separate horizontal/vertical scales, a promoted rectangle).
-      for (const n of sol ? arr(sol.notes) : []) { if (n !== scaleText) kids.push(callout('info', n, { key: 'pn-' + hashKey(n) })); }
+      for (const n of sol ? arr(sol.notes) : []) { if (!(scaleText && isScaleNote(n))) kids.push(callout('info', n, { key: 'pn-' + hashKey(n) })); }
       return section(pl.name || 'Surface', kids, { key: 'plane-' + pl.id, cls: 'plane-editor' });
     }
 
@@ -1012,9 +1046,12 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       const val = (k) => (draft ? draft[k] || '' : stored && shown.includes(k) ? ctx.fmt(stored[k]) : '');
       const tape = (k, label, ph) => field(label, textInput({ act: 'steep-tape', value: val(k), placeholder: stored && !draft && !shown.includes(k) ? ctx.fmt(stored[k]) : ph, data: { id: pl.id, field: k } }));
       const angle = sol && sol.pitch && isNum(sol.pitch.angleDeg) ? sol.pitch.angleDeg : null;
+      const wall = actionsModule.wallOfPlane(ctx.project, pl);
+      const wallName = wall && wall.name ? "'" + wall.name + "'" : 'its wall';
+      const stillRough = !!(sol && sol.ok && sol.confidence && sol.confidence.level === 'low' && isNum(sol.uncertaintyPct) && sol.uncertaintyPct > 6);
       return h('div', { class: 'sub steep-editor', 'data-key': 'steep' },
         h('h4', null, 'How steep is it?'),
-        h('p', { class: 'hint' }, 'Pick the closest angle, counted up from level ground. Most mansard faces are near 70°. A picked angle is a guess, so lengths on this face stay rated Low until you measure it.'),
+        h('p', { class: 'hint' }, 'Pick the closest angle, counted up from level ground. Most mansard faces are near 70°. A picked angle is a guess, so lengths on this face are rated Low. Measuring it makes them more exact.'),
         h('div', { class: 'angle-row', role: 'group', 'aria-label': 'Typical angles' }, chips),
         h('h4', null, 'I measured it'),
         h('p', { class: 'hint' }, 'Tape-measure two of these and LightPlan works out the angle: how far the face goes straight up, how far it leans back, or its sloped height.'),
@@ -1025,10 +1062,17 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         h('div', { class: 'btn-row' }, button('Use these numbers', { act: 'steep-use', data: { id: pl.id }, icon: 'ruler' })),
         measured && angle != null
           ? h('p', { class: 'ok-line', 'data-key': 'steep-result' }, icon('check'), h('span', null, 'Measured: ' + actionsModule.steepAngleText(angle) + ' from level (' + ctx.fmt(stored.up) + ' up, ' + ctx.fmt(stored.back) + ' back, ' + ctx.fmt(stored.slope) + ' along the slope).'))
-          : h('p', { class: 'hint', 'data-key': 'steep-result' }, 'Using ' + guess + '° from level. This is a guess.'));
+          : h('p', { class: 'hint', 'data-key': 'steep-result' }, 'Using ' + guess + '° from level. This is a guess.'),
+        // Up shorter than Back is possible, but far more often the two numbers were typed the wrong way round.
+        measured && stored.up < stored.back
+          ? callout('warn', 'Up is shorter than Back, so this face leans back more than it rises. Are the two numbers swapped?', {
+            key: 'steep-swap', after: h('div', { class: 'btn-row' }, button('Swap Up and Back', { act: 'steep-swap', data: { id: pl.id }, cls: 'small' })),
+          }) : null,
+        // Measured, yet still rated Low: the limit is the wall's scale, which this editor cannot change.
+        measured && stillRough ? h('p', { class: 'hint', 'data-key': 'steep-still-rough' }, 'Lengths on this face are still rated Low, because the scale of ' + wallName + ' is rough. A larger measured rectangle on that wall would lift them.') : null);
     }
 
-    function rectEditor(ctx, pl) {
+    function rectEditor(ctx, pl, sol) {
       const c = ctx.ui.calib;
       const rect = pl.rect;
       const presetId = rect ? rect.presetId || (rect.widthFt ? 'custom-rect' : 'unknown') : c.rectPresetId;
@@ -1050,6 +1094,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         } else {
           text = 'Corners marked. The size is unknown, so the scale comes from the reference lengths.';
         }
+        // Another measured rectangle sets the scale (measure: calib.rectAuto): this one only checks it.
+        if (sol && sol.ok && sol.calib && sol.calib.rectAuto) text += ' Used as a check: a larger measured rectangle sets the scale.';
         kids.push(h('p', { class: 'ok-line' }, icon('check'), h('span', null, text)));
         if (!rect.widthFt && !pl.refs.length) kids.push(callout('info', 'The size is unknown, so add at least one reference length below to set the scale.'));
       }
@@ -1185,6 +1231,7 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           toggle('Snap', { act: 'view-toggle', data: { key: 'snap' }, checked: ui.view.snap })),
         h('p', { class: 'hint' }, 'Lines: tap each corner, then Finish or double-tap. Windows and bushes: tap around and tap the first point to close. Trees and columns: tap the base, then the top.'),
         h('p', { class: 'hint', 'data-key': 'rake-note' }, RAKE_NOTE),
+        planes.some((p) => surfaceKind(ctx.project, p) === 'steep') ? h('p', { class: 'hint', 'data-key': 'mansard-note' }, MANSARD_NOTE) : null,
       ], { key: 'types' }));
 
       // Feature list
@@ -1229,6 +1276,17 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
             button('Put it on the roof', { act: 'put-on-roof', data: { id: f.id }, cls: 'small primary' }),
             button('Type its length', { act: 'type-length', data: { id: f.id }, cls: 'small' })),
           h('p', { class: 'hint' }, roofFixNote(ctx.project, f, item))],
+        }));
+      }
+      // Drawn below the line where its roof starts: it sits on the surface under that roof.
+      if (needsLower(f, m)) {
+        const item = ctx.misplaced()[f.id] || null;
+        const to = lowerTarget(ctx.project, f, item);
+        kids.push(callout('warn', 'This item is drawn below the line where \'' + (fpl ? fpl.name : 'this roof') + '\' starts, so it is not on that roof and its length is wrong.', {
+          key: 'bl-' + f.id,
+          after: [h('div', { class: 'btn-row wrap' },
+            to ? button('Put it on \'' + (to.name || 'the surface below') + '\'', { act: 'put-on-plane', data: { id: f.id, plane: to.planeId }, cls: 'small primary' }) : null,
+            button('Type its length', { act: 'type-length', data: { id: f.id }, cls: 'small' }))],
         }));
       }
       if (fpl && kinds && !actionsModule.typeFitsSurface(ctx.project, f.type, fpl)) {
@@ -2012,6 +2070,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         // A ridge drawn on a wall: the same two fixes as on its card in step 3.
         const m = ctx.plan.measured.features[it.featureId];
         const wrong = needsRoof(f, m) ? ctx.misplaced()[it.featureId] || {} : null;
+        const low = !wrong && needsLower(f, m) ? ctx.misplaced()[it.featureId] || {} : null;
+        const lowTo = low ? lowerTarget(ctx.project, f, low) : null;
         return h('li', { class: 'rough-item', 'data-key': 'rough-' + it.featureId },
           h('p', { class: 'rough-title' }, swatch(ft.color, 'dot'), h('strong', null, it.label), pill(it.level)),
           h('p', { class: 'rough-text' }, capFirst(it.text) + '.'),
@@ -2019,6 +2079,11 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
             h('p', { class: 'rough-text' }, wrongSurfaceWhy(wrong) || 'A ridge sits on the roof, behind the wall. Measured on the wall it comes out too short.'),
             h('div', { class: 'btn-row wrap' },
               button('Put it on the roof', { act: 'put-on-roof', data: { id: it.featureId }, cls: 'small primary' }),
+              button('Type its length', { act: 'type-length', data: { id: it.featureId }, cls: 'small' }))) : null,
+          low ? h('div', { class: 'rough-fix', 'data-key': 'fix-below' },
+            h('p', { class: 'rough-text' }, 'This item is drawn below the line where its roof starts, so it is not on that roof.'),
+            h('div', { class: 'btn-row wrap' },
+              lowTo ? button('Put it on \'' + (lowTo.name || 'the surface below') + '\'', { act: 'put-on-plane', data: { id: it.featureId, plane: lowTo.planeId }, cls: 'small primary' }) : null,
               button('Type its length', { act: 'type-length', data: { id: it.featureId }, cls: 'small' }))) : null,
           h('div', { class: 'rough-row' }, tape,
             button('Show it', { act: 'show-feature', data: { id: it.featureId }, icon: 'arrowRight', cls: 'small ghost', aria: 'Show ' + it.label + ' on the photo in step 3' })));
@@ -2245,6 +2310,8 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         steep: null,        // {planeId, up, back, slope}: tape numbers being typed for a steep roof face
         steepShown: {},     // plane id → which two tape fields were typed (shown again after they are stored)
         focusN: 0,          // the last ui.focusTape request that was carried out
+        scrollN: 0,         // the last ui.scrollTo request that was carried out
+        steepRefused: null, // the steep face whose tape numbers "Use these numbers" just refused
       };
       let scheduled = false;
       let destroyed = false;
@@ -2303,6 +2370,18 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         if (focusKey && (!document.activeElement || !root.contains(document.activeElement))) {
           const el = root.querySelector('[data-fk="' + (window.CSS && CSS.escape ? CSS.escape(focusKey) : focusKey) + '"]');
           if (el) { try { el.focus({ preventScroll: true }); } catch (e) { /* ignore */ } }
+        }
+        // A steep face or an upper roof was just made: bring what comes next (its slope, its pitch) into view, once.
+        const goTo = store.ui().scrollTo;
+        if (goTo && goTo.n !== local.scrollN) {
+          const part = root.querySelector('[data-key="' + (goTo.key === 'steep' ? 'steep' : 'upper-pitch') + '"]');
+          if (part) {
+            local.scrollN = goTo.n;
+            const show = () => { try { part.scrollIntoView({ block: 'start' }); } catch (e) { /* ignore */ } };
+            show();
+            // On a phone the sheet may still be settling at half height: bring it into view again after.
+            setTimeout(() => { if (!destroyed) show(); }, 350);
+          }
         }
         // "Type its length": put the cursor in that item's tape-measured length field, once per request.
         const want = store.ui().focusTape;
@@ -2406,9 +2485,12 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
           nums[k + 'Ft'] = v;
           keys.push(k);
         }
-        if (!loud && (keys.length < 2 || !measure.steepFromTape(nums).ok)) return false;
+        // Leaving a field stores only a plain pair: exactly two good numbers, and not while numbers that were just
+        // refused are still in the fields (the third one may be the stale one). Anything else waits for the button.
+        if (!loud && (keys.length !== 2 || local.steepRefused === planeId || !measure.steepFromTape(nums).ok)) return false;
         const res = actions.setSteepMeasured(planeId, nums);
-        if (!res || !res.ok) { schedule(); return false; }
+        if (!res || !res.ok) { if (loud) local.steepRefused = planeId; schedule(); return false; }
+        if (local.steepRefused === planeId) local.steepRefused = null;
         local.steep = null;
         local.steepShown[planeId] = keys.length === 2 ? keys : ['up', 'back'];
         schedule();
@@ -2485,6 +2567,15 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
         },
         'steep-use': (el) => applySteepTape(el.dataset.id, true),
         'put-on-roof': (el) => actions.putOnRoof(el.dataset.id),
+        'put-on-plane': (el) => actions.putOnPlane(el.dataset.id, el.dataset.plane || undefined),
+        'steep-swap': (el) => {
+          const pl = byId(P().planes, el.dataset.id);
+          const pp = pl && pl.derived ? pl.derived.pitch : null;
+          if (!pp) return;
+          local.steep = null;
+          local.steepShown[el.dataset.id] = ['up', 'back'];
+          actions.setSteepMeasured(el.dataset.id, { upFt: pp.run, backFt: pp.rise });
+        },
         'type-length': (el) => actions.typeLength(el.dataset.id),
         'delete-plane': (el) => actions.deletePlane(el.dataset.id),
         'mark-rect': (el) => actions.startPlaneRect(el.dataset.id),
@@ -2844,6 +2935,6 @@ LP.define('ui.panels', ['catalog', 'measure', 'camera', 'design', 'power', 'ui.a
       powerVerdict, outletSummaryText, roughList, planProgress, nextAction, runNextAction, lensWords, zoomedOutReason,
       productGroups, productOptionText, productsToSave, bushRuleText, supplierOfUrl, writeClipboard,
       parseMoney, tapeMismatch, strayOverrides, CALIBRATE_SENTENCE,
-      scaleLine, steepSlopeText, storedSteepPitch, needsRoof, wrongSurfaceWhy, roofFixNote,
+      scaleLine, rectWords, steepSlopeText, storedSteepPitch, needsRoof, needsLower, lowerTarget, wrongSurfaceWhy, roofFixNote,
     };
   });

@@ -1002,14 +1002,15 @@ dependencies), exports `start, hintFor`, and adds the hint-bar surface picker (`
 
 ### 7.3 Tests and verification at hand-off
 
-- `node --test`: 459 unit tests, all passing (incl. `measure-honesty.test.js`, a seeded simulation of random
+- `node --test`: 517 unit tests, all passing (incl. `measure-honesty.test.js`, a seeded simulation of random
   houses with careful taps and with finger taps at fit zoom: at least 95% of High results within ±3% and at
   least 95% of Medium within ±6%; `review-fixes.test.js` and `review-fixes-ui.test.js`, the tests for the
   confirmed Phase 1.1 review findings, named by finding; findings that only show on screen are checked in the
-  smoke test's `fixes` pass).
-- `node tests/e2e/smoke.mjs` (after `node build.js`; Playwright Chromium): thirteen passes: phone 47, desktop 45,
+  smoke test's `fixes` pass; `measure-mansard.test.js`, `ui-mansard.test.js`, `review-mansard.test.js` and
+  `ui-review-mansard.test.js` for §8.6, the last two named by review finding).
+- `node tests/e2e/smoke.mjs` (after `node build.js`; Playwright Chromium): fourteen passes: phone 47, desktop 45,
   dark 45, blocked-storage 5, inputs 11, measure 8, review 35, landscape 4, v11-phone 136, v11-desktop 112,
-  sup-phone 99, sup-desktop 99, fixes 50 — 696 checks.
+  sup-phone 99, sup-desktop 99, fixes 50, mansard 215 — 911 checks.
   `LP_SECTIONS=<regex>` with `--only=<pass>` runs a subset; screenshots go to `tests/e2e/out/` (gitignored).
   `node tests/e2e/final-shots.mjs` writes `final-<step>-<width>.png` for steps 4 to 6 of the sample at 1280 and
   390 px with a supplier chosen.
@@ -1332,3 +1333,85 @@ screen pixel is about 5 photo pixels.
   switch; PDF report and CSV carry the new columns, cord kinds, taps and routes.
 - **Flow:** one pinned next-action button per step; step 2 opens automatically after a photo loads; after
   Finish the hint bar offers what to trace next.
+
+### 8.6 Mansard roofs, the best rectangle for scale, items on the wrong surface (as shipped)
+
+Three problems found on a real house (`tests/fixtures/mansard-house.json`, geometry only: a 2048 × 1152 photo from
+about 64 ft, a wall whose rectangle is a 3 × 5 ft window of 63 × 101 px, a garage door reference of 155 × 140 px,
+and a ridge drawn on the wall). That file now gives: wall **Medium 74/100** (expected error about ±5.6%, was Low
+49 at about ±14%), scale taken from the garage door, the window checking it within 0.8%; the ridge reads
+38.4 ft on the wall and stays **Low**, with the fix offered.
+
+**A. Best rectangle for scale** (`measure.solveWall`, automatic, nothing stored)
+
+- Candidates: the wall's own rectangle and every known-size rectangle reference with an id (not the id `'rect'`).
+  Each gets an expected error for one common test item (a level and a plumb line across the box that holds all
+  candidates), from ±tap-precision nudges of its corners (`scaleRectErrors`).
+- The wall's own rectangle stays unless another candidate's expected error is 0.75 of it or less (a quarter
+  better). The margin keeps rectangles of similar size from trading places under small nudges. It is a hard
+  threshold: within about ±0.3% of the boundary a 1 px nudge flips the choice, and lengths then move by the
+  difference between the two solutions. Accepted; a UI that pins the choice while a corner is dragged is not built.
+- Agreement test: the winner is used only when the wall's own rectangle, measured with the winner's map, matches
+  its stated size within tap noise (root mean square of the width and height misfits ≤ 2σ, with the winner's
+  corners nudged and the own rectangle's tap noise added). Otherwise the next best candidate is tried, then the
+  wall's own rectangle stays; `calib.rectRejected` and a note say why.
+- Gap cap: when a reference rectangle sets the scale, `calib.rectCheckPct` is the larger gap between the wall's
+  own rectangle and its stated size. 3% or more caps the wall and everything on it at Medium, 6% or more at Low
+  (reason "The two measured rectangles on this wall are N% apart …"). Together with the agreement test this
+  keeps a set-back or mistyped reference from earning High or Medium for lengths that are off by more than that
+  level allows. A set-back too small for the wall's own rectangle to show (about 3% at 60 ft) passes: that is
+  the limit of the data.
+- Reported in `calib`: `rectFrom`, `rectLabel`, `rectAuto`, `rectWhy`, `rectCandidates`, `rectRejected`,
+  `rectCheckPct`. Nudged re-solves for the tap-precision estimate pin the choice and skip the candidate table.
+- UI: the wall's card says "Scale taken from the 8′ 0″ × 7′ 2″ rectangle (the largest measured rectangle). The
+  3′ 0″ × 5′ 0″ rectangle you marked as this wall's corners is used as a check." The rectangle editor adds "Used
+  as a check", the reference list marks "sets scale", and the reference's label on the photo reads "· sets scale".
+
+**B. Steep roof face and upper roof**
+
+- Storage: `derived.steep: true` on a roof plane, with `derived.pitch` (measured: rise over run, the tape numbers
+  up over back) or `derived.angleDeg` (a guess, 20 to 85; null = 70 assumed). Both keys exist only on steep
+  roofs, so older files load and save unchanged. Schema, normalizer, validator and `docs/DATA_MODEL.md` agree.
+- A steep face never takes the project pitch or the gable estimate, and rakes that start on its line never feed
+  the house-wide estimate. A guess or the default caps every length on the face at Low.
+  `measure.steepFromTape({upFt, backFt, slopeFt})` turns any two tape numbers into the slope; it refuses more
+  than 85° (measure it as a wall) and less than 20° (not a steep face), and flags less than 45° as a likely swap.
+- Upper roof: a roof whose parent is a roof plane. Its line is lifted through the parent's frame and the roof
+  frame is built with the wall's pose. With no pitch of its own it borrows the project pitch as an assumption
+  (`pitch.source` `'house'`), capped at Low. An unmeasured slope anywhere below it caps it at Low too.
+- UI: "Steep roof face (mansard)" in step 2; "How steep is it?" with angle chips and "I measured it" (Up, Back,
+  Sloped height; any two). Leaving a field stores only a plain pair of numbers; anything else waits for "Use
+  these numbers". After the face is made a message says what comes next and the panel scrolls to the editor; the
+  same after "Add the upper roof" (its pitch). Up shorter than Back brings "Are the two numbers swapped?" with
+  "Swap Up and Back". A measured face that is still Low says why ("the scale of 'Front wall' is rough").
+- Tracing on a mansard: the surface follows where the item is drawn (`actions.mansardSurfaceFor`): between the
+  bottom line and the trim line the steep face, above the trim line the upper roof, at the bottom line the wall.
+  A surface picked by hand in the hint bar is kept. Step 3 carries one sentence on which items go where.
+- Power: a cord to an item on an upper roof runs down both roofs to the eave, then down the wall.
+
+**C. Items on the wrong surface**
+
+- `FeatureMeasurement.wrongSurface`: `'roof'` (a ridge on a wall), `'ground'` (a tree or column on a wall) or
+  `'below'` (on a roof, but drawn below the line where that roof starts; capped at Low).
+  `measure.misplacedFeatures()` lists them with candidate surfaces; each roof candidate says whether its
+  starting line lies under the item (`under`), whether the item lies below it (`below`) and its expected error.
+- A ridge on a wall: the hint bar says so right after the trace ("Put it on the roof", "Type its length",
+  "Later"), and the same two actions are on its card and in Review. "Put it on the roof" moves it to the roof
+  whose line lies under it. With no such roof it asks "ordinary roof or steep (mansard)?", then has the line
+  drawn; roof and move are one undo step. A roof that starts beside the item is never picked.
+- The result of a move is checked (`moveVerdict`): more than 1.6 times the wall reading, or below the roof's
+  line, is "looks too long / not on that roof" with "Use a steep roof face", "Type its length" and "Undo"; an
+  upper roof or a surface with more than ±50% expected error is "rough" with "Type its length" first. Neither
+  gets a green message.
+- An item below its roof's line: the same notice with "Put it on the surface below".
+- Trees and columns on a wall are flagged by core as before; the UI offers no button for them (unchanged).
+
+**Not done / limits**
+
+- Dormers are outlines on the steep face, not 3D boxes. The side faces of a mansard need their own wall and
+  steep face from a photo that shows them.
+- On the user's photo the steep face stays Low even with tape numbers (about ±62%) and the upper roof is about
+  ±292%: the camera angle comes from a 155 px garage door. Marking the wall's own corners is what lifts it.
+- The smoke pass uses a drawn stand-in for the photo; steep-face accuracy is covered by the simulations in
+  `tests/measure-mansard.test.js`.
+

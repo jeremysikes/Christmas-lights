@@ -18,6 +18,9 @@
  *
  * A ridge traced on a wall comes out too short (measure: wrongSurface 'roof'). Right after such a trace the hint
  * bar says so and, instead of "Trace next", offers "Put it on the roof", "Type its length" and "Later" (#hint-fix).
+ * The same group of buttons carries the other notes about an item: the question "what kind of roof is it?"
+ * (ui.roofAsk), how a move to a roof turned out when it looks wrong or rough (ui.moveNote), and an item drawn
+ * below the line where its roof starts. Its buttons are built from hint.fix.buttons.
  * The hint for a line says which line it is: an eave, the bottom of a steep roof face, or the trim line where an
  * upper roof starts.
  */
@@ -185,15 +188,39 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
       const mode = ui.mode || {};
       const o = mode.opts || {};
       const pts = ui.draft && Array.isArray(ui.draft.points) ? ui.draft.points.length : 0;
-      if (ui.afterTrace && (!mode.name || mode.name === 'select')) {
-        const f = (project.features || []).find((x) => x && x.id === ui.afterTrace.featureId);
+      const idle = !mode.name || mode.name === 'select';
+      const named = (id) => (project.features || []).find((x) => x && x.id === id) || null;
+      // "Put it on the roof" found no roof under the item: ask what kind of roof it is before its line is drawn.
+      if (ui.roofAsk && idle && named(ui.roofAsk.featureId)) {
+        const wall = project.planes.find((p) => p.id === ui.roofAsk.planeId);
+        return {
+          after: true, fix: { featureId: ui.roofAsk.featureId, buttons: ['ordinary', 'steep', 'cancel'] }, next: [], count: '', finish: false,
+          text: 'What kind of roof is above ' + (wall ? "'" + wall.name + "'" : 'this wall') + '? An ordinary roof slopes back from the eave. A mansard goes up steeply first, then turns shallow.',
+        };
+      }
+      // A move to a roof that did not turn out well: say what is off and what to do, never "done".
+      if (ui.moveNote && idle && named(ui.moveNote.featureId) && named(ui.moveNote.featureId).planeId === ui.moveNote.planeId) {
+        const n = ui.moveNote;
+        const buttons = n.kind === 'wrong' ? (n.canSteep ? ['usesteep', 'tape', 'undo'] : ['tape:primary', 'undo', 'ok']) : ['tape:primary', 'undo', 'ok'];
+        return { after: true, fix: { featureId: n.featureId, buttons }, text: n.text, next: [], count: '', finish: false };
+      }
+      if (ui.afterTrace && idle) {
+        const f = named(ui.afterTrace.featureId);
         if (f) {
           // A ridge drawn on a wall comes out too short: say so at once and offer the two fixes instead of "Trace next".
           const m = plan && plan.measured && plan.measured.features ? plan.measured.features[f.id] : null;
           if (panels.needsRoof(f, m)) {
             const fmt = (v) => measure.formatLength(v, project.settings && project.settings.lengthFormat);
             const len = m.ok && Number.isFinite(m.measuredFt) ? ' measures ' + fmt(m.measuredFt) + ' on the wall, which is too short' : ' is drawn on the wall, so it comes out too short';
-            return { after: true, fix: { featureId: f.id }, text: (f.label || 'This ridge') + len + '. A ridge sits on the roof, behind the wall.', next: [], count: '', finish: false };
+            return { after: true, fix: { featureId: f.id, buttons: ['roof:primary', 'tape', 'later'] }, text: (f.label || 'This ridge') + len + '. A ridge sits on the roof, behind the wall.', next: [], count: '', finish: false };
+          }
+          // Drawn below the line where its roof starts: it sits on the surface under that roof.
+          if (panels.needsLower(f, m)) {
+            const on = project.planes.find((p) => p.id === f.planeId);
+            return {
+              after: true, fix: { featureId: f.id, buttons: ['lower:primary', 'tape', 'later'] }, next: [], count: '', finish: false,
+              text: (f.label || 'This item') + ' is drawn below the line where ' + (on ? "'" + on.name + "'" : 'this roof') + ' starts, so it is not on that roof.',
+            };
           }
           return { after: true, text: tracedText(f, project, plan), next: nextTraceTypes(f.type), count: '', finish: false };
         }
@@ -235,7 +262,9 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
         if (ft.geometry === 'vertical') return { text: 'Tap the base of the ' + label.replace(/ \(.*\)/, '') + ', then its top.', count: pts + ' of 2', finish: false };
         const count = pts + (pts === 1 ? ' point' : ' points');
         if (ft.geometry === 'polygon' || ft.geometry === 'area') return { text: 'Tap around the ' + label.replace(/ \(.*\)/, '') + '. Tap the first point to close it, or tap Finish.', count, finish: pts >= 3 };
-        return { text: 'Tap along the ' + label + ', corner by corner. Double-tap or tap Finish when done.', count, finish: pts >= 2 };
+        // On a house with a steep roof face a "rake" is also the leaning corner edge of that face.
+        const mansard = o.type === 'rake' && project.planes.some((p) => actionsModule.surfaceKind(project, p) === 'steep');
+        return { text: 'Tap along the ' + (mansard ? 'gable rake or the leaning corner edge' : label) + ', corner by corner. Double-tap or tap Finish when done.', count, finish: pts >= 2 };
       }
       if (mode.name === 'outlet') return { text: 'Tap where the outlet is on the photo.', count: '', finish: false };
       return null;
@@ -281,6 +310,13 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
       const hintNext = $('hint-next');
       const hintNextChips = $('hint-next-chips');
       const hintFix = $('hint-fix');
+      let hintFixKey = '';
+      // [label, label below 380 px, label below 480 px]: the full label is always the button's aria-label.
+      const FIX_LABEL = {
+        roof: ['Put it on the roof', 'Put on roof'], lower: ['Put it on the surface below', 'Put it below', 'Put it below'], tape: ['Type its length', 'Type length'],
+        later: ['Later'], ordinary: ['Ordinary roof'], steep: ['Steep roof (mansard)', 'Steep (mansard)', 'Steep (mansard)'], cancel: ['Cancel'],
+        usesteep: ['Use a steep roof face', 'Steep roof face', 'Steep roof face'], undo: ['Undo'], ok: ['OK'],
+      };
       const actionBar = $('action-bar');
       const actionBtn = $('action-btn');
       const actionLabel = $('action-label');
@@ -446,10 +482,27 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
       });
       on($('hint-done'), 'click', () => actions.finishTracing());
       // After a ridge was traced on a wall: move it to the roof, type its length, or leave it for later.
-      const fixId = () => { const at = store.ui().afterTrace; return at ? at.featureId : null; };
-      on($('hint-fix-roof'), 'click', () => { const id = fixId(); if (id) actions.putOnRoof(id); });
-      on($('hint-fix-tape'), 'click', () => { const id = fixId(); if (id) { restoreSheet = restoreSheet || 'half'; actions.typeLength(id); } });
-      on($('hint-fix-later'), 'click', () => actions.finishTracing());
+      // The buttons are built from the hint (hint.fix.buttons); each carries the item it is about.
+      const FIX_DO = {
+        roof: (id) => actions.putOnRoof(id),
+        lower: (id) => actions.putOnPlane(id),
+        tape: (id) => { restoreSheet = restoreSheet || 'half'; actions.typeLength(id); },
+        later: () => actions.finishTracing(),
+        ordinary: (id) => actions.drawRoofFor(id, 'roof'),
+        steep: (id) => actions.drawRoofFor(id, 'steep'),
+        cancel: () => actions.cancelDraft(),
+        usesteep: (id) => actions.useSteepInstead(id),
+        undo: () => actions.undoMove(),
+        ok: () => actions.dismissMoveNote(),
+      };
+      // The note buttons get shorter labels on a narrow phone: follow the window width.
+      on(window, 'resize', () => schedule());
+      on(hintFix, 'click', (e) => {
+        const b = e.target && e.target.closest ? e.target.closest('[data-fix]') : null;
+        if (!b || !hintFix.contains(b)) return;
+        const fn = FIX_DO[b.getAttribute('data-fix')];
+        if (fn) fn(b.getAttribute('data-id'));
+      });
       on($('hint-more'), 'click', () => {
         restoreSheet = null;
         actions.finishTracing();
@@ -833,6 +886,24 @@ LP.define('ui.app', ['schema', 'sample', 'catalog', 'measure', 'ui.persist', 'ui
           if (hintActions) hintActions.hidden = !!hint.after;
           if (hintNext) hintNext.hidden = !hint.after || !!hint.fix;
           if (hintFix) hintFix.hidden = !(hint.after && hint.fix);
+          if (hintFix && hint.after && hint.fix) {
+            // A phone gets shorter labels where the full ones would not fit one row.
+            const w = window.innerWidth || 1000;
+            const tier = w < 380 ? 1 : w < 480 ? 2 : 0;
+            const key = hint.fix.featureId + '|' + hint.fix.buttons.join(',') + '|' + tier;
+            if (key !== hintFixKey) {
+              hintFixKey = key;
+              hintFix.textContent = '';
+              for (const spec of hint.fix.buttons) {
+                const name = spec.split(':')[0];
+                const lab = FIX_LABEL[name] || [name];
+                hintFix.appendChild(panels.h('button', {
+                  type: 'button', id: 'hint-fix-' + name, class: 'btn small' + (/:primary$/.test(spec) ? ' primary' : ''),
+                  'aria-label': lab[0], data: { fix: name, id: hint.fix.featureId },
+                }, (tier && lab[tier]) || lab[0]));
+              }
+            }
+          }
           if (hint.after && !hint.fix) {
             // The result of the trace just finished, and what to trace next.
             const key = hint.next.join(',');
