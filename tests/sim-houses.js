@@ -232,4 +232,4 @@ function simulateGarageDoor(opts) {
   return rows;
 }
 
-module.exports = { simulate, honesty, SETUPS, randomHouse, buildProject, garageDoorScene, simulateGarageDoor, storedTapErr, IMG_W, IMG_H, F26 };
+module.exports = { simulate, honesty, SETUPS, randomHouse, buildProject, garageDoorScene, simulateGarageDoor, storedTapErr, IMG_W, IMG_H, F26, makeCamera, project3, gaussian };

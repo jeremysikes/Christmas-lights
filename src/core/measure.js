@@ -12,9 +12,23 @@
  *                   disagree with it, in which case the disagreement is reported)
  *       refs-only   no rectangle: a straight-on similarity (ft per px) from references
  *     With a rectangle, the camera pose is recovered from the homography (camera.poseFromHomography).
+ *     Best rectangle for scale: when a wall has a known-size rectangle AND known-size rectangle references, each is
+ *     a candidate. The wall is solved from the wall's own rectangle unless another candidate cuts the expected
+ *     error (tap precision, for a level and a plumb line across the box that holds all candidates) by a quarter
+ *     or more; the others become checks. calib.rectFrom says which one was used. Stored data is not rewritten.
  *  3. ROOF and GROUND planes are built in 3D from their parent wall's pose: the eave/base line is lifted to
  *     wall coordinates, a sloped (roof) or level (ground) frame is built on it, and its homography is
  *     K·[R·e1, R·e2, R·origin + t]. Without a pose, roofs fall back to an orthographic pitch correction.
+ *     STEEP ROOF FACE (mansard): a roof plane with derived.steep === true. Its slope is derived.pitch when measured
+ *     (rise over run in any one unit: the tape numbers "up" and "back"; source 'user'), else derived.angleDeg in
+ *     degrees from level (a guess, kept inside 20..85; source 'guess'), else 70° (source 'default'). The project
+ *     pitch and the gable-rake estimate are never used for it, and rakes that start on its eave line never feed
+ *     the house-wide estimate (they are its leaning corners, not gables). A guess or the default caps every length
+ *     on the face at Low, as an assumed pitch does.
+ *     UPPER ROOF: a roof plane whose parent is a roof plane solved in 3D. Its line (drawn along the top of that
+ *     face) is lifted through the parent's frame, and the same roof frame is built on it with the wall's pose.
+ *     An unmeasured slope anywhere below it (solution.slopeBelow) caps its lengths at Low. Parents are solved
+ *     first whatever the stored order; planes that hang off each other in a circle fail with a reason.
  *  4. Features are measured in their plane's coordinates; confidence is scored from how the plane was solved and
  *     from tap precision: every calibration tap behind the plane and every point of the feature is nudged by
  *     its tap precision (one coordinate at a time, plane solutions re-solved), and the expected error 2σ caps the
@@ -68,6 +82,19 @@
  *  - Trees, columns and bushes drawn on a GROUND plane (with a pose) are measured on a vertical plane parallel to
  *    the wall through their base point on the ground (true 3D size, method 'ground-3d').
  *  - measureProject() also returns `ok` (false only when the input is not a project object).
+ *  - PlaneSolution.calib also has `rectFrom` ('rect' = the wall's own rectangle, a reference id, or null when no
+ *    rectangle is in use), `rectLabel` (plain name of that rectangle), `rectAuto` (true when a reference rectangle
+ *    was chosen over the wall's own), `rectWhy` ('largest' | 'steadiest' | null) and `rectCandidates`
+ *    ([{from, label, expectedPct, areaPx, used}] or null when there was nothing to choose). When the wall's own
+ *    rectangle is only a check, its two refResults have refId null and `fromRect: true`.
+ *  - Roof PlaneSolutions also have `steep` (true on a steep face), `pitch.angleDeg` / `pitch.steep` /
+ *    `pitch.clamped` on steep faces, pitch.source 'guess' (besides 'user' | 'estimated' | 'default') and
+ *    `slopeBelow` ('default' | 'guess' | 'estimated' | null: an unmeasured slope under an upper roof).
+ *    Issue codes: 'steep-angle-assumed', 'steep-angle-guess' (info), 'derived-parent-no-3d'.
+ *  - FeatureMeasurement also has `wrongSurface`: 'roof' (a ridge drawn on a wall), 'ground' (a tree or column
+ *    drawn on a wall) or null. misplacedFeatures(project, measured?) lists those items with the surfaces they
+ *    could move to. steepFromTape({upFt, backFt, slopeFt}) turns two tape numbers into a steep face's pitch.
+ *    STEEP = {defaultDeg: 70, minDeg: 20, maxDeg: 85}.
  */
 LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, catalog) {
   'use strict';
@@ -108,6 +135,12 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     'ground-3d': 'Measured on the ground, worked out in 3D from the wall.',
   };
   const DEFAULT_PITCH = { rise: 6, run: 12 };
+  // Steep roof faces (mansard): the slope is an angle from level. A guess is kept inside 20..85 degrees; a face
+  // steeper than 85 degrees is a wall for every practical purpose and its 3D frame gets ill-conditioned.
+  const STEEP = { defaultDeg: 70, minDeg: 20, maxDeg: 85 };
+  // Best rectangle for scale: another known-size rectangle replaces the wall's own only when it cuts the expected
+  // error by at least a quarter (see chooseScaleRect).
+  const RECT_SWITCH_RATIO = 0.75;
   // A rake segment only counts toward the pitch estimate when it is at least this long and plausibly sloped.
   const PITCH_MIN_SEGMENT_FT = 1;
   const PITCH_MIN_DEG = 5;
@@ -256,7 +289,9 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       const d = constraintVector(c, H);
       const measured = d ? lenFn(d[0], d[1]) : null;
       const errorPct = isNum(measured) ? (100 * (measured - c.expectedFt)) / c.expectedFt : null;
-      refResults.push({ refId: c.refId, label: c.label, expectedFt: c.expectedFt, measuredFt: isNum(measured) ? measured : null, errorPct });
+      const rr = { refId: c.refId, label: c.label, expectedFt: c.expectedFt, measuredFt: isNum(measured) ? measured : null, errorPct };
+      if (c.fromRect) rr.fromRect = true; // the wall's own rectangle, used as a check (another one sets the scale)
+      refResults.push(rr);
       if (isNum(measured) && measured > 0) items.push({ r: measured / c.expectedFt, s: constraintSigma(c, tapSigma) });
     }
     let spread = null, z = null;
@@ -369,7 +404,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       refResults: [], disagreementPct: null, disagreementZ: null, checks: 0,
       viewAngleDeg: null, pose: null, K: null, pitch: null, pitchInfo: null, extent: null, gridExtent: null,
       poseConsistencyPct: null, poseToleranceZ: null, focalMismatchPct: null, tapSigmaPx: planeTapSigma(plane),
-      calib: { scaleFrom: null, onlyMediumLowRefs: false, minCourses: null, rectProblem: null, refsBothDirections: false, anisotropic: false },
+      calib: { scaleFrom: null, onlyMediumLowRefs: false, minCourses: null, rectProblem: null, refsBothDirections: false, anisotropic: false,
+        rectFrom: null, rectLabel: null, rectAuto: false, rectWhy: null, rectCandidates: null },
       warnings: [], notes: [], issues: [], reason: null, confidence: null,
     };
   }
@@ -420,8 +456,63 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     return { w: (g.dist(q[0], q[1]) + g.dist(q[3], q[2])) / 2, h: (g.dist(q[0], q[3]) + g.dist(q[1], q[2])) / 2 };
   }
 
-  /** Solve a wall plane (rect-known / rect-refs / refs-only). K may be null when the photo is missing. */
-  function solveWall(plane, image, K, config) {
+  /** Plain label of a wall's own rectangle: its preset ("Double garage door (16 × 7 ft)") or "Rectangle (W × H)". */
+  function rectLabel(rect) {
+    const p = isObj(rect) ? WALL_RECT_PRESETS.find((x) => x.id === rect.presetId) : null;
+    if (p && p.id !== 'custom-rect' && p.id !== 'unknown') return p.label;
+    const w = isObj(rect) ? posNum(rect.widthFt) : null, h = isObj(rect) ? posNum(rect.heightFt) : null;
+    return w && h ? 'Rectangle (' + formatLength(w) + ' × ' + formatLength(h) + ')' : 'Rectangle';
+  }
+
+  /**
+   * Expected error (2σ, %) of a wall solved from each known-size rectangle candidate, for one common test item: a
+   * level and a plumb line across the box that holds every candidate (image px). Each corner of the candidate is
+   * nudged by ±tapSigma, one coordinate at a time, exactly as the tap-precision estimate does. A small rectangle
+   * far from the rest of the wall scores badly, a large one well.
+   * candidates: [{quad [TL, TR, BR, BL], w, h}]. Returns one number per candidate (Infinity when a nudge breaks it).
+   */
+  function scaleRectErrors(candidates, tapSigma) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const c of candidates) for (const p of c.quad) {
+      if (p[0] < minX) minX = p[0]; if (p[0] > maxX) maxX = p[0];
+      if (p[1] < minY) minY = p[1]; if (p[1] > maxY) maxY = p[1];
+    }
+    const mx = (minX + maxX) / 2, my = (minY + maxY) / 2;
+    const tests = [[[minX, my], [maxX, my]], [[mx, minY], [mx, maxY]]];
+    const lengths = (quad, w, h) => {
+      const H = g.homographyFromPoints(quad, [[0, h], [w, h], [w, 0], [0, 0]]);
+      if (!H) return null;
+      const out = [];
+      for (const t of tests) {
+        const a = g.applyH(H, t[0]), b = g.applyH(H, t[1]);
+        if (!a || !b) return null;
+        out.push(Math.hypot(b[0] - a[0], b[1] - a[1]));
+      }
+      return out;
+    };
+    return candidates.map((c) => {
+      const L = lengths(c.quad, c.w, c.h);
+      if (!L || !(L[0] > 0) || !(L[1] > 0)) return Infinity;
+      const v = [0, 0];
+      for (let k = 0; k < 4; k++) {
+        for (const axis of [0, 1]) {
+          const mv = (d) => c.quad.map((p, i) => (i === k ? (axis === 0 ? [p[0] + d, p[1]] : [p[0], p[1] + d]) : p));
+          const a = lengths(mv(tapSigma), c.w, c.h), b = lengths(mv(-tapSigma), c.w, c.h);
+          if (!a || !b) return Infinity;
+          for (let i = 0; i < 2; i++) v[i] += ((a[i] - b[i]) / 2) ** 2;
+        }
+      }
+      const pct = 200 * Math.sqrt((v[0] / (L[0] * L[0]) + v[1] / (L[1] * L[1])) / 2);
+      return isNum(pct) ? pct : Infinity;
+    });
+  }
+
+  /**
+   * Solve a wall plane (rect-known / rect-refs / refs-only). K may be null when the photo is missing.
+   * pin (optional) {rectFrom}: use this rectangle for scale ('rect' or a reference id) instead of choosing; nudged
+   * re-solves pass the choice of the real solve so that a nudge can never flip it.
+   */
+  function solveWall(plane, image, K, config, pin) {
     const sol = baseSolution(plane, 'wall');
     const name = quoted(plane.name, 'this wall');
     if (!image) return failSolution(sol, 'The photo for ' + name + ' is missing, so it cannot be measured.', 'missing-image');
@@ -462,6 +553,42 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       if (rc.quad && rc.widthFt && rc.heightFt) rectRefs.push({ ref, quad: rc.quad, w: rc.widthFt, h: rc.heightFt, constraints: rc.constraints });
       constraints = constraints.concat(rc.constraints);
     }
+    // Best rectangle for scale. The wall's own rectangle and every known-size rectangle reference are candidates.
+    // The wall's own stays unless another one cuts the expected error by a quarter or more: nudging a tap moves
+    // these estimates by a few percent at most, so a choice made with that margin does not flip under small
+    // nudges, and two rectangles of similar size never trade places. The others become checks.
+    let rectFrom = null, rectAuto = false, rectWhy = null, rectCandidates = null, ownRectLabel = null;
+    if (quad && rectW && rectH) {
+      rectFrom = 'rect';
+      ownRectLabel = rectLabel(plane.rect);
+      const others = rectRefs.filter((r) => r.ref.id != null);
+      if (others.length) {
+        const cands = [{ from: 'rect', label: ownRectLabel, quad, w: rectW, h: rectH, rr: null }]
+          .concat(others.map((r) => ({ from: r.ref.id, label: refLabel(r.ref), quad: r.quad, w: r.w, h: r.h, rr: r })));
+        const errs = scaleRectErrors(cands, tapSigma);
+        cands.forEach((c, i) => { c.expectedPct = errs[i]; c.areaPx = g.polygonArea(c.quad); });
+        let best = cands[0];
+        const pinned = isObj(pin) && pin.rectFrom != null ? cands.find((c) => c.from === pin.rectFrom) : null;
+        if (pinned) best = pinned;
+        else if (!(isObj(pin) && pin.rectFrom != null)) {
+          for (const c of cands.slice(1)) if (c.expectedPct < best.expectedPct) best = c;
+          if (best !== cands[0] && !(best.expectedPct <= RECT_SWITCH_RATIO * cands[0].expectedPct)) best = cands[0];
+        }
+        rectCandidates = cands.map((c) => ({ from: c.from, label: c.label, expectedPct: c.expectedPct === Infinity ? null : c.expectedPct, areaPx: c.areaPx, used: c === best }));
+        if (best !== cands[0]) {
+          const own = cands[0];
+          constraints = constraints.filter((c) => best.rr.constraints.indexOf(c) < 0);
+          constraints.push({ refId: null, label: own.label + ', width', kind: 'width', pts: own.quad, expectedFt: own.w, q: 1, quality: 'high', courses: null, fromRect: true });
+          constraints.push({ refId: null, label: own.label + ', height', kind: 'height', pts: own.quad, expectedFt: own.h, q: 1, quality: 'high', courses: null, fromRect: true });
+          quad = best.quad; rectW = best.w; rectH = best.h;
+          rectFrom = best.from; rectAuto = true;
+          rectWhy = cands.every((c) => c === best || c.areaPx < best.areaPx) ? 'largest' : 'steadiest';
+          sol.promotedRefId = best.from;
+          sol.notes.push("Scale taken from '" + best.label + "' (the " + (rectWhy === 'largest' ? 'largest measured rectangle' : 'measured rectangle that gives the steadiest scale') +
+            "). '" + own.label + "' is used as a check.");
+        }
+      }
+    } else if (quad) rectFrom = 'rect';
     // No plane rectangle: promote the largest known-size reference rectangle to plane rectangle.
     if (!quad && rectRefs.length) {
       const best = rectRefs.slice().sort((a, b) => g.polygonArea(b.quad) - g.polygonArea(a.quad))[0];
@@ -470,6 +597,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       sol.notes.push("The reference '" + refLabel(best.ref) + "' is used as this wall's perspective rectangle.");
       sol.calib.rectProblem = null; // a usable rectangle after all
       sol.promotedRefId = best.ref.id != null ? best.ref.id : null;
+      rectFrom = sol.promotedRefId;
     }
 
     // ---- base map H0 (image → base plane units) and mode
@@ -598,6 +726,14 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       rectProblem: sol.calib.rectProblem,
       refsBothDirections: mode === 'refs-only' && horizRefs && vertRefs && sol.checks >= 1 && isNum(sol.disagreementPct) && sol.disagreementPct <= 3,
       anisotropic,
+      // Which rectangle gives the perspective and, when its size is known, the scale: 'rect' (the wall's own), a
+      // reference id, or null (no rectangle in use). rectAuto: chosen over the wall's own rectangle.
+      rectFrom: mode === 'refs-only' ? null : rectFrom,
+      rectLabel: mode === 'refs-only' || rectFrom == null ? null
+        : rectFrom === 'rect' ? (ownRectLabel || rectLabel(plane.rect)) : refLabel(arr(plane.refs).find((r) => isObj(r) && r.id === rectFrom) || {}),
+      rectAuto: mode !== 'refs-only' && rectAuto,
+      rectWhy: mode !== 'refs-only' ? rectWhy : null,
+      rectCandidates,
     };
 
     // ---- extent, pose, view angle
@@ -652,7 +788,61 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     return { rise: DEFAULT_PITCH.rise, run: DEFAULT_PITCH.run, source: 'default' };
   }
 
-  /** Eave/base line of a derived plane in its parent wall's coordinates: {A, B, vMid, len} or a failure reason. */
+  /** Is this a steep roof face (mansard)? Roof planes with derived.steep === true. */
+  function isSteepPlane(plane) {
+    return isObj(plane) && plane.kind === 'roof' && isObj(plane.derived) && plane.derived.steep === true;
+  }
+
+  /**
+   * Slope of a steep roof face: {rise, run, source, angleDeg, steep: true}.
+   *   derived.pitch (rise over run, any units: the two tape numbers "up" and "back")  → source 'user'
+   *   derived.angleDeg (degrees from level, kept inside 20..85)                         → source 'guess'
+   *   neither                                                                           → 70°, source 'default'
+   * The project pitch and the gable-rake estimate are never used: they describe ordinary roofs.
+   */
+  function resolveSteepPitch(derived) {
+    const d = isObj(derived) ? derived : {};
+    const fromAngle = (deg, source) => ({ rise: 12 * Math.tan((deg * Math.PI) / 180), run: 12, source, angleDeg: deg, steep: true });
+    if (validPitch(d.pitch) && d.pitch.rise > 0) {
+      const ang = pitchAngleDeg(d.pitch.rise, d.pitch.run);
+      if (ang > STEEP.maxDeg) return Object.assign(fromAngle(STEEP.maxDeg, 'user'), { clamped: true });
+      return { rise: d.pitch.rise, run: d.pitch.run, source: 'user', angleDeg: ang, steep: true };
+    }
+    if (isNum(d.angleDeg)) return fromAngle(g.clamp(d.angleDeg, STEEP.minDeg, STEEP.maxDeg), 'guess');
+    return fromAngle(STEEP.defaultDeg, 'default');
+  }
+
+  /**
+   * The slope of a steep roof face from two tape numbers (feet, or any one unit): how far the face goes up
+   * (upFt, vertical), how far it goes back (backFt, level) and its sloped height (slopeFt). Any two are enough;
+   * with all three they must agree within 5%.
+   * Returns {ok: true, angleDeg, pitch: {rise, run}, upFt, backFt, slopeFt} (store `pitch` as derived.pitch), or
+   * {ok: false, reason}. Angles above 85° are refused (measure such a face as a wall).
+   */
+  function steepFromTape(input) {
+    const o = isObj(input) ? input : {};
+    let up = posNum(o.upFt), back = posNum(o.backFt);
+    const slope = posNum(o.slopeFt);
+    const fail = (reason) => ({ ok: false, reason });
+    const given = (up ? 1 : 0) + (back ? 1 : 0) + (slope ? 1 : 0);
+    if (given < 2) return fail('Enter two of these: how far the face goes up, how far it goes back, and its sloped height.');
+    if (slope && up && slope <= up) return fail('The sloped height must be longer than how far the face goes up.');
+    if (slope && back && slope <= back) return fail('The sloped height must be longer than how far the face goes back.');
+    if (given === 3 && Math.abs(Math.hypot(up, back) / slope - 1) > 0.05) {
+      return fail('These three numbers do not fit together. Check them, or enter only two.');
+    }
+    if (!up) up = Math.sqrt(slope * slope - back * back);
+    if (!back) back = Math.sqrt(slope * slope - up * up);
+    const angleDeg = pitchAngleDeg(up, back);
+    if (!isNum(angleDeg) || !(up > 0) || !(back > 0)) return fail('These numbers do not give a slope. Check them.');
+    if (angleDeg > STEEP.maxDeg) return fail('This face is almost straight up (more than ' + STEEP.maxDeg + '°). Measure it as a wall.');
+    return { ok: true, angleDeg, pitch: { rise: up, run: back }, upFt: up, backFt: back, slopeFt: Math.hypot(up, back) };
+  }
+
+  // The wall's own 3D frame (camera.js: u right, v up, w toward the camera).
+  const WALL_FRAME = { origin: [0, 0, 0], e1: [1, 0, 0], e2: [0, 1, 0], n: [0, 0, 1] };
+
+  /** Eave/base line of a derived plane in its parent plane's coordinates: {A, B, vMid, len} or a failure reason. */
   function derivedLine(plane, parent) {
     const d = isObj(plane.derived) ? plane.derived : null;
     const line = d ? cleanPts(d.line) : null;
@@ -680,11 +870,29 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     sol.parentPlaneId = d.parentPlaneId;
     const parent = Object.prototype.hasOwnProperty.call(wallSols, d.parentPlaneId) ? wallSols[d.parentPlaneId] : null;
     if (!parent) return failSolution(sol, name + ' is attached to a wall that no longer exists. Draw ' + what + ' again.', 'derived-no-parent');
-    const parentName = quoted(parent.name, 'its wall');
+    // An upper roof hangs off a roof face (the top of a mansard); everything else hangs off a wall.
+    const onRoof = parent.kind === 'roof';
+    if (parent.kind !== 'wall' && !(onRoof && kind === 'roof')) return failSolution(sol, name + ' needs ' + what + ' drawn on a wall.', 'derived-no-parent');
+    const parentName = quoted(parent.name, onRoof ? 'the roof face below it' : 'its wall');
     if (!parent.ok) return failSolution(sol, 'Measure ' + parentName + ' first: ' + (parent.reason || 'it has no scale yet.'), 'derived-parent-uncalibrated');
+    if (onRoof && (parent.mode !== 'roof-3d' || !parent.frame || !parent.pose || !parent.K)) {
+      return failSolution(sol, name + ' sits on ' + parentName + ', which is only approximated. Add a perspective rectangle on the wall below so both can be measured.', 'derived-parent-no-3d');
+    }
     if (kind === 'roof') {
       sol.pitch = pitch || { rise: DEFAULT_PITCH.rise, run: DEFAULT_PITCH.run, source: 'default' };
       sol.pitchInfo = sol.pitch.source === 'estimated' && pitchInfo ? pitchInfo : null;
+      if (sol.pitch.steep) {
+        sol.steep = true;
+        const deg = Math.round(sol.pitch.angleDeg);
+        if (sol.pitch.clamped) sol.notes.push(name + ' is almost straight up. It is measured as an ' + STEEP.maxDeg + '° face.');
+        if (sol.pitch.source === 'default') addIssue(sol, 'steep-angle-assumed', 'The slope of ' + name + ' is unknown, so ' + deg + '° is assumed. Measure how far the face goes up and how far it goes back.', 'info');
+        else if (sol.pitch.source === 'guess') addIssue(sol, 'steep-angle-guess', 'The slope of ' + name + ' (' + deg + '°) is a guess. Measure how far the face goes up and how far it goes back.', 'info');
+      }
+      // A slope that is not measured anywhere below this roof moves it too: 'default' | 'guess' | 'estimated' | null.
+      if (onRoof) {
+        const below = parent.pitch && parent.pitch.source !== 'user' ? parent.pitch.source : (parent.slopeBelow || null);
+        sol.slopeBelow = below;
+      }
     }
 
     const dl = derivedLine(plane, parent);
@@ -705,7 +913,10 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     sol.calib = Object.assign({}, parent.calib, { scaleFrom: 'parent', onlyMediumLowRefs: parent.calib.onlyMediumLowRefs });
 
     if (parent.pose && parent.K) {
-      const A3 = [A[0], vMid, 0], B3 = [B[0], vMid, 0];
+      // The line is lifted to 3D through the parent's frame (a wall: [u, v, 0]; a roof face: along and up its slope).
+      const pf = onRoof ? parent.frame : WALL_FRAME;
+      const lift = (a, b) => g.v3add(pf.origin, g.v3add(g.v3scale(pf.e1, a), g.v3scale(pf.e2, b)));
+      const A3 = lift(A[0], vMid), B3 = lift(B[0], vMid);
       const frame = kind === 'roof' ? camera.roofFrame(A3, B3, sol.pitch.rise, sol.pitch.run) : camera.groundFrame(A3, B3);
       const Hp2i = frame ? camera.homographyForFrame(frame, parent.K, parent.pose) : null;
       const Hi2p = Hp2i ? g.invertH(Hp2i) : null;
@@ -799,10 +1010,22 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
   function estimatePitch(project, planeSolutions) {
     const sols = isObj(planeSolutions) ? planeSolutions : {};
     const samples = [];
+    // Eave lines of steep roof faces, by parent wall: a rake that starts on one is the leaning corner of that
+    // face, not a gable, and says nothing about ordinary roofs.
+    const steepLines = {};
+    for (const pl of arr(project && project.planes)) {
+      if (!isSteepPlane(pl)) continue;
+      const pid = pl.derived.parentPlaneId;
+      const parent = pid != null && Object.prototype.hasOwnProperty.call(sols, pid) ? sols[pid] : null;
+      if (!parent || !parent.ok || parent.kind !== 'wall') continue;
+      const dl = derivedLine(pl, parent);
+      if (!dl.problem) (steepLines[pid] = steepLines[pid] || []).push(dl);
+    }
     for (const f of arr(project && project.features)) {
       if (!isObj(f) || f.type !== 'rake') continue;
       const sol = Object.prototype.hasOwnProperty.call(sols, f.planeId) ? sols[f.planeId] : null;
       if (!sol || !sol.ok || sol.kind !== 'wall') continue;
+      if (arr(steepLines[f.planeId]).some((dl) => rakeStartsOnLine(f.points, sol, dl))) continue;
       for (const s of rakeSamples(f.points, sol)) samples.push(s);
     }
     if (!samples.length) return null;
@@ -813,6 +1036,16 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
   const PITCH_EAVE_TOL_FT = 1.5;
   const PITCH_SPREAD_MAX = 2;
 
+  /** Does the low end of a rake (image points) sit on an eave line (derivedLine) of the wall solution `sol`? */
+  function rakeStartsOnLine(points, sol, dl) {
+    const p = cleanPts(points);
+    if (!p || p.length < 2) return false;
+    const plane = p.map((q) => g.applyH(sol.Himg2plane, q));
+    if (plane.some((q) => !q)) return false;
+    const low = plane.reduce((m, q) => (q[1] < m[1] ? q : m), plane[0]);
+    return !(Math.abs(low[1] - dl.vMid) > PITCH_EAVE_TOL_FT || low[0] < dl.A[0] - 1 || low[0] > dl.B[0] + 1);
+  }
+
   /**
    * Pitch estimate for one roof plane: rakes on its parent wall whose low end sits on the roof's eave line (within
    * 1.5 ft of its height and inside its span) first; otherwise every gable rake in the project (onEave false).
@@ -821,17 +1054,13 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
   function estimateRoofPitch(project, wallSols, roofPlane, globalEstimate) {
     const d = isObj(roofPlane.derived) ? roofPlane.derived : null;
     const parent = d && Object.prototype.hasOwnProperty.call(wallSols, d.parentPlaneId) ? wallSols[d.parentPlaneId] : null;
-    const dl = parent && parent.ok ? derivedLine(roofPlane, parent) : null;
+    // Only a wall carries gable rakes; an upper roof (on a roof face) borrows the house-wide estimate.
+    const dl = parent && parent.ok && parent.kind === 'wall' ? derivedLine(roofPlane, parent) : null;
     const samples = [];
     if (dl && !dl.problem) {
       for (const f of arr(project && project.features)) {
         if (!isObj(f) || f.type !== 'rake' || f.planeId !== d.parentPlaneId) continue;
-        const p = cleanPts(f.points);
-        if (!p || p.length < 2) continue;
-        const plane = p.map((q) => g.applyH(parent.Himg2plane, q));
-        if (plane.some((q) => !q)) continue;
-        const low = plane.reduce((m, q) => (q[1] < m[1] ? q : m), plane[0]);
-        if (Math.abs(low[1] - dl.vMid) > PITCH_EAVE_TOL_FT || low[0] < dl.A[0] - 1 || low[0] > dl.B[0] + 1) continue;
+        if (!rakeStartsOnLine(f.points, parent, dl)) continue;
         for (const s of rakeSamples(f.points, parent)) samples.push(s);
       }
     }
@@ -891,6 +1120,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
    * (used when re-solving nudged copies for the uncertainty estimate).
    */
   function solveAll(proj, cfg, cameras, pitchOverride) {
+    // pitchOverride also pins each wall's scale rectangle ({rectFrom}); see solveWall.
     const settings = isObj(proj.settings) ? proj.settings : {};
     const images = arr(proj.images).filter(isObj);
     const planes = arr(proj.planes).filter(isObj);
@@ -903,7 +1133,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       const image = imageById(plane.imageId);
       const K = image ? cameras[image.id] : null;
       let sol;
-      try { sol = solveWall(plane, image, K && K.ok !== false ? K : null, cfg); } catch (e) {
+      try { sol = solveWall(plane, image, K && K.ok !== false ? K : null, cfg, pitchOverride ? pitchOverride[plane.id] : null); } catch (e) {
         sol = failSolution(baseSolution(plane, 'wall'), 'This wall could not be measured because its data is damaged.', 'plane-error');
       }
       const mm = focalMismatch(K);
@@ -922,9 +1152,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       pitch = { rise: DEFAULT_PITCH.rise, run: DEFAULT_PITCH.run, source: 'default', angleDeg: null, samples: [] };
     }
 
-    for (const plane of planes) {
+    const solveOne = (plane) => {
       const kind = plane.kind;
-      if (kind == null || kind === 'wall') continue;
       let sol;
       if (kind !== 'roof' && kind !== 'ground') {
         sol = failSolution(baseSolution(plane, kind), quoted(plane.name, 'A plane') + ' has an unknown kind and was skipped.', 'plane-unknown-kind');
@@ -933,7 +1162,9 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
           let rp = null, info = null;
           if (kind === 'roof') {
             const pin = pitchOverride && pitchOverride[plane.id];
-            if (pin) { rp = pin.pitch; info = pin.pitchInfo; } else {
+            if (pin) { rp = pin.pitch; info = pin.pitchInfo; } else if (isSteepPlane(plane)) {
+              rp = resolveSteepPitch(plane.derived); // never the project pitch, never the gable estimate
+            } else {
               const est = estimateRoofPitch(proj, out, plane, estimated);
               rp = resolvePitch(isObj(plane.derived) ? plane.derived.pitch : null, settings.roofPitch, est);
               info = est ? { onEave: est.onEave, spread: est.spread, samples: est.samples } : null;
@@ -952,6 +1183,24 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
         if (sol.ok && parent && isNum(parent.focalMismatchPct)) sol.focalMismatchPct = parent.focalMismatchPct;
       }
       out[plane.id] = named(sol, plane);
+    };
+    // Parents first: planes on a wall in stored order, then roofs drawn on a roof face (an upper roof), and so on.
+    let todo = planes.filter((pl) => pl.kind != null && pl.kind !== 'wall');
+    while (todo.length) {
+      const waiting = (pl) => {
+        const pid = isObj(pl.derived) ? pl.derived.parentPlaneId : null;
+        return pid != null && pid !== pl.id && todo.some((o) => o !== pl && o.id === pid);
+      };
+      const ready = todo.filter((pl) => !waiting(pl));
+      if (!ready.length) {
+        // Planes that hang off each other in a circle.
+        for (const pl of todo) {
+          out[pl.id] = named(failSolution(baseSolution(pl, pl.kind), quoted(pl.name, 'This roof') + ' is attached to a surface that is attached back to it. Draw its eave line again.', 'derived-no-parent'), pl);
+        }
+        break;
+      }
+      for (const pl of ready) solveOne(pl);
+      todo = todo.filter((pl) => ready.indexOf(pl) < 0);
     }
     return { planes: out, pitch };
   }
@@ -1002,6 +1251,19 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     const planes = arr(proj.planes).filter(isObj);
     const byId = {};
     for (const pl of planes) byId[pl.id] = pl;
+    // Planes a plane hangs off, nearest first (a roof on a roof face on a wall has two).
+    const ancestors = {};
+    for (const pl of planes) {
+      const list = [];
+      let cur = pl;
+      while (cur && isObj(cur.derived) && cur.derived.parentPlaneId != null && byId[cur.derived.parentPlaneId]) {
+        const up = byId[cur.derived.parentPlaneId];
+        if (up === pl || list.indexOf(up.id) >= 0) break;
+        list.push(up.id);
+        cur = up;
+      }
+      ancestors[pl.id] = list;
+    }
     const taps = []; // {planeId, path, k, axis, focalImage}
     const seen = new Set();
     const add = (planeId, path, k, focalImage) => {
@@ -1035,11 +1297,12 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
         if (sol.groundScale !== 1 && isNum(sol.groundScale)) arr(pl.refs).forEach((r, j) => { if (isObj(r)) for (const k of tapIndices(r.points, r.kind !== 'rect')) add(pl.id, 'ref:' + j, k); });
       }
     }
-    // Pitches stay as solved (pitch uncertainty is rated separately).
+    // Pitches stay as solved (pitch uncertainty is rated separately), and so does each wall's scale rectangle.
     const pins = {};
     for (const id of Object.keys(solved.planes)) {
       const s = solved.planes[id];
       if (s.kind === 'roof' && s.pitch) pins[id] = { pitch: s.pitch, pitchInfo: s.pitchInfo };
+      else if (s.kind === 'wall' && s.calib && s.calib.rectCandidates) pins[id] = { rectFrom: s.calib.rectFrom };
     }
     const out = {};
     const imageOf = (pl) => (pl ? pl.imageId : null);
@@ -1051,12 +1314,13 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       const src = tapOf[owner.id].what;
       // Which planes can this tap move?
       const affected = new Set();
-      if (t.focalImage) { for (const pl of planes) if (pl.imageId === t.focalImage || (pl.derived && byId[pl.derived.parentPlaneId] && imageOf(byId[pl.derived.parentPlaneId]) === t.focalImage)) affected.add(pl.id); }
+      if (t.focalImage) { for (const pl of planes) if (pl.imageId === t.focalImage || ancestors[pl.id].some((id) => imageOf(byId[id]) === t.focalImage)) affected.add(pl.id); }
       affected.add(owner.id);
-      if ((owner.kind == null || owner.kind === 'wall')) for (const pl of planes) if (pl.derived && pl.derived.parentPlaneId === owner.id) affected.add(pl.id);
+      // Everything that hangs off the tapped plane moves with it (a wall's roofs and grounds, a roof face's upper roof).
+      if (owner.kind == null || owner.kind === 'wall' || owner.kind === 'roof') for (const pl of planes) if (ancestors[pl.id].indexOf(owner.id) >= 0) affected.add(pl.id);
       if (![...affected].some((id) => neededPlaneIds.has(id))) continue;
       const include = new Set(affected);
-      for (const id of affected) { const pl = byId[id]; if (pl && pl.derived && pl.derived.parentPlaneId != null) include.add(pl.derived.parentPlaneId); }
+      for (const id of affected) for (const up of ancestors[id] || []) include.add(up);
       const pair = {};
       for (const sign of [1, -1]) {
         const moved = nudgedPlane(owner, t.path, t.k, t.axis, sign * sigma);
@@ -1306,6 +1570,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       measuredFt: null, wrapFt: null, lengthFt: null, withWasteFt: null,
       areaSqFt: null, widthFt: null, heightFt: null, lights: null, pitchEstimate: null,
       overridden: false, confidence: null, reason: null, pixelLength: null, segmentsFt: null, uncertaintyPct: null,
+      wrongSurface: null,
     };
     const thresholds = isObj(config.confidence) ? config.confidence : catalog.DEFAULT_CONFIG.confidence;
     const failWith = (reason) => {
@@ -1344,6 +1609,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       }
     }
     const canMeasure = !geomProblem && !!sol && !planeProblem;
+    // Drawn on a wall, but it belongs on another kind of surface: 'roof' (a ridge) or 'ground' (tree, column).
+    if (planeSol && planeSol.kind === 'wall') out.wrongSurface = wantedSurface(type);
     const typeConf = type.id === 'tree' ? config.tree : type.id === 'column' ? config.column : null;
 
     // ---- geometric measurement
@@ -1482,6 +1749,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       pitchSource: sol && sol.kind === 'roof' && sol.pitch ? sol.pitch.source : null,
       pitchOnEave: sol && sol.pitchInfo ? sol.pitchInfo.onEave : null,
       pitchSpread: sol && sol.pitchInfo ? sol.pitchInfo.spread : null,
+      steep: !!(sol && sol.steep), steepAngleDeg: sol && sol.steep && sol.pitch ? sol.pitch.angleDeg : null,
+      slopeBelow: sol ? sol.slopeBelow : null,
       rectProblem: sol && sol.calib ? sol.calib.rectProblem : null,
       refsBothDirections: !!(sol && sol.calib && sol.calib.refsBothDirections),
       anisotropic: !!(sol && sol.scale && sol.scale.anisotropic),
@@ -1503,6 +1772,91 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       thresholds,
     });
     return out;
+  }
+
+  /**
+   * The kind of surface an item belongs on when a wall is the wrong place for it: 'roof' (a ridge), 'ground' (a
+   * tree or a column) or null. These are the items a wall caps at Low.
+   */
+  function wantedSurface(type) {
+    if (!type) return null;
+    if (type.id === 'ridge') return 'roof';
+    if (type.id === 'tree' || type.id === 'column') return 'ground'; // a bush sits against the wall and may stay there
+    return null;
+  }
+
+  /** Is the size of this item typed in from a tape (so where it is drawn no longer matters)? */
+  function tapeMeasured(f) { return !!posNum(f.overrideFt); }
+
+  const SURFACE_MESSAGE = {
+    roof: 'A ridge sits on the roof, behind the wall. Measured on the wall it comes out too short. Move it to a roof surface, or type a tape-measured length.',
+    ground: 'This item stands in front of the wall. Measured on the wall it comes out too large. Move it to a ground surface, or type a tape-measured height.',
+  };
+
+  /**
+   * Items drawn on the wrong kind of surface, and where they could go. A ridge drawn on a wall belongs on a roof
+   * surface; a tree or column drawn on a wall belongs on a ground surface. Items whose size is tape-measured
+   * (overrideFt) are left out: that fix is already made.
+   * measured (optional): the measureProject result for this project; worked out when missing.
+   * Returns [{featureId, type, label, planeId, wants: 'roof' | 'ground', message, lengthFt (as measured now, or
+   *   null), candidates: [{planeId, name, kind, steep, parentPlaneId, ok, lengthFt}], canCreate: true}].
+   * candidates are the existing surfaces of the wanted kind that hang off that wall (directly, or through a roof
+   * face), best first: ones the item can be measured on, ordinary roofs before steep faces. lengthFt is what the
+   * item would measure there (null when it cannot be measured there). To apply: set feature.planeId to the
+   * candidate's planeId; the points stay as they are. With no candidate, draw an eave line (roof) or a wall base
+   * line (ground) on that wall first. Never throws; the project is not changed.
+   */
+  function misplacedFeatures(project, measured) {
+    try {
+      const proj = isObj(project) ? project : {};
+      const res = isObj(measured) && isObj(measured.planes) && isObj(measured.features) ? measured : measureProject(proj);
+      const planes = arr(proj.planes).filter(isObj);
+      const byId = {};
+      for (const pl of planes) if (pl.id != null) byId[pl.id] = pl;
+      const hangsOff = (pl, wallId) => {
+        const seen = new Set();
+        for (let cur = pl; cur && isObj(cur.derived) && cur.derived.parentPlaneId != null && !seen.has(cur.id);) {
+          seen.add(cur.id);
+          if (cur.derived.parentPlaneId === wallId) return true;
+          cur = byId[cur.derived.parentPlaneId];
+        }
+        return false;
+      };
+      const cfg = catalog.getLibrary(proj).config;
+      const out = [];
+      arr(proj.features).forEach((f, idx) => {
+        if (!isObj(f)) return;
+        const type = typeof f.type === 'string' && Object.prototype.hasOwnProperty.call(catalog.FEATURE_TYPES, f.type) ? catalog.FEATURE_TYPES[f.type] : null;
+        const wants = wantedSurface(type);
+        const wall = f.planeId != null ? byId[f.planeId] : null;
+        if (!wants || !wall || !(wall.kind == null || wall.kind === 'wall') || tapeMeasured(f)) return;
+        const id = f.id != null ? String(f.id) : 'feature_' + idx;
+        const now = Object.prototype.hasOwnProperty.call(res.features, id) ? res.features[id] : null;
+        const candidates = [];
+        for (const pl of planes) {
+          if (pl.kind !== wants || !hangsOff(pl, wall.id)) continue;
+          const sol = Object.prototype.hasOwnProperty.call(res.planes, pl.id) ? res.planes[pl.id] : null;
+          let m = null;
+          if (sol && sol.ok) { try { m = measureFeature(Object.assign({}, f, { planeId: pl.id }), sol, { config: cfg }); } catch (e) { m = null; } }
+          const ok = !!(m && m.ok && isNum(m.measuredFt));
+          candidates.push({
+            planeId: pl.id, name: typeof pl.name === 'string' ? pl.name : '', kind: pl.kind, steep: isSteepPlane(pl),
+            parentPlaneId: pl.derived.parentPlaneId, ok, lengthFt: ok ? m.measuredFt : null,
+          });
+        }
+        const rank = (c) => (c.ok ? 0 : 2) + (c.steep ? 1 : 0);
+        candidates.sort((a, b) => rank(a) - rank(b)); // stable: stored order within a rank
+        out.push({
+          featureId: id, type: type.id, label: typeof f.label === 'string' && f.label.trim() ? f.label.trim() : type.label,
+          planeId: wall.id, wants, message: SURFACE_MESSAGE[wants],
+          lengthFt: now && now.ok && isNum(now.measuredFt) ? now.measuredFt : null,
+          candidates, canCreate: true,
+        });
+      });
+      return out;
+    } catch (e) {
+      return [];
+    }
   }
 
   const LEVELS = ['low', 'medium', 'high'];
@@ -1529,7 +1883,8 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
    * score is clamped into that level's band.
    * factors: {overridden, mode, kind, checks, disagreementPct, disagreementZ, onlyMediumLowRefs, minCourses,
    *           viewAngleDeg, focalSource, focalRelStd, focalMismatchPct, poseConsistencyPct, poseTolerancePct,
-   *           pitchSource, pitchOnEave, pitchSpread, rectProblem, refsBothDirections, anisotropic, scaleFrom,
+   *           pitchSource ('user' | 'estimated' | 'default' | 'guess'), pitchOnEave, pitchSpread, steep, steepAngleDeg,
+   *           slopeBelow (an unmeasured slope under an upper roof), rectProblem, refsBothDirections, anisotropic, scaleFrom,
    *           offPlane (type id or bool), offPlaneBiasPct, assumedDiameterIn, extrapolation, pixelLength,
    *           uncertaintyPct, uncertaintyBasePct, tapPx, tapWhat, ownTapPx, tapsFine, extraReasons,
    *           thresholds: {highMin, mediumMin}, reason}
@@ -1621,9 +1976,23 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       if (isNum(fx.pitchSpread) && fx.pitchSpread > PITCH_SPREAD_MAX) cap('low', 'The gable rakes disagree on the roof pitch. Enter the pitch of this roof.');
       else if (fx.pitchOnEave === false) cap('low', 'The roof pitch is borrowed from a gable that is not on this roof\'s eave, and roofs often differ. Enter the pitch of this roof.');
       else cap('low', 'The roof pitch is estimated from a gable on the wall, which may not match this roof\'s slope. Enter the pitch (a phone level on a rake board) for a better rating.');
+    } else if (fx.pitchSource === 'guess' || (fx.pitchSource === 'default' && fx.steep)) {
+      // A steep roof face (mansard) whose slope nobody measured: a guess in degrees, or the 70° default.
+      const deg = isNum(fx.steepAngleDeg) ? Math.round(fx.steepAngleDeg) : STEEP.defaultDeg;
+      const fixIt = ' Measure how far the face goes up and how far it goes back.';
+      if (fx.pitchSource === 'guess') {
+        take(10, 'The slope of this steep roof face (' + deg + '°) is a guess.');
+        cap('low', 'Lengths on a steep roof face depend on its slope, and ' + deg + '° is only a guess.' + fixIt);
+      } else {
+        take(25, 'The slope of this steep roof face is unknown, so ' + deg + '° is assumed.');
+        cap('low', 'Lengths on a steep roof face depend on its slope, and it is only assumed.' + fixIt);
+      }
     } else if (fx.pitchSource === 'default') {
       take(25, 'The roof pitch is unknown, so 6/12 is assumed. Enter the pitch.');
       cap('low', 'Roof lengths depend on the pitch, and it is only assumed. Enter the pitch.');
+    }
+    if (fx.slopeBelow === 'default' || fx.slopeBelow === 'guess' || fx.slopeBelow === 'estimated') {
+      cap('low', 'This roof starts at the top of a roof face whose slope is not measured, so it may sit in the wrong place. Measure how far that face goes up and how far it goes back.');
     }
     if (fx.offPlane) {
       const bias = isNum(fx.offPlaneBiasPct) ? ' (about ' + Math.round(fx.offPlaneBiasPct) + '% for something ' + (OFF_PLANE_DIST_FT[fx.offPlane] || 5) + ' ft from it with this camera)' : '';
@@ -1729,6 +2098,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       focalMismatchPct: sol.focalMismatchPct, poseConsistencyPct: sol.poseConsistencyPct, poseTolerancePct: sol.poseTolerancePct,
       pitchSource: sol.kind === 'roof' && sol.pitch ? sol.pitch.source : null,
       pitchOnEave: sol.pitchInfo ? sol.pitchInfo.onEave : null, pitchSpread: sol.pitchInfo ? sol.pitchInfo.spread : null,
+      steep: !!sol.steep, steepAngleDeg: sol.steep && sol.pitch ? sol.pitch.angleDeg : null, slopeBelow: sol.slopeBelow,
       rectProblem: sol.calib ? sol.calib.rectProblem : null, refsBothDirections: !!(sol.calib && sol.calib.refsBothDirections),
       anisotropic: !!(sol.scale && sol.scale.anisotropic), scaleFrom: sol.calib ? sol.calib.scaleFrom : null,
       thresholds,
@@ -1791,7 +2161,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
     if (hasRoof && solved.pitch.source === 'estimated') {
       warnings.push({ level: 'info', code: 'pitch-estimated', message: 'Roof pitch estimated at ' + solved.pitch.rise + '/12 from the gable rakes. Enter it if you know it.' });
     } else if (hasRoof && solved.pitch.source === 'default') {
-      const anyDefault = Object.keys(solved.planes).some((k) => solved.planes[k].pitch && solved.planes[k].pitch.source === 'default');
+      const anyDefault = Object.keys(solved.planes).some((k) => solved.planes[k].pitch && solved.planes[k].pitch.source === 'default' && !solved.planes[k].steep);
       if (anyDefault) warnings.push({ level: 'info', code: 'pitch-default', message: 'Roof pitch is unknown, so 6/12 is assumed. Trace a gable rake on a wall or enter the pitch.' });
     }
     const thresholds = isObj(cfg.confidence) ? cfg.confidence : catalog.DEFAULT_CONFIG.confidence;
@@ -1808,8 +2178,14 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
       const sol = solved.planes[pid];
       // Every tap behind this surface has a recorded precision: its own, and its parent wall's for a roof or ground.
       const own = planeObj[pid];
-      const parentId = own && isObj(own.derived) ? own.derived.parentPlaneId : null;
-      sol.tapsRecorded = planeTapsRecorded(own) && (parentId == null || planeTapsRecorded(planeObj[parentId]));
+      let recorded = planeTapsRecorded(own);
+      const walked = new Set([pid]);
+      for (let up = own; recorded && up && isObj(up.derived) && up.derived.parentPlaneId != null && !walked.has(up.derived.parentPlaneId);) {
+        walked.add(up.derived.parentPlaneId);
+        up = planeObj[up.derived.parentPlaneId];
+        recorded = planeTapsRecorded(up);
+      }
+      sol.tapsRecorded = recorded;
       let u = null;
       const tapDetail = {};
       if (sol.ok && sol.mode !== 'roof-ortho') {
@@ -1901,6 +2277,7 @@ LP.define('measure', ['geometry', 'camera', 'catalog'], function (g, camera, cat
   return {
     REF_PRESETS, WALL_RECT_PRESETS, QUALITY_WEIGHT, getRefPreset, refFromPreset, refLabel,
     solvePlanes, estimatePitch, resolvePitch, measurePoints, measureFeature, scoreConfidence, measureProject,
+    STEEP, steepFromTape, misplacedFeatures,
     imageToPlane, planeToImage, planeGridLines, formatLength, spiralWrapFt,
   };
 });

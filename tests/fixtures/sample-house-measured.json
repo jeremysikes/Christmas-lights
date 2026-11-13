@@ -1,0 +1,245 @@
+{
+ "planes": {
+  "pl_front": {
+   "mode": "rect-known",
+   "level": "high",
+   "score": 95,
+   "uncertaintyPct": 1.6912502242603684,
+   "checks": 2,
+   "disagreementPct": 0.061593283002880916,
+   "reasons": [
+    "The photo views this wall at 24° off straight-on.",
+    "Expected error about ±1.7% from how exactly the points could be tapped."
+   ]
+  },
+  "pl_garage": {
+   "mode": "rect-known",
+   "level": "high",
+   "score": 100,
+   "uncertaintyPct": 2.794113820995657,
+   "checks": 1,
+   "disagreementPct": 0.05309441182064223,
+   "reasons": [
+    "Measured on a known-size rectangle and cross-checked.",
+    "Expected error about ±2.8% from how exactly the points could be tapped."
+   ]
+  },
+  "pl_roof": {
+   "mode": "roof-3d",
+   "level": "low",
+   "score": 49,
+   "uncertaintyPct": 42.256400056878384,
+   "checks": 0,
+   "disagreementPct": null,
+   "reasons": [
+    "Expected error about ±42% from how exactly the points could be tapped; roof lengths depend on the camera angle worked out from the wall. Type a tape-measured length if you can, or rely on the 10% waste.",
+    "Measured on the roof slope, worked out in 3D from the wall.",
+    "Nothing on this surface cross-checks its scale; a tape-measured length on it would.",
+    "The photo views this wall at 24° off straight-on.",
+    "The focal length measured from the rectangle is unsteady. A larger or more angled rectangle, or a photo with lens data, measures it better."
+   ]
+  },
+  "pl_yard": {
+   "mode": "ground-3d",
+   "level": "low",
+   "score": 49,
+   "uncertaintyPct": 229.81070766033278,
+   "checks": 0,
+   "disagreementPct": null,
+   "reasons": [
+    "Expected error about ±230% from how exactly the points could be tapped; from street level the ground is seen almost edge-on. Add a tape-measured reference on this ground surface, or take the photo from closer or higher.",
+    "Measured on the ground, worked out in 3D from the wall.",
+    "Nothing on this surface cross-checks its scale; a tape-measured length on it would.",
+    "The photo views this wall at 24° off straight-on.",
+    "The focal length measured from the rectangle is unsteady. A larger or more angled rectangle, or a photo with lens data, measures it better."
+   ]
+  }
+ },
+ "features": {
+  "ft_eave": {
+   "measuredFt": 33.999999999999986,
+   "lengthFt": 33.999999999999986,
+   "level": "high",
+   "score": 95,
+   "uncertaintyPct": 1.9722495032910938,
+   "reasons": [
+    "The photo views this wall at 24° off straight-on.",
+    "Expected error about ±2.0% from how exactly the points could be tapped."
+   ]
+  },
+  "ft_garage_gutter": {
+   "measuredFt": 21.993522247186807,
+   "lengthFt": 21.993522247186807,
+   "level": "medium",
+   "score": 74,
+   "uncertaintyPct": 3.464071957301393,
+   "reasons": [
+    "Expected error about ±3.5% from how exactly the points could be tapped; zoom in or use a larger rectangle."
+   ]
+  },
+  "ft_gable_left": {
+   "measuredFt": 8.947360911863317,
+   "lengthFt": 8.947360911863317,
+   "level": "medium",
+   "score": 74,
+   "uncertaintyPct": 5.601860243057476,
+   "reasons": [
+    "Expected error about ±5.6% from how exactly the points could be tapped; zoom in or use a larger rectangle.",
+    "The photo views this wall at 24° off straight-on."
+   ]
+  },
+  "ft_gable_right": {
+   "measuredFt": 8.950629304673798,
+   "lengthFt": 8.950629304673798,
+   "level": "medium",
+   "score": 74,
+   "uncertaintyPct": 5.609851209221081,
+   "reasons": [
+    "Expected error about ±5.6% from how exactly the points could be tapped; zoom in or use a larger rectangle.",
+    "The photo views this wall at 24° off straight-on."
+   ]
+  },
+  "ft_roof_rake": {
+   "measuredFt": 15.702275823540813,
+   "lengthFt": 15.702275823540813,
+   "level": "low",
+   "score": 49,
+   "uncertaintyPct": 45.28581171616331,
+   "reasons": [
+    "Expected error about ±45% from how exactly the points could be tapped; roof lengths depend on the camera angle worked out from the wall. Type a tape-measured length if you can, or rely on the 10% waste.",
+    "Measured on the roof slope, worked out in 3D from the wall.",
+    "Nothing on this surface cross-checks its scale; a tape-measured length on it would.",
+    "The photo views this wall at 24° off straight-on.",
+    "The focal length measured from the rectangle is unsteady. A larger or more angled rectangle, or a photo with lens data, measures it better."
+   ]
+  },
+  "ft_ridge": {
+   "measuredFt": 34.039018363965184,
+   "lengthFt": 34.039018363965184,
+   "level": "low",
+   "score": 49,
+   "uncertaintyPct": 11.62546776566918,
+   "reasons": [
+    "Expected error about ±12% from how exactly the points could be tapped; roof lengths depend on the camera angle worked out from the wall. Type a tape-measured length if you can, or rely on the 10% waste.",
+    "Measured on the roof slope, worked out in 3D from the wall.",
+    "Nothing on this surface cross-checks its scale; a tape-measured length on it would.",
+    "The photo views this wall at 24° off straight-on.",
+    "The focal length measured from the rectangle is unsteady. A larger or more angled rectangle, or a photo with lens data, measures it better."
+   ]
+  },
+  "ft_window_left": {
+   "measuredFt": 18.0050050431007,
+   "lengthFt": 18.0050050431007,
+   "level": "low",
+   "score": 49,
+   "uncertaintyPct": 6.4907367920415995,
+   "reasons": [
+    "Expected error about ±6.5% from how exactly the points could be tapped; zoom in or use a larger rectangle.",
+    "The photo views this wall at 24° off straight-on."
+   ]
+  },
+  "ft_window_right": {
+   "measuredFt": 18.000496652076993,
+   "lengthFt": 18.000496652076993,
+   "level": "medium",
+   "score": 74,
+   "uncertaintyPct": 5.482003055291618,
+   "reasons": [
+    "Expected error about ±5.5% from how exactly the points could be tapped; zoom in or use a larger rectangle.",
+    "The photo views this wall at 24° off straight-on."
+   ]
+  },
+  "ft_door": {
+   "measuredFt": 16.326723814066703,
+   "lengthFt": 16.326723814066703,
+   "level": "medium",
+   "score": 74,
+   "uncertaintyPct": 5.177724815162739,
+   "reasons": [
+    "Expected error about ±5.2% from how exactly the points could be tapped; zoom in or use a larger rectangle.",
+    "The photo views this wall at 24° off straight-on."
+   ]
+  },
+  "ft_bush_1": {
+   "measuredFt": 12.370223874244624,
+   "lengthFt": null,
+   "level": "low",
+   "score": 49,
+   "uncertaintyPct": 8.626856798953252,
+   "reasons": [
+    "Expected error about ±8.6% from how exactly the points could be tapped; zoom in or use a larger rectangle.",
+    "Items in front of the wall measure too large (about 4% for something 3 ft from it with this camera). Trace it on a ground plane (from the wall's base line) to measure its true size.",
+    "The photo views this wall at 24° off straight-on.",
+    "This item stands in front of the wall, so its size is approximate."
+   ]
+  },
+  "ft_bush_2": {
+   "measuredFt": 12.061049278152959,
+   "lengthFt": null,
+   "level": "low",
+   "score": 49,
+   "uncertaintyPct": 7.5710646020556425,
+   "reasons": [
+    "Expected error about ±7.6% from how exactly the points could be tapped; zoom in or use a larger rectangle.",
+    "Items in front of the wall measure too large (about 4% for something 3 ft from it with this camera). Trace it on a ground plane (from the wall's base line) to measure its true size.",
+    "The photo views this wall at 24° off straight-on.",
+    "This item stands in front of the wall, so its size is approximate."
+   ]
+  },
+  "ft_bush_3": {
+   "measuredFt": 11.931158483284198,
+   "lengthFt": null,
+   "level": "low",
+   "score": 49,
+   "uncertaintyPct": 7.792715586207577,
+   "reasons": [
+    "Expected error about ±7.8% from how exactly the points could be tapped; zoom in or use a larger rectangle.",
+    "Items in front of the wall measure too large (about 4% for something 3 ft from it with this camera). Trace it on a ground plane (from the wall's base line) to measure its true size.",
+    "The photo views this wall at 24° off straight-on.",
+    "This item stands in front of the wall, so its size is approximate."
+   ]
+  },
+  "ft_tree": {
+   "measuredFt": 6.994370674699121,
+   "lengthFt": 55.37714413474067,
+   "level": "low",
+   "score": 49,
+   "uncertaintyPct": 51.21954472916667,
+   "reasons": [
+    "Expected error about ±51% from how exactly the points could be tapped; from street level the ground is seen almost edge-on. Add a tape-measured reference on this ground surface, or take the photo from closer or higher.",
+    "Measured on the ground, worked out in 3D from the wall.",
+    "Nothing on this surface cross-checks its scale; a tape-measured length on it would.",
+    "The photo views this wall at 24° off straight-on.",
+    "The focal length measured from the rectangle is unsteady. A larger or more angled rectangle, or a photo with lens data, measures it better."
+   ]
+  },
+  "ft_walk_left": {
+   "measuredFt": 15.01227675101118,
+   "lengthFt": 15.01227675101118,
+   "level": "low",
+   "score": 49,
+   "uncertaintyPct": 233.9193056126098,
+   "reasons": [
+    "Expected error about ±234% from how exactly the points could be tapped; from street level the ground is seen almost edge-on. Add a tape-measured reference on this ground surface, or take the photo from closer or higher.",
+    "Measured on the ground, worked out in 3D from the wall.",
+    "Nothing on this surface cross-checks its scale; a tape-measured length on it would.",
+    "The photo views this wall at 24° off straight-on.",
+    "The focal length measured from the rectangle is unsteady. A larger or more angled rectangle, or a photo with lens data, measures it better."
+   ]
+  },
+  "ft_walk_right": {
+   "measuredFt": 15.005913659937363,
+   "lengthFt": 15.005913659937363,
+   "level": "low",
+   "score": 49,
+   "uncertaintyPct": 224.7916392562562,
+   "reasons": [
+    "Expected error about ±225% from how exactly the points could be tapped; from street level the ground is seen almost edge-on. Add a tape-measured reference on this ground surface, or take the photo from closer or higher.",
+    "Measured on the ground, worked out in 3D from the wall.",
+    "Nothing on this surface cross-checks its scale; a tape-measured length on it would.",
+    "The photo views this wall at 24° off straight-on.",
+    "The focal length measured from the rectangle is unsteady. A larger or more angled rectangle, or a photo with lens data, measures it better."
+   ]
+  }
+ }
+}

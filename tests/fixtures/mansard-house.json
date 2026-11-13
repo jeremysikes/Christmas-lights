@@ -1,0 +1,188 @@
+{
+ "schema": "lightplan/project",
+ "version": 1,
+ "id": "prj_cv1iz8uf",
+ "name": "Mansard house (geometry only)",
+ "createdAt": "2026-11-13T11:56:58.367Z",
+ "updatedAt": "2026-11-13T12:11:09.071Z",
+ "customer": {},
+ "settings": {
+  "wastePct": 10,
+  "roofPitch": {
+   "rise": 4,
+   "run": 12
+  },
+  "colorMode": "warmWhite",
+  "customColors": [
+   "#ff3b30",
+   "#34c759"
+  ],
+  "lengthFormat": "ft-in"
+ },
+ "images": [
+  {
+   "id": "img_4311nwlv",
+   "name": "PXL_20261111_214404221.jpg",
+   "width": 2048,
+   "height": 1152,
+   "source": {
+    "kind": "upload",
+    "capturedAt": null,
+    "attribution": null
+   },
+   "exif": {
+    "focal35": 24,
+    "width": 4032,
+    "height": 2268,
+    "orientation": 1
+   },
+   "camera": {
+    "mode": "auto",
+    "presetId": "phone1x",
+    "focalPx": null
+   },
+   "storageKey": "img_4311nwlv"
+  }
+ ],
+ "activeImageId": "img_4311nwlv",
+ "planes": [
+  {
+   "id": "pl_5ymbns89",
+   "imageId": "img_4311nwlv",
+   "name": "Front wall",
+   "kind": "wall",
+   "color": "#4f9dff",
+   "rect": {
+    "corners": [
+     [
+      678.5078800191999,
+      508.20467830503236
+     ],
+     [
+      741.5453715143468,
+      508.20467830503236
+     ],
+     [
+      741.1861835286194,
+      609.6752842730041
+     ],
+     [
+      677.9690980406089,
+      609.8548782658678
+     ]
+    ],
+    "widthFt": 3,
+    "heightFt": 5,
+    "presetId": "custom-rect",
+    "tapErr": [
+     2.5,
+     2.5,
+     2.5,
+     2.5
+    ]
+   },
+   "refs": [
+    {
+     "id": "ref_f0uo6flu",
+     "kind": "rect",
+     "points": [
+      [
+       1367.571332337451,
+       711.4840515413317
+      ],
+      [
+       1522.4840284343586,
+       710.9207326464339
+      ],
+      [
+       1521.357390644563,
+       571.2176467117679
+      ],
+      [
+       1366.726353995104,
+       570.3726683694211
+      ]
+     ],
+     "widthFt": 8,
+     "heightFt": 7.166666666666667,
+     "presetId": "custom-rect",
+     "quality": "high",
+     "tapErr": [
+      2.5,
+      2.5,
+      2.5,
+      2.5
+     ]
+    }
+   ],
+   "derived": null
+  }
+ ],
+ "features": [
+  {
+   "id": "ft_av29e5cj",
+   "imageId": "img_4311nwlv",
+   "planeId": "pl_5ymbns89",
+   "type": "ridge",
+   "label": "Ridge 1",
+   "points": [
+    [
+     1256.060896058667,
+     260.4654571481339
+    ],
+    [
+     460.50111370011615,
+     254.86671270892583
+    ]
+   ],
+   "closed": false,
+   "overrideFt": null,
+   "productId": null,
+   "color": null,
+   "params": {
+    "mount": null,
+    "diameterIn": null,
+    "spiralSpacingIn": null,
+    "wrapMode": null,
+    "outletId": null,
+    "reverse": false,
+    "overrideWidthFt": null,
+    "overrideHeightFt": null
+   },
+   "tapErr": [
+    2.5,
+    2.5
+   ]
+  }
+ ],
+ "outlets": [],
+ "circuits": [
+  {
+   "id": "cir_doq92o9u",
+   "name": "Circuit 1",
+   "breakerAmps": 15,
+   "voltage": 120,
+   "existingLoadW": 0
+  }
+ ],
+ "library": {
+  "products": null,
+  "config": null
+ },
+ "pricing": {
+  "overrides": {}
+ },
+ "quote": {
+  "enabled": false,
+  "company": "",
+  "laborMethod": "perFt",
+  "ratePerFt": 3.5,
+  "ratePerHour": 65,
+  "markupPct": 30,
+  "takedownFee": 150,
+  "storageFee": 75,
+  "taxPct": 0,
+  "validDays": 30,
+  "notes": ""
+ }
+}

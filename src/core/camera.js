@@ -347,6 +347,8 @@ LP.define('camera', ['geometry'], function (g) {
    * Roof frame: origin at eave point A, e1 level along the eave, e2 up the slope, away from the camera.
    * h is the level direction perpendicular to the eave pointing INTO the house (w < 0); the slope direction is
    * e2 = cosθ·h + sinθ·up with θ = atan(rise/run). n = e1 × e2, flipped to point upward.
+   * rise/run may be any slope up to near vertical (a steep mansard face is about 60 to 80 degrees), and A, B
+   * need not lie on the wall: for an upper roof they are points on the roof face below (w < 0), in wall-frame feet.
    */
   function roofFrame(A3, B3, rise, run) {
     if (!Array.isArray(A3) || !Array.isArray(B3)) return null;
